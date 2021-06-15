@@ -1608,3 +1608,31 @@ failed:
 
     return;
 };
+
+#define SQL_CREATE_HEALTH_LOG_TABLE(guid) "CREATE TABLE IF NOT EXISTS health_log_%s(hostname text, unique_id int, alarm_id int, alarm_event_id int, config_hash_id blob, updated_by_id int, updates_id int, when_key int, duration int, non_clear_duration int, flags int, exec_run_timestamp int, delay_up_to_timestamp int, name text, chart text, family text, exec text, recipient text, source text, units text, info text, exec_code int, new_status real, old_status real, delay int, new_value int, old_value int, last_repeat int, classification text, component text, type text);", guid
+void sql_create_health_log_table(RRDHOST *host) {
+    int rc;
+    char *err_msg = NULL, command[1000]; //POC, change!
+
+    char uuid_str[GUID_LEN + 1];
+    uuid_unparse_lower(host->host_uuid, uuid_str);
+    uuid_str[8] = '_';
+    uuid_str[13] = '_';
+    uuid_str[18] = '_';
+    uuid_str[23] = '_';
+
+    sprintf(command, SQL_CREATE_HEALTH_LOG_TABLE(uuid_str));
+
+    if (unlikely(!db_meta)) {
+        if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE)
+            error_report("Database has not been initialized");
+        return;
+    }
+
+    rc = sqlite3_exec(db_meta, command, 0, 0, &err_msg);
+    if (rc != SQLITE_OK) {
+        error_report("SQLite error during database setup, rc = %d (%s)", rc, err_msg);
+        sqlite3_free(err_msg);
+        return;
+    }
+}
