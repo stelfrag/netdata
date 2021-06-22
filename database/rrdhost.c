@@ -324,64 +324,66 @@ RRDHOST *rrdhost_create(const char *hostname,
                 else {
                     health_alarm_log_load(host);
                     add_migrated_file(host->health_log_filename, 0);
+                    health_alarm_log_open(host);
 
                     //dump debug
-                    int count=0;
-                    unsigned int max = host->health_log.max;
-                    BUFFER *wb = buffer_create(10000);
-                    /* ALARM_ENTRY *ae; */
-                    /* for (ae = host->health_log.alarms; ae && count < max; ae = ae->next) { */
-                    /*     if (likely(count)) */
-                    /*         buffer_strcat(wb, ","); */
-                    /*     health_alarm_entry_sql2json(wb, ae->unique_id, ae->alarm_id, host); */
-                    /*     count++; */
-                    /* } */
+                    /* int count=0; */
+                    /* unsigned int max = host->health_log.max; */
+                    /* BUFFER *wb = buffer_create(10000); */
+                    /* /\* ALARM_ENTRY *ae; *\/ */
+                    /* /\* for (ae = host->health_log.alarms; ae && count < max; ae = ae->next) { *\/ */
+                    /* /\*     if (likely(count)) *\/ */
+                    /* /\*         buffer_strcat(wb, ","); *\/ */
+                    /* /\*     health_alarm_entry_sql2json(wb, ae->unique_id, ae->alarm_id, host); *\/ */
+                    /* /\*     count++; *\/ */
+                    /* /\* } *\/ */
 
-                    health_alarm_log2json(host, wb, 0, NULL);
-                    error_report("health_log.alarms has [%d]", count);
+                    /* health_alarm_log2json(host, wb, 0, NULL); */
+                    /* error_report("health_log.alarms has [%d]", count); */
 
-                    //error_report(buffer_tostring(wb));
-                    char *lala;
-                    lala = strdupz(buffer_tostring(wb));
+                    /* //error_report(buffer_tostring(wb)); */
+                    /* char *lala; */
+                    /* lala = strdupz(buffer_tostring(wb)); */
 
-                    FILE *fp_loge = fopen("/tmp/alarm_log_from_file", "w");
-                    fprintf(fp_loge, "%s", lala);
-                    fclose(fp_loge);
+                    /* FILE *fp_loge = fopen("/tmp/alarm_log_from_file", "w"); */
+                    /* fprintf(fp_loge, "%s", lala); */
+                    /* fclose(fp_loge); */
 
-                    //do the same from sqlite
-                    BUFFER *wb2 = buffer_create(10000);
-                    sql_health_alarm_log_select_all(wb2, host);
-                    char *lala2;
-                    lala2 = strdupz(buffer_tostring(wb2));
+                    /* //do the same from sqlite */
+                    /* BUFFER *wb2 = buffer_create(10000); */
+                    /* sql_health_alarm_log_select_all(wb2, host); */
+                    /* char *lala2; */
+                    /* lala2 = strdupz(buffer_tostring(wb2)); */
 
-                    FILE *fp_loge2 = fopen("/tmp/alarm_log_sql", "w");
-                    fprintf(fp_loge2, "%s", lala2);
-                    fclose(fp_loge2);
+                    /* FILE *fp_loge2 = fopen("/tmp/alarm_log_sql", "w"); */
+                    /* fprintf(fp_loge2, "%s", lala2); */
+                    /* fclose(fp_loge2); */
                 }
             } else {
                 sql_health_alarm_log_load(host);
+                health_alarm_log_open(host);
 
-                int count=0;
-                unsigned int max = host->health_log.max;
-                BUFFER *wb = buffer_create(10000);
-                /* ALARM_ENTRY *ae; */
-                /* for (ae = host->health_log.alarms; ae && count < max; ae = ae->next) { */
-                /*     if (likely(count)) */
-                /*         buffer_strcat(wb, ","); */
-                /*     health_alarm_entry_sql2json(wb, ae->unique_id, ae->alarm_id, host); */
-                /*     count++; */
-                /* } */
+                /* int count=0; */
+                /* unsigned int max = host->health_log.max; */
+                /* BUFFER *wb = buffer_create(10000); */
+                /* /\* ALARM_ENTRY *ae; *\/ */
+                /* /\* for (ae = host->health_log.alarms; ae && count < max; ae = ae->next) { *\/ */
+                /* /\*     if (likely(count)) *\/ */
+                /* /\*         buffer_strcat(wb, ","); *\/ */
+                /* /\*     health_alarm_entry_sql2json(wb, ae->unique_id, ae->alarm_id, host); *\/ */
+                /* /\*     count++; *\/ */
+                /* /\* } *\/ */
 
-                health_alarm_log2json(host, wb, 0, NULL);
-                error_report("health_log.alarms has [%d]", count);
+                /* health_alarm_log2json(host, wb, 0, NULL); */
+                /* error_report("health_log.alarms has [%d]", count); */
 
-                //error_report(buffer_tostring(wb));
-                char *lala;
-                lala = strdupz(buffer_tostring(wb));
+                /* //error_report(buffer_tostring(wb)); */
+                /* char *lala; */
+                /* lala = strdupz(buffer_tostring(wb)); */
 
-                FILE *fp_loge = fopen("/tmp/alarm_log_loaded_from_sql", "w");
-                fprintf(fp_loge, "%s", lala);
-                fclose(fp_loge);
+                /* FILE *fp_loge = fopen("/tmp/alarm_log_loaded_from_sql", "w"); */
+                /* fprintf(fp_loge, "%s", lala); */
+                /* fclose(fp_loge); */
                 
             }
 

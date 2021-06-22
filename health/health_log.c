@@ -162,11 +162,9 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
             host->health_log_entries_written++;
         }
     }
-    else { //if health_log_fp is not open, it means we use sqlite
-        sql_health_alarm_log_save(host, ae);
-        //host->health_log_entries_written++;
-    }
-        
+
+    sql_health_alarm_log_save(host, ae);
+
 #ifdef ENABLE_ACLK
     if (netdata_cloud_setting) {
         if ((ae->new_status == RRDCALC_STATUS_WARNING || ae->new_status == RRDCALC_STATUS_CRITICAL) ||

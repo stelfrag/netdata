@@ -1933,7 +1933,7 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
         error_report("Failed to execute SQL_INSERT_HEALTH_LOG, rc = %d", rc);
     }
 
-    ae->flags |= HEALTH_ENTRY_FLAG_SAVED;
+    ae->flags |= HEALTH_ENTRY_FLAG_SAVED_SQLITE;
     host->health_log_entries_written++;
 
     return;
@@ -1941,7 +1941,7 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
 
 void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae)
 {
-    if (ae->flags & HEALTH_ENTRY_FLAG_SAVED)
+    if (ae->flags & HEALTH_ENTRY_FLAG_SAVED_SQLITE)
         sql_health_alarm_log_update(host, ae);
     else
         sql_health_alarm_log_insert(host, ae);
@@ -2213,7 +2213,7 @@ void sql_health_alarm_log_load(RRDHOST *host) {
         ae->non_clear_duration      = sqlite3_column_int(res, 9);
 
         ae->flags                   = sqlite3_column_int(res, 10);
-        ae->flags |= HEALTH_ENTRY_FLAG_SAVED;
+        ae->flags |= HEALTH_ENTRY_FLAG_SAVED_SQLITE;
 
         ae->exec_run_timestamp      = sqlite3_column_int(res, 11);
         ae->delay_up_to_timestamp   = sqlite3_column_int(res, 12);
