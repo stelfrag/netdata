@@ -38,39 +38,45 @@ static inline void health_log_rotate(RRDHOST *host) {
     }
 
     if(unlikely(host->health_log_entries_written > rotate_every)) {
-        health_alarm_log_close(host);
+        if(unlikely(host->health_log_fp)) {
+            health_alarm_log_close(host);
 
-        char old_filename[FILENAME_MAX + 1];
-        snprintfz(old_filename, FILENAME_MAX, "%s.old", host->health_log_filename);
+            char old_filename[FILENAME_MAX + 1];
+            snprintfz(old_filename, FILENAME_MAX, "%s.old", host->health_log_filename);
 
-        if(unlink(old_filename) == -1 && errno != ENOENT)
-            error("HEALTH [%s]: cannot remove old alarms log file '%s'", host->hostname, old_filename);
+            if(unlink(old_filename) == -1 && errno != ENOENT)
+                error("HEALTH [%s]: cannot remove old alarms log file '%s'", host->hostname, old_filename);
 
-        if(link(host->health_log_filename, old_filename) == -1 && errno != ENOENT)
-            error("HEALTH [%s]: cannot move file '%s' to '%s'.", host->hostname, host->health_log_filename, old_filename);
+            if(link(host->health_log_filename, old_filename) == -1 && errno != ENOENT)
+                error("HEALTH [%s]: cannot move file '%s' to '%s'.", host->hostname, host->health_log_filename, old_filename);
 
-        if(unlink(host->health_log_filename) == -1 && errno != ENOENT)
-            error("HEALTH [%s]: cannot remove old alarms log file '%s'", host->hostname, host->health_log_filename);
+            if(unlink(host->health_log_filename) == -1 && errno != ENOENT)
+                error("HEALTH [%s]: cannot remove old alarms log file '%s'", host->hostname, host->health_log_filename);
 
-        // open it with truncate
-        host->health_log_fp = fopen(host->health_log_filename, "w");
+            // open it with truncate
+            host->health_log_fp = fopen(host->health_log_filename, "w");
 
-        if(host->health_log_fp)
-            fclose(host->health_log_fp);
+            if(host->health_log_fp)
+                fclose(host->health_log_fp);
+            else
+                error("HEALTH [%s]: cannot truncate health log '%s'", host->hostname, host->health_log_filename);
+
+            host->health_log_fp = NULL;
+
+            host->health_log_entries_written = 0;
+            health_alarm_log_open(host);
+        }
         else
-            error("HEALTH [%s]: cannot truncate health log '%s'", host->hostname, host->health_log_filename);
-
-        host->health_log_fp = NULL;
-
-        host->health_log_entries_written = 0;
-        health_alarm_log_open(host);
+            sql_health_alarm_log_cleanup(host, rotate_every);
     }
+
+    
 }
 
 inline void health_label_log_save(RRDHOST *host) {
     health_log_rotate(host);
 
-    if(likely(host->health_log_fp)) {
+    if(unlikely(host->health_log_fp)) {
         BUFFER *wb = buffer_create(1024);
         rrdhost_check_rdlock(host);
         netdata_rwlock_rdlock(&host->labels.labels_rwlock);
@@ -101,7 +107,7 @@ inline void health_label_log_save(RRDHOST *host) {
 
 inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
     health_log_rotate(host);
-    if(likely(host->health_log_fp)) {
+    if(unlikely(host->health_log_fp)) {
         if(unlikely(fprintf(host->health_log_fp
                             , "%c\t%s"
                         "\t%08x\t%08x\t%08x\t%08x\t%08x"
@@ -156,6 +162,11 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
             host->health_log_entries_written++;
         }
     }
+    else { //if health_log_fp is not open, it means we use sqlite
+        sql_health_alarm_log_save(host, ae);
+        //host->health_log_entries_written++;
+    }
+        
 #ifdef ENABLE_ACLK
     if (netdata_cloud_setting) {
         if ((ae->new_status == RRDCALC_STATUS_WARNING || ae->new_status == RRDCALC_STATUS_CRITICAL) ||
@@ -392,9 +403,13 @@ static inline ssize_t health_alarm_log_read(RRDHOST *host, FILE *fp, const char 
             if(unlikely(*pointers[0] == 'A')) {
                 ae->next = host->health_log.alarms;
                 host->health_log.alarms = ae;
+                sql_health_alarm_log_insert(host, ae);
                 loaded++;
             }
-            else updated++;
+            else {
+                sql_health_alarm_log_update(host, ae);
+                updated++;
+            }
 
             if(unlikely(ae->unique_id > host->health_max_unique_id))
                 host->health_max_unique_id = ae->unique_id;
@@ -445,7 +460,7 @@ inline void health_alarm_log_load(RRDHOST *host) {
         fclose(fp);
     }
 
-    health_alarm_log_open(host);
+    //health_alarm_log_open(host);
 }
 
 

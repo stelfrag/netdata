@@ -77,4 +77,11 @@ extern int get_node_id(uuid_t *host_id, uuid_t *node_id);
 extern void invalidate_node_instances(uuid_t *host_id, uuid_t *claim_id);
 extern struct node_instance_list *get_node_list(void);
 extern void sql_load_node_id(RRDHOST *host);
+extern void sql_health_alarm_log_load(RRDHOST *host);
+extern int sql_create_health_log_table(RRDHOST *host);
+extern void sql_health_alarm_log_update(RRDHOST *host, ALARM_ENTRY *ae);
+extern void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae);
+extern void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae);
+extern void sql_health_alarm_log_select_all(BUFFER *wb, RRDHOST *host);
+extern void sql_health_alarm_log_cleanup(RRDHOST *host, size_t rotate_every);
 #endif //NETDATA_SQLITE_FUNCTIONS_H
