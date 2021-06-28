@@ -66,11 +66,7 @@ static inline void health_log_rotate(RRDHOST *host) {
             host->health_log_entries_written = 0;
             health_alarm_log_open(host);
         }
-        else
-            sql_health_alarm_log_cleanup(host, rotate_every);
     }
-
-    
 }
 
 inline void health_label_log_save(RRDHOST *host) {
@@ -162,8 +158,8 @@ inline void health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae) {
             host->health_log_entries_written++;
         }
     }
-
-    sql_health_alarm_log_save(host, ae);
+    else
+        sql_health_alarm_log_save(host, ae);
 
 #ifdef ENABLE_ACLK
     if (netdata_cloud_setting) {

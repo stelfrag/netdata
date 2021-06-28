@@ -324,7 +324,7 @@ RRDHOST *rrdhost_create(const char *hostname,
                 else {
                     health_alarm_log_load(host);
                     add_migrated_file(host->health_log_filename, 0);
-                    health_alarm_log_open(host);
+                    //health_alarm_log_open(host);
 
                     //dump debug
                     /* int count=0; */
@@ -361,7 +361,7 @@ RRDHOST *rrdhost_create(const char *hostname,
                 }
             } else {
                 sql_health_alarm_log_load(host);
-                health_alarm_log_open(host);
+                //health_alarm_log_open(host);
 
                 /* int count=0; */
                 /* unsigned int max = host->health_log.max; */

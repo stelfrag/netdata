@@ -1610,7 +1610,6 @@ failed:
 };
 
 #define MAX_HEALTH_SQL_SIZE 2048
-#define MAX_HEALTH_LOG_ENTRIES 10000
 
 /* Health related SQL queries
    Creates a health log table in sqlite, one per host guid
@@ -1933,7 +1932,7 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
         error_report("Failed to execute SQL_INSERT_HEALTH_LOG, rc = %d", rc);
     }
 
-    ae->flags |= HEALTH_ENTRY_FLAG_SAVED_SQLITE;
+    ae->flags |= HEALTH_ENTRY_FLAG_SAVED;
     host->health_log_entries_written++;
 
     return;
@@ -1941,7 +1940,7 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
 
 void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae)
 {
-    if (ae->flags & HEALTH_ENTRY_FLAG_SAVED_SQLITE)
+    if (ae->flags & HEALTH_ENTRY_FLAG_SAVED)
         sql_health_alarm_log_update(host, ae);
     else
         sql_health_alarm_log_insert(host, ae);
@@ -1963,16 +1962,25 @@ static uint32_t is_valid_alarm_id(RRDHOST *host, const char *chart, const char *
     return 1;
 }
 
+//Some ideas:
+//Cleanup based on date (when_key), i.e. delete over 20 days
+//Cleanup and leave max MAX_HEALTH_ENTRIES
+//#define MAX_HEALTH_LOG_ENTRIES 10000
 #define SQL_CLEANUP_HEALTH_LOG(guid,guid2,limit) "DELETE from health_log_%s where unique_id in (SELECT unique_id from health_log_%s order by unique_id asc LIMIT %ld);", guid, guid2, limit
-void sql_health_alarm_log_cleanup(RRDHOST *host, size_t rotate_every) {
+void sql_health_alarm_log_cleanup(RRDHOST *host) {
     sqlite3_stmt *res = NULL;
+    static size_t rotate_every = 0;
     int rc;
     char *guid = NULL, command[MAX_HEALTH_SQL_SIZE + 1];
 
+    if(unlikely(rotate_every == 0)) {
+        rotate_every = (size_t)config_get_number(CONFIG_SECTION_HEALTH, "rotate log every lines", 2000); //make bigger
+        if(rotate_every < 100) rotate_every = 100;
+    }
+
     debug(D_HEALTH, "In CLEANUP [%ld] [%ld]", host->health_log_entries_written, rotate_every);
 
-    //allow some buffer before deleting ? Delete when rows reach +50 above rotate_every
-    if(unlikely(host->health_log_entries_written < rotate_every + 50)) {
+    if(likely(host->health_log_entries_written < rotate_every)) {
         return;
     }
 
@@ -2213,7 +2221,7 @@ void sql_health_alarm_log_load(RRDHOST *host) {
         ae->non_clear_duration      = sqlite3_column_int(res, 9);
 
         ae->flags                   = sqlite3_column_int(res, 10);
-        ae->flags |= HEALTH_ENTRY_FLAG_SAVED_SQLITE;
+        ae->flags |= HEALTH_ENTRY_FLAG_SAVED;
 
         ae->exec_run_timestamp      = sqlite3_column_int(res, 11);
         ae->delay_up_to_timestamp   = sqlite3_column_int(res, 12);

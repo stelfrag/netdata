@@ -83,5 +83,5 @@ extern void sql_health_alarm_log_update(RRDHOST *host, ALARM_ENTRY *ae);
 extern void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae);
 extern void sql_health_alarm_log_save(RRDHOST *host, ALARM_ENTRY *ae);
 extern void sql_health_alarm_log_select_all(BUFFER *wb, RRDHOST *host);
-extern void sql_health_alarm_log_cleanup(RRDHOST *host, size_t rotate_every);
+extern void sql_health_alarm_log_cleanup(RRDHOST *host);
 #endif //NETDATA_SQLITE_FUNCTIONS_H
