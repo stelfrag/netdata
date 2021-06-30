@@ -310,6 +310,45 @@ void aclk_handle_new_cloud_msg(const char *message_type, const char *msg, size_t
         aclk_send_node_instances();
         return;
     }
+    if (!strcmp(message_type, "StreamChartsAndDimensions")) {
+        stream_charts_and_dims_t res = parse_stream_charts_and_dims(msg, msg_len);
+        if (!res.claim_id || !res.node_id) {
+            error("Error parsing StreamChartsAndDimensions msg");
+            freez(res.claim_id);
+            freez(res.node_id);
+            return;
+        }
+        chart_batch_id = res.batch_id;
+        info("DEBUG: Received batch id %d", chart_batch_id);
+        //aclk_start_streaming(res.node_id, res.seq_id, res.seq_id_created_at.tv_sec, res.batch_id);
+        freez(res.claim_id);
+        freez(res.node_id);
+        return;
+    }
+    if (!strcmp(message_type, "ChartsAndDimensionsAck")) {
+        chart_and_dim_ack_t res = parse_chart_and_dimensions_ack(msg, msg_len);
+        if (!res.claim_id || !res.node_id) {
+            error("Error parsing StreamChartsAndDimensions msg");
+            freez(res.claim_id);
+            freez(res.node_id);
+            return;
+        }
+        //aclk_ack_chart_sequence_id(res.node_id, res.last_seq_id);
+        freez(res.claim_id);
+        freez(res.node_id);
+        return;
+    }
+    if (!strcmp(message_type, "UpdateChartConfigs")) {
+        struct update_chart_config res = parse_update_chart_config(msg, msg_len);
+        if (!res.claim_id || !res.node_id || !res.hashes)
+        {
+            error("Error parsing UpdateChartConfigs msg");
+            destroy_update_chart_config(&res);
+        }
+        //aclk_get_chart_config(res.hashes);
+        destroy_update_chart_config(&res);
+        return;
+    }
 
     error ("Unknown new cloud arch message type received \"%s\"", message_type);
 }
