@@ -579,6 +579,10 @@ ACLK_NG_FILES = \
     aclk/schema-wrappers/node_connection.h \
     aclk/schema-wrappers/node_creation.cc \
     aclk/schema-wrappers/node_creation.h \
+    aclk/schema-wrappers/chart_stream.cc \
+    aclk/schema-wrappers/chart_stream.h \
+    aclk/schema-wrappers/chart_config.cc \
+    aclk/schema-wrappers/chart_config.h \
     aclk/schema-wrappers/schema_wrappers.h \
     aclk/schema-wrappers/schema_wrapper_utils.h \
     $(NULL)
