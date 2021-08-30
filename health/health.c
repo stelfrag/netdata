@@ -945,6 +945,7 @@ void *health_main(void *ptr) {
                                             ((rc->rrdcalc_flags & RRDCALC_FLAG_SILENCED)? HEALTH_ENTRY_FLAG_SILENCED : 0)
                                     )
                             );
+                            if (!rc->rrdset || !rc->rrdset->id) error_report("HEALTH rrdset null after creating alarm entry");
                             health_alarm_log(host, ae);
                         }
                         rc->last_status_change = now;
@@ -995,6 +996,7 @@ void *health_main(void *ptr) {
                                         ((rc->rrdcalc_flags & RRDCALC_FLAG_SILENCED)? HEALTH_ENTRY_FLAG_SILENCED : 0)
                                 )
                         );
+                        if (!rc->rrdset || !rc->rrdset->id) error_report("HEALTH DEBUG rrdset 2 null after creating alarm entry");
                         ae->last_repeat = rc->last_repeat;
                         if (!(rc->rrdcalc_flags & RRDCALC_FLAG_RUN_ONCE) && rc->status == RRDCALC_STATUS_CLEAR) {
                             ae->flags |= HEALTH_ENTRY_RUN_ONCE;

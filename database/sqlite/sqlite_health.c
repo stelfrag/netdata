@@ -222,49 +222,73 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 14, ae->name, -1, SQLITE_STATIC);
+    if (ae->name && *ae->name)
+        rc = sqlite3_bind_text(res, 14, ae->name, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 14);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind name parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 15, ae->chart, -1, SQLITE_STATIC);
+    if (ae->chart && *ae->chart)
+        rc = sqlite3_bind_text(res, 15, ae->chart, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 15);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind chart parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 16, ae->family, -1, SQLITE_STATIC);
+    if (ae->family && *ae->family)
+        rc = sqlite3_bind_text(res, 16, ae->family, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 16);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind family parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 17, ae->exec, -1, SQLITE_STATIC);
+    if (ae->exec && *ae->exec)
+        rc = sqlite3_bind_text(res, 17, ae->exec, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 17);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind exec parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 18, ae->recipient, -1, SQLITE_STATIC);
+    if (ae->recipient && *ae->recipient)
+        rc = sqlite3_bind_text(res, 18, ae->recipient, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 18);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind recipient parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 19, ae->source, -1, SQLITE_STATIC);
+    if (ae->source && *ae->source)
+        rc = sqlite3_bind_text(res, 19, ae->source, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 19);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind source parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 20, ae->units, -1, SQLITE_STATIC);
+    if (ae->units && *ae->units)
+        rc = sqlite3_bind_text(res, 20, ae->units, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 20);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind host_id parameter to store node instance information");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 21, ae->info, -1, SQLITE_STATIC);
+    if (ae->info && *ae->info)
+        rc = sqlite3_bind_text(res, 21, ae->info, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 21);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind info parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
@@ -312,19 +336,28 @@ void sql_health_alarm_log_insert(RRDHOST *host, ALARM_ENTRY *ae) {
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 29, ae->classification, -1, SQLITE_STATIC);
+    if (ae->classification && *ae->classification)
+        rc = sqlite3_bind_text(res, 29, ae->classification, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 29);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind classification parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 30, ae->component, -1, SQLITE_STATIC);
+    if (ae->component && *ae->component)
+        rc = sqlite3_bind_text(res, 30, ae->component, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 30);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind component parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;
     }
 
-    rc = sqlite3_bind_text(res, 31, ae->type, -1, SQLITE_STATIC);
+    if (ae->type && *ae->type)
+        rc = sqlite3_bind_text(res, 31, ae->type, -1, SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(res, 31);
     if (unlikely(rc != SQLITE_OK)) {
         error_report("Failed to bind type parameter for SQL_INSERT_HEALTH_LOG");
         goto failed;

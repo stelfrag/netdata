@@ -493,7 +493,8 @@ inline ALARM_ENTRY* health_create_alarm_entry(
     if(chart) {
         ae->chart = strdupz(chart);
         ae->hash_chart = simple_hash(ae->chart);
-    }
+    } else
+        error_report("HEALTH DEBUG chart is null in create_alarm_entry with id: %u", host->health_log.next_log_id);
 
     uuid_copy(ae->config_hash_id, *((uuid_t *) config_hash_id));
 
@@ -510,6 +511,8 @@ inline ALARM_ENTRY* health_create_alarm_entry(
         ae->type = strdupz(type);
 
     if(exec) ae->exec = strdupz(exec);
+    else
+        error_report("HEALTH DEBUG exec is null in create_alarm_entry with id: %u", host->health_log.next_log_id);
     if(recipient) ae->recipient = strdupz(recipient);
     if(source) ae->source = strdupz(source);
     if(units) ae->units = strdupz(units);
@@ -539,6 +542,8 @@ inline ALARM_ENTRY* health_create_alarm_entry(
             freez(buf);
         }
     }
+    else
+        error_report("HEALTH DEBUG info is null in create_alarm_entry with id: %u", host->health_log.next_log_id);
 
     if(replaced_info) ae->info = strdupz(replaced_info);
     freez(replaced_info);
