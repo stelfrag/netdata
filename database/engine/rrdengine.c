@@ -190,6 +190,9 @@ void read_cached_extent_cb(struct rrdengine_worker_config* wc, unsigned idx, str
 
         }
         /* care, we don't hold the descriptor mutex */
+        char uuid_str[GUID_LEN + 1];
+        uuid_unparse_lower(*descr->id, uuid_str);
+        info("DEBUG: Reading metric data for %s (%llu,%llu) page_size = %u", uuid_str, descr->start_time, descr->end_time, descr->page_length);
        (void) memcpy(page, wc->xt_cache.extent_array[idx].pages + page_offset, descr->page_length);
 
         rrdeng_page_descr_mutex_lock(ctx, descr);
