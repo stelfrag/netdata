@@ -61,21 +61,31 @@ static void fix_directory_file_permissions(const char *dirname, uid_t uid, gid_t
         if (de->d_type == DT_DIR && (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")))
             continue;
 
+        bool needs_check = false;
+
         (void) snprintfz(filename, FILENAME_MAX, "%s/%s", dirname, de->d_name);
-        if (de->d_type == DT_REG || recursive) {
-            if (chown(filename, uid, gid) == -1)
-                netdata_log_error("Cannot chown %s '%s' to %u:%u", de->d_type == DT_DIR ? "directory" : "file", filename, (unsigned int)uid, (unsigned int)gid);
+        struct stat statbuf;
+        needs_check = (!stat(filename, &statbuf) && (statbuf.st_gid != gid || statbuf.st_uid != uid));
+
+        if (needs_check) {
+            if (!chown(filename, uid, gid)) {
+                if (de->d_type == DT_DIR && recursive)
+                    fix_directory_file_permissions(filename, uid, gid, recursive);
+            }
+            else
+                error("Cannot chown %s '%s' to %u:%u", de->d_type == DT_DIR ? "directory" : "file", filename, (unsigned int)uid, (unsigned int)gid);
         }
-
-        if (de->d_type == DT_DIR && recursive)
-            fix_directory_file_permissions(filename, uid, gid, recursive);
     }
-
     closedir(dir);
 }
 
 void change_dir_ownership(const char *dir, uid_t uid, gid_t gid, bool recursive)
 {
+    struct stat statbuf;
+
+    if(!stat(dir, &statbuf) && (statbuf.st_gid == gid && statbuf.st_uid == uid))
+        return;
+
     if (chown(dir, uid, gid) == -1)
         netdata_log_error("Cannot chown directory '%s' to %u:%u", dir, (unsigned int)uid, (unsigned int)gid);
 
