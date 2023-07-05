@@ -1010,31 +1010,111 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     time_t header_start_time_s  = (time_t) (j2_header->start_time_ut / USEC_PER_SEC);
     time_t global_first_time_s = header_start_time_s;
     time_t now_s = max_acceptable_collected_time();
-    for (size_t i=0; i < entries; i++) {
-        time_t start_time_s = header_start_time_s + metric->delta_start_s;
-        time_t end_time_s = header_start_time_s + metric->delta_end_s;
 
-        mrg_update_metric_retention_and_granularity_by_uuid(
+    bool file_in_snapshot = sql_check_metric_count(
+        ctx->config.snapshot.check,
+        (int)journalfile->datafile->fileno,
+        (int)entries,
+        (int)j2_header->journal_v2_file_size);
+
+    if (file_in_snapshot) {
+        journalfile->datafile->populate_snapshot.populated = true;
+        netdata_log_info("TIER %d, File %d found in snapshot with %d entries", ctx->config.tier, (int) journalfile->datafile->fileno, (int) entries);
+    }
+    else {
+        journalfile->datafile->populate_snapshot.populated = false;
+
+        for (size_t i = 0; i < entries; i++) {
+            time_t start_time_s = header_start_time_s + metric->delta_start_s;
+            time_t end_time_s = header_start_time_s + metric->delta_end_s;
+
+            mrg_update_metric_retention_and_granularity_by_uuid(
                 main_mrg, (Word_t)ctx, &metric->uuid, start_time_s, end_time_s, metric->update_every_s, now_s);
 
-        metric++;
+            metric++;
+        }
     }
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
 
-    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
-        , ctx->config.tier, journalfile->datafile->fileno
-        , (double)data_size / 1024 / 1024
-        , (double)entries / 1000
-        , ((double)(ended_ut - started_ut) / USEC_PER_MS)
-        );
+    if (!file_in_snapshot)
+        nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
+            , ctx->config.tier, journalfile->datafile->fileno
+            , (double)data_size / 1024 / 1024
+            , (double)entries / 1000
+            , ((double)(ended_ut - started_ut) / USEC_PER_MS)
+            );
 
     time_t old = __atomic_load_n(&ctx->atomic.first_time_s, __ATOMIC_RELAXED);;
     do {
         if(old <= global_first_time_s)
             break;
     } while(!__atomic_compare_exchange_n(&ctx->atomic.first_time_s, &old, global_first_time_s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+}
+
+void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile) {
+    usec_t started_ut = now_monotonic_usec();
+
+    size_t data_size = 0;
+    struct journal_v2_header *j2_header = journalfile_v2_data_acquire(journalfile, &data_size, 0, 0);
+    if(!j2_header)
+        return;
+
+    uint8_t *data_start = (uint8_t *)j2_header;
+    uint32_t entries = j2_header->metric_count;
+
+    struct journal_metric_list *metric = (struct journal_metric_list *) (data_start + j2_header->metric_offset);
+    time_t header_start_time_s  = (time_t) (j2_header->start_time_ut / USEC_PER_SEC);
+    time_t header_end_time_s  = (time_t) (j2_header->end_time_ut / USEC_PER_SEC);
+
+    bool database_is_populated =
+        sql_check_metric_count(ctx->config.snapshot.check, (int)journalfile->datafile->fileno, (int)entries, 0);
+    if (database_is_populated) {
+        journalfile->datafile->populate_snapshot.populated = true;
+        netdata_log_info("DEBUG: FILE %d matches with entry count %d, will not populate (in theory)", (int) journalfile->datafile->fileno, (int) entries);
+    }
+    else {
+        sql_snapshot_begin_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
+
+        // Cleanup file
+        sql_snapshot_reset_fileno(ctx->config.snapshot.database,  (int)journalfile->datafile->fileno);
+
+        // Add file statistics
+        sql_snapshot_store_file_info(
+                ctx->config.snapshot.database,
+                (int)journalfile->datafile->fileno,
+                (int) entries,
+                header_start_time_s,
+                header_end_time_s,
+                j2_header->journal_v2_file_size);
+
+        for (size_t i = 0; i < entries; i++) {
+            time_t start_time_s = header_start_time_s + metric->delta_start_s;
+            time_t end_time_s = header_start_time_s + metric->delta_end_s;
+            sql_add_metric_uuid_retention(
+                ctx->config.snapshot.lookup,
+                ctx->config.snapshot.store,
+                ctx->config.snapshot.res,
+                &metric->uuid,
+                (int)journalfile->datafile->fileno,
+                start_time_s,
+                end_time_s,
+                (int)metric->update_every_s);
+            metric++;
+        }
+        sql_snapshot_commit_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
+    }
+
+    journalfile_v2_data_release(journalfile);
+    usec_t ended_ut = now_monotonic_usec();
+
+    netdata_log_info("DBENGINE: SNAPSHOT check of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
+                     , ctx->config.tier, journalfile->datafile->fileno
+                     , (double)data_size / 1024 / 1024
+                     , (double)entries / 1000
+                     , ((double)(ended_ut - started_ut) / USEC_PER_MS)
+    );
 }
 
 int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile, struct rrdengine_datafile *datafile)
@@ -1470,6 +1550,7 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
         internal_error(true, "DBENGINE: ACTIVATING NEW INDEX JNL %llu", (now_monotonic_usec() - start_loading) / USEC_PER_MS);
         ctx_current_disk_space_increase(ctx, total_file_size);
         freez(uuid_list);
+        metaqueue_build_snapshot(ctx);
         return;
     }
     else {

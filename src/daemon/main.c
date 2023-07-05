@@ -452,6 +452,9 @@ void netdata_cleanup_and_exit(int ret, const char *action, const char *action_re
     watcher_step_complete(WATCHER_STEP_ID_CLOSE_SQL_DATABASES);
     sqlite_library_shutdown();
 
+    sql_close_database();
+    watcher_step_complete(WATCHER_STEP_ID_CLOSE_SQL_MAIN_DB);
+    sql_close_snapshot_database();
 
     // unlink the pid
     if(pidfile[0]) {
@@ -467,7 +470,7 @@ void netdata_cleanup_and_exit(int ret, const char *action, const char *action_re
 
     (void) unlink(agent_incomplete_shutdown_file);
     watcher_step_complete(WATCHER_STEP_ID_REMOVE_INCOMPLETE_SHUTDOWN_FILE);
-    
+
     watcher_shutdown_end();
     watcher_thread_stop();
 
