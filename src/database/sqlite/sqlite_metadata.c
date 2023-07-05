@@ -169,6 +169,8 @@ enum metadata_opcode {
     METADATA_MAINTENANCE,
     METADATA_SYNC_SHUTDOWN,
     METADATA_UNITTEST,
+    METADATA_ML_LOAD_MODELS,
+    METADATA_BUILD_SNAPSHOT,
     // leave this last
     // we need it to check for worker utilization
     METADATA_MAX_ENUMERATIONS_DEFINED
@@ -1562,6 +1564,81 @@ void vacuum_database(sqlite3 *database, const char *db_alias, int threshold, int
    }
 }
 
+static void after_snapshot_create_replay(uv_work_t *req, int status)
+{
+   UNUSED(status);
+   UNUSED(req);
+   struct rrdengine_instance *ctx = req->data;
+   netdata_log_info("DEBUG: snapshot retention for tier %d completed", ctx->config.tier);
+   freez(req);
+}
+
+static void snapshot_create_replay(uv_work_t *req)
+{
+   register_libuv_worker_jobs();
+
+   worker_is_busy(UV_EVENT_METADATA_SNAPSHOT);
+
+   struct rrdengine_instance *ctx = req->data;
+
+   do {
+       struct rrdengine_datafile *datafile = NULL;
+
+       // find a datafile to work
+       uv_rwlock_rdlock(&ctx->datafiles.rwlock);
+       for(datafile = ctx->datafiles.first; datafile ; datafile = datafile->next) {
+           if(!spinlock_trylock(&datafile->populate_snapshot.spinlock))
+                continue;
+
+           if(datafile->populate_snapshot.populated) {
+                spinlock_unlock(&datafile->populate_snapshot.spinlock);
+                continue;
+           }
+
+           // we have the spinlock and it is not populated
+           break;
+       }
+       uv_rwlock_rdunlock(&ctx->datafiles.rwlock);
+
+       if(!datafile)
+           break;
+
+       netdata_log_info("DEBUG: Checking snapshot retention for %d", (int) datafile->fileno);
+       //sql_mark_file_to_rebuild(ctx->config.snapshot.mark, (int) datafile->fileno, (int) 0);
+       journalfile_v2_populate_retention_to_snapshot(ctx, datafile->journalfile);
+       datafile->populate_snapshot.populated = true;
+       spinlock_unlock(&datafile->populate_snapshot.spinlock);
+
+   } while(1);
+
+//   int rc = sqlite3_finalize(ctx->config.snapshot.res);
+//   if (rc != SQLITE_OK)
+//       error_report("Failed to finalize statement that populates metrics in tier %d", (int) ctx->config.tier);
+//
+//   rc = sqlite3_finalize(ctx->config.snapshot.lookup);
+//   if (rc != SQLITE_OK)
+//       error_report("Failed to finalize statement that populates metrics in tier %d", (int) ctx->config.tier);
+//
+//   rc = sqlite3_finalize(ctx->config.snapshot.store);
+//   if (rc != SQLITE_OK)
+//       error_report("Failed to finalize statement that populates metrics in tier %d", (int) ctx->config.tier);
+//
+//   rc = sqlite3_finalize(ctx->config.snapshot.check);
+//   if (rc != SQLITE_OK)
+//       error_report("Failed to finalize statement that populates metrics in tier %d", (int) ctx->config.tier);
+
+   worker_is_idle();
+}
+
+
+static void after_metadata_cleanup(uv_work_t *req, int status)
+{
+    UNUSED(status);
+
+    struct metadata_wc *wc = req->data;
+    metadata_flag_clear(wc, METADATA_FLAG_CLEANUP);
+}
+
 void run_metadata_cleanup(struct metadata_wc *wc)
 {
     if (unlikely(metadata_flag_check(wc, METADATA_FLAG_SHUTDOWN)))
@@ -2026,7 +2103,7 @@ static void metadata_event_loop(void *arg)
     memset(&cmd, 0, sizeof(cmd));
     metadata_flag_clear(wc, METADATA_FLAG_PROCESSING);
 
-    wc->metadata_check_after = now_realtime_sec() + METADATA_HOST_CHECK_FIRST_CHECK;
+    wc->metadata_check_after = now_realtime_sec() + METADATA_HOST_CHECK_FIRST_CHECK + METADATA_MAINTENANCE_FIRST_CHECK;
 
     int shutdown = 0;
     completion_mark_complete(&wc->start_stop_complete);
@@ -2133,6 +2210,15 @@ static void metadata_event_loop(void *arg)
                     if (PValue)
                         *PValue = (void *) cmd.param[0];
 
+                    break;
+                case METADATA_BUILD_SNAPSHOT:;
+
+                    struct rrdengine_instance *ctx = (struct rrdengine_instance *) cmd.param[0];
+
+                    uv_work_t *metadata_build_snapshot = callocz(1, sizeof(uv_work_t));
+                    metadata_build_snapshot->data = ctx;
+                    (void)uv_queue_work(
+                        loop, metadata_build_snapshot, snapshot_create_replay, after_snapshot_create_replay);
                     break;
                 case METADATA_UNITTEST:;
                     struct thread_unittest *tu = (struct thread_unittest *) cmd.param[0];
@@ -2284,6 +2370,13 @@ void metaqueue_store_claim_id(nd_uuid_t *host_uuid, nd_uuid_t *claim_uuid)
         uuid_copy(*local_claim_uuid, *claim_uuid);
     }
     queue_metadata_cmd(METADATA_STORE_CLAIM_ID, local_host_uuid, local_claim_uuid);
+}
+
+void metaqueue_build_snapshot(struct rrdengine_instance *ctx)
+{
+    if (unlikely(!metasync_worker.loop))
+        return;
+    queue_metadata_cmd(METADATA_BUILD_SNAPSHOT, ctx, NULL);
 }
 
 void metaqueue_host_update_info(RRDHOST *host)

@@ -20,6 +20,7 @@
 #include "cache.h"
 #include "pdc.h"
 #include "page.h"
+#include "../sqlite/sqlite3.h"
 
 extern unsigned rrdeng_pages_per_extent;
 
@@ -360,6 +361,17 @@ typedef struct tier_config_prototype {
     uint8_t disk_percentage;                    // percentage of metadata that contribute towards tier space used
     uint8_t global_compress_alg;                // the wanted compression algorithm
     char dbfiles_path[FILENAME_MAX + 1];
+
+    struct {
+        sqlite3 *database; // Database for metric retention per tier
+        SPINLOCK spinlock;
+        sqlite3_stmt *res;
+        sqlite3_stmt *lookup;
+        sqlite3_stmt *store;
+        sqlite3_stmt *check;
+        sqlite3_stmt *mark;
+        sqlite3_stmt *unmark;
+    } snapshot;
 
     struct {
         uint32_t uses;

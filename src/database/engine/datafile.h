@@ -52,6 +52,11 @@ struct rrdengine_datafile {
 
     struct {
         SPINLOCK spinlock;
+        bool populated;
+    } populate_snapshot;
+
+    struct {
+        SPINLOCK spinlock;
         size_t running;
         size_t flushed_to_open_running;
     } writers;

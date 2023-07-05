@@ -1125,6 +1125,8 @@ void rrdeng_readiness_wait(struct rrdengine_instance *ctx) {
     ctx->loading.populate_mrg.array = NULL;
     ctx->loading.populate_mrg.size = 0;
 
+    netdata_log_info("DBENGINE: tier %d now replaying snapshot ...", ctx->config.tier);
+    sql_replay_snapshot_to_mrg(ctx, ctx->config.snapshot.database);
     netdata_log_info("DBENGINE: tier %d is ready for data collection and queries", ctx->config.tier);
 }
 
@@ -1182,6 +1184,14 @@ int rrdeng_init(
 
     ctx->atomic.transaction_id = 1;
     ctx->quiesce.enabled = false;
+    ctx->config.snapshot.database = sql_create_tier_snapshot_database((int)tier);
+    ctx->config.snapshot.lookup = snapshot_prepare_lookup_metric(NULL);                    // SNAPSHOT MRG lookup
+    ctx->config.snapshot.store = snapshot_prepare_store_metric(NULL);                      // SNAPSHOT MRG add
+    ctx->config.snapshot.res = snapshot_prepare_add_file_retention(ctx->config.snapshot.database);  // per tier metric_file_retention (add)
+    ctx->config.snapshot.check = snapshot_prepare_check(ctx->config.snapshot.database);             // per tier metric_file_retention (check)
+    //ctx->config.snapshot.mark = snapshot_prepare_mark(ctx->config.snapshot.database);               // per tier metric_file_retention (select)
+    //ctx->config.snapshot.unmark = snapshot_prepare_unmark(ctx->config.snapshot.database);           // per tier metric_file_retention (select)
+    ctx->config.snapshot.spinlock.locked = false;
 
     ctx->atomic.first_time_s = LONG_MAX;
     ctx->atomic.metrics = 0;
