@@ -253,22 +253,27 @@ failed:
     return rc != SQLITE_DONE;
 }
 
-void sql_add_metric_uuid_retention(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, sqlite3_stmt *res, uuid_t *metric_uuid, int fileno, time_t first_time_t, time_t last_time_t, int update_every)
+int sql_add_metric_uuid_retention(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, sqlite3_stmt *res, uuid_t *metric_uuid, int fileno, time_t first_time_t, time_t last_time_t, int update_every)
 {
     int metric_id = sql_create_metric_uuid(lookup_res,add_res, metric_uuid);
 
     if (unlikely(metric_id == -1))
-        return;
+        return 1;
 
-    if (unlikely(sql_add_metric_file_retention(res, metric_id, fileno, first_time_t, last_time_t, update_every)))
+    if (unlikely(sql_add_metric_file_retention(res, metric_id, fileno, first_time_t, last_time_t, update_every))) {
         error_report("Failed to store metric retention");
+        return 1;
+    }
+    return 0;
 }
 
+
+#define SQL_SNAPSHOT_GET_FILE_INFO "SELECT metric_count, file_size FROM metric_file_info WHERE fileno = @fileno"
 
 sqlite3_stmt *snapshot_prepare_check(sqlite3 *database)
 {
     sqlite3_stmt *res;
-    int rc = sqlite3_prepare_v2(database, "SELECT metric_count, file_size FROM metric_file_info WHERE fileno = @fileno", -1, &res, 0);
+    int rc = sqlite3_prepare_v2(database, SQL_SNAPSHOT_GET_FILE_INFO, -1, &res, 0);
     if (rc != SQLITE_OK)
         return NULL;
 
@@ -306,13 +311,15 @@ failed:
 #define SQL_SNAPSHOT_STORE_FILE_INFO "INSERT OR REPLACE INTO metric_file_info (fileno, metric_count, first_time, last_time, file_size) VALUES " \
         "(@fileno, @metric_count, @first_time, @last_time, @file_size)"
 
-void sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, time_t first_time_t, time_t last_time_t, size_t file_size)
+int sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, time_t first_time_t, time_t last_time_t, size_t file_size)
 {
     sqlite3_stmt *res;
 
+    int store_rc = 0;
+
     int rc = sqlite3_prepare_v2(database, SQL_SNAPSHOT_STORE_FILE_INFO, -1, &res, 0);
     if (rc != SQLITE_OK)
-        return;
+        return 1;
 
     rc = sqlite3_bind_int(res, 1, fileno);
     if (unlikely(rc != SQLITE_OK)) {
@@ -344,24 +351,27 @@ void sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, t
         goto failed;
     }
 
-    rc = execute_insert(res);
-    if (unlikely(rc != SQLITE_DONE))
+    store_rc = execute_insert(res);
+    if (unlikely(store_rc != SQLITE_DONE))
         error_report("Failed to insert snapshot file info rc = %d", rc);
 
 failed:
     if (unlikely(sqlite3_finalize(res) != SQLITE_OK))
         error_report("Failed to finalize statement when storing snapshot file info");
+
+    return store_rc != SQLITE_DONE;
 }
 
 #define SQL_SNAPSHOT_RESET_FILE "DELETE FROM metric_file_retention WHERE fileno = @fileno "
 
-void sql_snapshot_reset_fileno(sqlite3 *database, int fileno)
+int sql_snapshot_reset_fileno(sqlite3 *database, int fileno)
 {
     sqlite3_stmt *res;
+    int store_rc = 0;
 
     int rc = sqlite3_prepare_v2(database, SQL_SNAPSHOT_RESET_FILE, -1, &res, 0);
     if (rc != SQLITE_OK)
-        return;
+        return 1;
 
     rc = sqlite3_bind_int(res, 1, fileno);
     if (unlikely(rc != SQLITE_OK)) {
@@ -369,13 +379,15 @@ void sql_snapshot_reset_fileno(sqlite3 *database, int fileno)
         goto failed;
     }
 
-    rc = execute_insert(res);
-    if (unlikely(rc != SQLITE_DONE))
+    store_rc = execute_insert(res);
+    if (unlikely(store_rc != SQLITE_DONE))
         error_report("Failed to sql_snapshot_reset_fileno info rc = %d", rc);
 
 failed:
     if (unlikely(sqlite3_finalize(res) != SQLITE_OK))
         error_report("Failed to finalize statement when sql_snapshot_reset_fileno");
+
+    return store_rc != SQLITE_DONE;
 }
 
 void sql_snapshot_begin_transaction(sqlite3 *database, SPINLOCK *spinlock __maybe_unused)
@@ -384,7 +396,7 @@ void sql_snapshot_begin_transaction(sqlite3 *database, SPINLOCK *spinlock __mayb
     db_execute(database,"BEGIN TRANSACTION");
 }
 
-void sql_snapshot_commit_transaction(sqlite3 *database, SPINLOCK *spinlock __maybe_unused)
+void sql_snapshot_commit_or_rollaback_transaction(sqlite3 *database, SPINLOCK *spinlock __maybe_unused, bool commit)
 {
     db_execute(database,"COMMIT TRANSACTION");
     spinlock_unlock(spinlock);

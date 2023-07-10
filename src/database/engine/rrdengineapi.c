@@ -1168,8 +1168,6 @@ int rrdeng_init(struct rrdengine_instance **ctxp, const char *dbfiles_path,
     ctx->config.snapshot.store = snapshot_prepare_store_metric(NULL);                      // SNAPSHOT MRG add
     ctx->config.snapshot.res = snapshot_prepare_add_file_retention(ctx->config.snapshot.database);  // per tier metric_file_retention (add)
     ctx->config.snapshot.check = snapshot_prepare_check(ctx->config.snapshot.database);             // per tier metric_file_retention (check)
-    //ctx->config.snapshot.mark = snapshot_prepare_mark(ctx->config.snapshot.database);               // per tier metric_file_retention (select)
-    //ctx->config.snapshot.unmark = snapshot_prepare_unmark(ctx->config.snapshot.database);           // per tier metric_file_retention (select)
     ctx->config.snapshot.spinlock.locked = false;
 
     rw_spinlock_init(&ctx->njfv2idx.spinlock);
