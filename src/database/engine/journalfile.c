@@ -1078,54 +1078,50 @@ void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
     struct journal_metric_list *metric = (struct journal_metric_list *) (data_start + j2_header->metric_offset);
     time_t header_start_time_s  = (time_t) (j2_header->start_time_ut / USEC_PER_SEC);
     time_t header_end_time_s  = (time_t) (j2_header->end_time_ut / USEC_PER_SEC);
+    int fileno = (int) journalfile->datafile->fileno;
 
-    bool database_is_populated =
-        sql_check_metric_count(ctx->config.snapshot.check, (int)journalfile->datafile->fileno, (int)entries, 0);
-    if (database_is_populated) {
-        journalfile->datafile->populate_snapshot.populated = true;
-        netdata_log_info("DEBUG: FILE %d matches with entry count %d, will not populate (in theory)", (int) journalfile->datafile->fileno, (int) entries);
-    }
-    else {
-        sql_snapshot_begin_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
+    sql_snapshot_begin_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
 
-        // Cleanup file
-        sql_snapshot_reset_fileno(ctx->config.snapshot.database,  (int)journalfile->datafile->fileno);
+    int rc = sql_snapshot_reset_fileno(ctx->config.snapshot.database,  fileno);
 
-        // Add file statistics
-        sql_snapshot_store_file_info(
-                ctx->config.snapshot.database,
-                (int)journalfile->datafile->fileno,
-                (int) entries,
-                header_start_time_s,
-                header_end_time_s,
-                j2_header->journal_v2_file_size);
+    if (likely(!rc)) {
+        rc = sql_snapshot_store_file_info(
+            ctx->config.snapshot.database,
+            fileno,
+            (int)entries,
+            header_start_time_s,
+            header_end_time_s,
+            j2_header->journal_v2_file_size);
 
-        for (size_t i = 0; i < entries; i++) {
-            time_t start_time_s = header_start_time_s + metric->delta_start_s;
-            time_t end_time_s = header_start_time_s + metric->delta_end_s;
-            sql_add_metric_uuid_retention(
-                ctx->config.snapshot.lookup,
-                ctx->config.snapshot.store,
-                ctx->config.snapshot.res,
-                &metric->uuid,
-                (int)journalfile->datafile->fileno,
-                start_time_s,
-                end_time_s,
-                (int)metric->update_every_s);
-            metric++;
+        if (likely(!rc)) {
+            for (size_t i = 0; i < entries && !rc; i++) {
+                time_t start_time_s = header_start_time_s + metric->delta_start_s;
+                time_t end_time_s = header_start_time_s + metric->delta_end_s;
+                rc = sql_add_metric_uuid_retention(
+                    ctx->config.snapshot.lookup,
+                    ctx->config.snapshot.store,
+                    ctx->config.snapshot.res,
+                    &metric->uuid,
+                    fileno,
+                    start_time_s,
+                    end_time_s,
+                    (int)metric->update_every_s);
+                metric++;
+            }
         }
-        sql_snapshot_commit_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
     }
+
+    sql_snapshot_commit_or_rollaback_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock, (rc == 0));
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
 
-    netdata_log_info("DBENGINE: SNAPSHOT check of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
-                     , ctx->config.tier, journalfile->datafile->fileno
-                     , (double)data_size / 1024 / 1024
-                     , (double)entries / 1000
-                     , ((double)(ended_ut - started_ut) / USEC_PER_MS)
-    );
+    netdata_log_info(
+        "DBENGINE: SNAPSHOT for tier %d, journalfile %u populated, metrics: %0.2f k, %0.2f ms",
+        ctx->config.tier,
+        journalfile->datafile->fileno,
+        (double)entries / 1000,
+        ((double)(ended_ut - started_ut) / USEC_PER_MS));
 }
 
 int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile, struct rrdengine_datafile *datafile)
