@@ -10,8 +10,8 @@ const char *database_snapshot_config[] = {
 
     "CREATE UNIQUE INDEX IF NOT EXISTS ind_metric_1 ON metric(metric_uuid)",
 
-    "PRAGMA synchronous=NORMAL;",
-    "PRAGMA journal_mode=WAL;",
+    "PRAGMA synchronous=0;",
+    "PRAGMA journal_mode=OFF;",
     "PRAGMA temp_store=MEMORY;",
 
     NULL
@@ -19,15 +19,13 @@ const char *database_snapshot_config[] = {
 
 const char *database_snapshot_tier_config[] = {
     "CREATE TABLE IF NOT EXISTS metric_file_retention(metric_id INTEGER, fileno INTEGER, " \
-        "first_time INTEGER, last_time INTEGER, update_every INTEGER)",
-
-    "CREATE UNIQUE INDEX IF NOT EXISTS ind_metric_retention_1 ON metric_file_retention(fileno, metric_id)",
+        "first_time INTEGER, last_time INTEGER, update_every INTEGER, PRIMARY KEY (fileno, metric_id)) WITHOUT ROWID",
 
     "CREATE TABLE IF NOT EXISTS metric_file_info(fileno INTEGER PRIMARY KEY, " \
             "metric_count INTEGER, first_time INTEGER, last_time, file_size INTEGER) WITHOUT ROWID",
 
-    "CREATE TABLE IF NOT EXISTS metric_retention (metric_id INTEGER UNIQUE PRIMARY KEY, first_time INTEGER, " \
-        "last_time INTEGER, update_every INTEGER) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS metric_retention (metric_id INTEGER PRIMARY KEY, first_time INTEGER, " \
+        "last_time INTEGER, update_every INTEGER)",
 
     "CREATE TRIGGER IF NOT EXISTS mfr_1 AFTER INSERT ON metric_file_retention BEGIN UPDATE metric_retention " \
         "SET first_time = MIN(first_time, new.first_time), last_time = MAX(last_time, new.last_time), " \
