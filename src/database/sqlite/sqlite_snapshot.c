@@ -21,23 +21,35 @@ const char *database_snapshot_tier_config[] = {
     "CREATE TABLE IF NOT EXISTS metric_file_retention(metric_id INTEGER, fileno INTEGER, " \
         "first_time INTEGER, last_time INTEGER, update_every INTEGER, PRIMARY KEY (fileno, metric_id)) WITHOUT ROWID",
 
+    "CREATE VIEW IF NOT EXISTS v_metric_file_retention AS " \
+    "SELECT metric_id,fileno,first_time,last_time,update_every FROM metric_file_retention",
+
     "CREATE TABLE IF NOT EXISTS metric_file_info(fileno INTEGER PRIMARY KEY, " \
             "metric_count INTEGER, first_time INTEGER, last_time, file_size INTEGER) WITHOUT ROWID",
 
-    "CREATE TABLE IF NOT EXISTS metric_retention (metric_id INTEGER PRIMARY KEY, first_time INTEGER, " \
+    "CREATE TABLE IF NOT EXISTS metric_retention (metric_id INTEGER PRIMARY KEY, first_fileno INTEGER, last_fileno INTEGER, first_time INTEGER, " \
         "last_time INTEGER, update_every INTEGER)",
 
-    "CREATE TRIGGER IF NOT EXISTS mfr_1 AFTER INSERT ON metric_file_retention BEGIN UPDATE metric_retention " \
-        "SET first_time = MIN(first_time, new.first_time), last_time = MAX(last_time, new.last_time), " \
-        "update_every = new.update_every WHERE metric_id = new.metric_id ; END ",
+    "CREATE TRIGGER IF NOT EXISTS mfr_1 AFTER INSERT ON metric_file_retention BEGIN INSERT INTO metric_retention " \
+        "(metric_id, first_fileno, last_fileno, first_time, last_time, update_every) values " \
+        "(new.metric_id, new.fileno, new.fileno, new.first_time, new.last_time, new.update_every) ON CONFLICT DO "\
+        " UPDATE SET first_time = MIN(first_time, new.first_time), last_time = MAX(last_time, new.last_time), " \
+        " first_fileno = MIN(first_fileno, new.fileno), last_fileno = MAX(last_fileno, new.fileno), " \
+        " update_every = new.update_every; END ",
 
-    "CREATE TRIGGER IF NOT EXISTS mfr_0 BEFORE INSERT ON metric_file_retention " \
-        "BEGIN INSERT OR IGNORE INTO metric_retention (metric_id, first_time, last_time, update_every) " \
-        "VALUES (new.metric_id, new.first_time, new.last_time, new.update_every); END",
+    "CREATE TRIGGER IF NOT EXISTS tr_v_mfr_1 INSTEAD OF INSERT ON v_metric_file_retention " \
+        "BEGIN " \
+        "INSERT INTO metric_retention (metric_id, first_fileno, last_fileno, first_time, last_time, update_every) "
+        "VALUES (new.metric_id, new.fileno, new.fileno, new.first_time, new.last_time, new.update_every) " \
+        "ON CONFLICT (metric_id) DO UPDATE SET first_time = MIN(first_time, excluded.first_time), " \
+        "last_time = MAX(last_time, excluded.last_time), first_fileno = MIN(first_fileno, excluded.first_fileno), " \
+        "last_fileno = MAX(last_fileno, excluded.last_fileno),  update_every = excluded.update_every; " \
+        "END;",
 
     "PRAGMA synchronous=0;",
     "PRAGMA journal_mode=OFF;",
     "PRAGMA temp_store=MEMORY;",
+	"PRAGMA read_uncommitted=0;",
 
     NULL
 };
@@ -197,7 +209,13 @@ int sql_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid
     return metric_id;
 }
 
+/*
 #define SQL_ADD_METRIC_TIER_FILE_RETENTION "INSERT OR REPLACE INTO metric_file_retention " \
+        " (metric_id, fileno, first_time, last_time, update_every) VALUES " \
+        " (@metric_id, @fileno, @first_time, @last_time, @update_every) "
+*/
+
+#define SQL_ADD_METRIC_TIER_FILE_RETENTION "INSERT INTO v_metric_file_retention " \
         " (metric_id, fileno, first_time, last_time, update_every) VALUES " \
         " (@metric_id, @fileno, @first_time, @last_time, @update_every) "
 
@@ -396,7 +414,10 @@ void sql_snapshot_begin_transaction(sqlite3 *database, SPINLOCK *spinlock __mayb
 
 void sql_snapshot_commit_or_rollaback_transaction(sqlite3 *database, SPINLOCK *spinlock __maybe_unused, bool commit)
 {
-    db_execute(database,"COMMIT TRANSACTION");
+    if (commit)
+        db_execute(database,"COMMIT TRANSACTION");
+    else
+        db_execute(database,"ROLLBACK TRANSACTION");
     spinlock_unlock(spinlock);
 }
 
