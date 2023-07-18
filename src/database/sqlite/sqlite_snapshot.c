@@ -34,7 +34,7 @@ const char *database_snapshot_tier_config[] = {
         "(metric_id, first_fileno, last_fileno, first_time, last_time, update_every) values " \
         "(new.metric_id, new.fileno, new.fileno, new.first_time, new.last_time, new.update_every) ON CONFLICT DO "\
         " UPDATE SET first_time = MIN(first_time, new.first_time), last_time = MAX(last_time, new.last_time), " \
-        " first_fileno = MIN(first_fileno, new.fileno), last_fileno = MAX(last_fileno, new.fileno), " \
+        " first_fileno = MAX(MIN(first_fileno, new.fileno), (SELECT MIN(fileno) FROM metric_file_info)), last_fileno = MAX(last_fileno, new.fileno), " \
         " update_every = new.update_every; END ",
 
     "CREATE TRIGGER IF NOT EXISTS tr_v_mfr_1 INSTEAD OF INSERT ON v_metric_file_retention " \
@@ -42,7 +42,7 @@ const char *database_snapshot_tier_config[] = {
         "INSERT INTO metric_retention (metric_id, first_fileno, last_fileno, first_time, last_time, update_every) "
         "VALUES (new.metric_id, new.fileno, new.fileno, new.first_time, new.last_time, new.update_every) " \
         "ON CONFLICT (metric_id) DO UPDATE SET first_time = MIN(first_time, excluded.first_time), " \
-        "last_time = MAX(last_time, excluded.last_time), first_fileno = MIN(first_fileno, excluded.first_fileno), " \
+        "last_time = MAX(last_time, excluded.last_time), first_fileno = MAX(MIN(first_fileno, excluded.first_fileno), (SELECT MIN(fileno) FROM metric_file_info)), " \
         "last_fileno = MAX(last_fileno, excluded.last_fileno),  update_every = excluded.update_every; " \
         "END;",
 
