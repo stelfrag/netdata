@@ -1082,7 +1082,7 @@ void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
 
     sql_snapshot_begin_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
 
-    int rc = sql_snapshot_reset_fileno(ctx->config.snapshot.database,  fileno);
+    int rc = sql_snapshot_reset_fileno(ctx->config.snapshot.database, fileno);
 
     if (likely(!rc)) {
         rc = sql_snapshot_store_file_info(
