@@ -369,6 +369,7 @@ typedef struct tier_config_prototype {
             sqlite3_stmt *lookup;
             sqlite3_stmt *store;
             sqlite3_stmt *check;
+            bool running;
         } snapshot;
     struct {
         uint32_t uses;

@@ -1570,6 +1570,7 @@ static void after_snapshot_create_replay(uv_work_t *req, int status)
    UNUSED(req);
    struct rrdengine_instance *ctx = req->data;
    netdata_log_info("DEBUG: snapshot retention for tier %d completed", ctx->config.tier);
+   ctx->config.snapshot.running = false;
    freez(req);
 }
 
@@ -2214,11 +2215,19 @@ static void metadata_event_loop(void *arg)
                 case METADATA_BUILD_SNAPSHOT:;
 
                     struct rrdengine_instance *ctx = (struct rrdengine_instance *) cmd.param[0];
+                    if (unlikely(ctx->config.snapshot.running))
+                        break;
+
+                    ctx->config.snapshot.running= true;
 
                     uv_work_t *metadata_build_snapshot = callocz(1, sizeof(uv_work_t));
                     metadata_build_snapshot->data = ctx;
-                    (void)uv_queue_work(
-                        loop, metadata_build_snapshot, snapshot_create_replay, after_snapshot_create_replay);
+
+                    if (unlikely(uv_queue_work(
+                            loop, metadata_build_snapshot, snapshot_create_replay, after_snapshot_create_replay))) {
+                        ctx->config.snapshot.running = false;
+                        freez(metadata_build_snapshot);
+                    }
                     break;
                 case METADATA_UNITTEST:;
                     struct thread_unittest *tu = (struct thread_unittest *) cmd.param[0];
