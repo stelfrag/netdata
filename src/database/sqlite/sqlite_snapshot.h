@@ -30,5 +30,6 @@ sqlite3_stmt *snapshot_prepare_check(sqlite3 *database);
 int sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, time_t first_time_t, time_t last_time_t, size_t file_size);
 int sql_snapshot_reset_fileno(sqlite3 *database, int fileno);
 void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx, sqlite3 *database);
-
+void snapshot_init(struct rrdengine_instance *ctx);
+bool check_metric_count_judy(struct rrdengine_instance *ctx, int fileno, int entries, int file_size);
 #endif //NETDATA_SQLITE_SNAPSHOT_H

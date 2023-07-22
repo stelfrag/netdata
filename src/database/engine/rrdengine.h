@@ -370,6 +370,14 @@ typedef struct tier_config_prototype {
             sqlite3_stmt *store;
             sqlite3_stmt *check;
             bool running;
+            Pvoid_t JudyL;
+            struct {
+                int fileno;
+                int metric_count;
+                time_t first_time_s;
+                time_t last_time_s;
+                int file_size;
+            } *metric_file_info;
         } snapshot;
     struct {
         uint32_t uses;
