@@ -483,7 +483,6 @@ void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx, sqlite3 *databas
 
     usec_t started_ut = now_monotonic_usec();
 
-
     time_t now_s = max_acceptable_collected_time();
 
     size_t count = 0;
@@ -502,4 +501,72 @@ void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx, sqlite3 *databas
     netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms",
         ctx->config.tier, count, (double)(ended_ut - started_ut) / USEC_PER_MS);
 
+}
+
+static int return_int_cb(void *data, int argc, char **argv, char **column)
+{
+    int *status = data;
+    UNUSED(argc);
+    UNUSED(column);
+    *status = str2uint32_t(argv[0], NULL);
+    return 0;
+}
+
+void snapshot_init(struct rrdengine_instance *ctx)
+{
+    char *err_msg = NULL;
+    char sql[128];
+    int row_count;
+
+    snprintf(sql, 127, "SELECT COUNT(1) FROM metric_file_info");
+    int rc = sqlite3_exec_monitored(ctx->config.snapshot.database, sql, return_int_cb, (void *) &row_count, &err_msg);
+    if (rc != SQLITE_OK) {
+        netdata_log_info("Error checking table existence; %s", err_msg);
+        sqlite3_free(err_msg);
+    }
+
+    ctx->config.snapshot.metric_file_info = NULL;
+
+
+    sqlite3_stmt *res;
+
+    rc = sqlite3_prepare_v2(ctx->config.snapshot.database, "SELECT fileno,metric_count,first_time,last_time,file_size FROM metric_file_info", -1, &res, 0);
+    if (rc != SQLITE_OK)
+        return;
+
+    ctx->config.snapshot.metric_file_info = callocz(row_count, sizeof(*ctx->config.snapshot.metric_file_info));
+    netdata_log_info("SNAPSHOT: metric_file_info has %d entries", row_count);
+
+    Word_t count = 0;
+    while (sqlite3_step_monitored(res) == SQLITE_ROW) {
+        Word_t fileno = (Word_t) sqlite3_column_int(res, 0);
+        ctx->config.snapshot.metric_file_info[count].metric_count = (int) sqlite3_column_int(res, 1);
+        ctx->config.snapshot.metric_file_info[count].first_time_s = (time_t) sqlite3_column_int64(res, 2);
+        ctx->config.snapshot.metric_file_info[count].last_time_s = (time_t) sqlite3_column_int64(res, 3);
+        ctx->config.snapshot.metric_file_info[count].file_size = sqlite3_column_int(res, 4);
+        Pvoid_t *PValue = JudyLIns(&ctx->config.snapshot.JudyL, fileno, PJE0);
+        if (PValue)
+            *((Word_t *)PValue) = count;
+        count++;
+    }
+
+    rc = sqlite3_finalize(res);
+    if (rc != SQLITE_OK)
+        error_report("Failed to finalize");
+}
+
+bool check_metric_count_judy(struct rrdengine_instance *ctx,
+                             int fileno, int entries, int file_size)
+{
+
+    Pvoid_t *PValue = JudyLGet(ctx->config.snapshot.JudyL, (Word_t) fileno, PJE0);
+    if (!PValue)
+        return false;
+
+    Word_t idx = *((Word_t *)PValue);
+
+    int metric_count = ctx->config.snapshot.metric_file_info[idx].metric_count;
+    int stored_file_size = ctx->config.snapshot.metric_file_info[idx].file_size;
+
+    return ((!entries || metric_count == entries) && stored_file_size == file_size);
 }

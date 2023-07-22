@@ -1170,6 +1170,8 @@ int rrdeng_init(struct rrdengine_instance **ctxp, const char *dbfiles_path,
     ctx->config.snapshot.check = snapshot_prepare_check(ctx->config.snapshot.database);             // per tier metric_file_retention (check)
     ctx->config.snapshot.spinlock.locked = false;
     ctx->config.snapshot.running = false;
+    ctx->config.snapshot.JudyL = (Pvoid_t) NULL;
+    snapshot_init(ctx);
 
     rw_spinlock_init(&ctx->njfv2idx.spinlock);
     ctx->atomic.first_time_s = LONG_MAX;

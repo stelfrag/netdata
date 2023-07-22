@@ -889,7 +889,7 @@ static int journalfile_check_v2_metric_list(void *data_start, size_t file_size)
 //   2 Force rebuild
 //   3 skip
 
-static int journalfile_v2_validate(void *data_start, size_t journal_v2_file_size, size_t journal_v1_file_size)
+static int journalfile_v2_validate(void *data_start, size_t journal_v2_file_size, size_t journal_v1_file_size, bool skip_file_crc)
 {
     int rc;
     uLong crc;
@@ -1014,15 +1014,18 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     time_t global_first_time_s = header_start_time_s;
     time_t now_s = max_acceptable_collected_time();
 
-    bool file_in_snapshot = sql_check_metric_count(
-        ctx->config.snapshot.check,
-        (int)journalfile->datafile->fileno,
-        (int)entries,
-        (int)j2_header->journal_v2_file_size);
+//    bool file_in_snapshot = sql_check_metric_count(
+//        ctx->config.snapshot.check,
+//        (int)journalfile->datafile->fileno,
+//        (int)entries,
+//        (int)j2_header->journal_v2_file_size);
+
+    bool file_in_snapshot = check_metric_count_judy(
+        ctx, (int)journalfile->datafile->fileno, (int)entries, (int)j2_header->journal_v2_file_size);
 
     if (file_in_snapshot) {
         journalfile->datafile->populate_snapshot.populated = true;
-        netdata_log_info("TIER %d, File %d found in snapshot with %d entries", ctx->config.tier, (int) journalfile->datafile->fileno, (int) entries);
+        netdata_log_info("TIER %d, File %d found in snapshot with %d entries (Judy)", ctx->config.tier, (int) journalfile->datafile->fileno, (int) entries);
     }
     else {
         journalfile->datafile->populate_snapshot.populated = false;
@@ -1074,36 +1077,37 @@ void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
 
     sql_snapshot_begin_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
 
-    int rc = sql_snapshot_reset_fileno(ctx->config.snapshot.database, fileno);
+    //int rc = sql_snapshot_reset_fileno(ctx->config.snapshot.database, fileno);
+
+    int rc;
+//    if (likely(!rc)) {
+    rc = sql_snapshot_store_file_info(
+        ctx->config.snapshot.database,
+        fileno,
+        (int)entries,
+        header_start_time_s,
+        header_end_time_s,
+        j2_header->journal_v2_file_size);
 
     if (likely(!rc)) {
-        rc = sql_snapshot_store_file_info(
-            ctx->config.snapshot.database,
-            fileno,
-            (int)entries,
-            header_start_time_s,
-            header_end_time_s,
-            j2_header->journal_v2_file_size);
-
-        if (likely(!rc)) {
-            for (size_t i = 0; i < entries && !rc; i++) {
-                time_t start_time_s = header_start_time_s + metric->delta_start_s;
-                time_t end_time_s = header_start_time_s + metric->delta_end_s;
-                rc = sql_add_metric_uuid_retention(
-                    ctx->config.snapshot.lookup,
-                    ctx->config.snapshot.store,
-                    ctx->config.snapshot.res,
-                    &metric->uuid,
-                    fileno,
-                    start_time_s,
-                    end_time_s,
-                    (int)metric->update_every_s);
-                metric++;
-            }
+        for (size_t i = 0; i < entries && !rc; i++) {
+            time_t start_time_s = header_start_time_s + metric->delta_start_s;
+            time_t end_time_s = header_start_time_s + metric->delta_end_s;
+            rc = sql_add_metric_uuid_retention(
+                ctx->config.snapshot.lookup,
+                ctx->config.snapshot.store,
+                ctx->config.snapshot.res,
+                &metric->uuid,
+                fileno,
+                start_time_s,
+                end_time_s,
+                (int)metric->update_every_s);
+            metric++;
         }
     }
+//    }
 
-    sql_snapshot_commit_or_rollaback_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock, (rc == 0));
+    sql_snapshot_commit_or_rollaback_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock, true);
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
@@ -1164,8 +1168,11 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     nd_log_daemon(NDLP_DEBUG, "DBENGINE: checking integrity of '%s'", path_v2);
 
+    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size);
+
+    netdata_log_info("DBENGINE: checking integrity of '%s' (FILE CRC CHECK \"%s\")", path_v2, file_ok ? "SKIP" : "YES");
     usec_t validation_start_ut = now_monotonic_usec();
-    int rc = journalfile_v2_validate(data_start, journal_v2_file_size, journal_v1_file_size);
+    int rc = journalfile_v2_validate(data_start, journal_v2_file_size, journal_v1_file_size, file_ok);
     if (unlikely(rc)) {
         if (rc == 2)
             error_report("File %s needs to be rebuilt", path_v2);
@@ -1205,7 +1212,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     // Initialize the journal file to be able to access the data
 
-    if (!db_engine_journal_check)
+    if (!db_engine_journal_check && false == file_ok)
         journalfile->v2.flags |= JOURNALFILE_FLAG_METRIC_CRC_CHECK;
     journalfile_v2_data_set(journalfile, fd, data_start, journal_v2_file_size);
 
