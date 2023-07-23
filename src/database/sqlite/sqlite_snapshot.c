@@ -570,8 +570,8 @@ bool check_metric_count_judy(struct rrdengine_instance *ctx,
     *j2_header = callocz(1, sizeof(**j2_header));
     (*j2_header)->metric_count =  (uint32_t) metric_count;
     (*j2_header)->journal_v2_file_size =  (uint32_t) stored_file_size;
-    (*j2_header)->start_time_ut =  ctx->config.snapshot.metric_file_info[idx].first_time_s * USEC_PER_SEC;
-    (*j2_header)->end_time_ut =  ctx->config.snapshot.metric_file_info[idx].last_time_s * USEC_PER_SEC;
+    (*j2_header)->start_time_ut =  (usec_t) ctx->config.snapshot.metric_file_info[idx].first_time_s * USEC_PER_SEC;
+    (*j2_header)->end_time_ut =  (usec_t) ctx->config.snapshot.metric_file_info[idx].last_time_s * USEC_PER_SEC;
     (*j2_header)->magic = 0x01;
 
     return ((!entries || metric_count == entries) && stored_file_size == file_size);
