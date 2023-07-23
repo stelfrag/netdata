@@ -6,6 +6,8 @@
 #include "daemon/common.h"
 #include "sqlite3.h"
 
+struct journal_v2_header;
+
 int sql_init_snapshot_database(int memory);
 void sql_close_snapshot_database(void);
 
@@ -31,5 +33,5 @@ int sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, ti
 int sql_snapshot_reset_fileno(sqlite3 *database, int fileno);
 void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx, sqlite3 *database);
 void snapshot_init(struct rrdengine_instance *ctx);
-bool check_metric_count_judy(struct rrdengine_instance *ctx, int fileno, int entries, int file_size);
+bool check_metric_count_judy(struct rrdengine_instance *ctx, int fileno, int entries, int file_size, struct journal_v2_header **j2_header);
 #endif //NETDATA_SQLITE_SNAPSHOT_H
