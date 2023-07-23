@@ -1180,7 +1180,7 @@ int rrdeng_init(struct rrdengine_instance **ctxp, const char *dbfiles_path,
 
     if (rrdeng_dbengine_spawn(ctx) && !init_rrd_files(ctx)) {
         // success - we run this ctx too
-        sql_replay_snapshot_to_mrg(ctx, ctx->config.snapshot.database);
+        sql_replay_snapshot_to_mrg(ctx);
         rrdeng_populate_mrg(ctx);
         return 0;
     }
