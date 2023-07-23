@@ -1125,9 +1125,9 @@ void rrdeng_readiness_wait(struct rrdengine_instance *ctx) {
     ctx->loading.populate_mrg.array = NULL;
     ctx->loading.populate_mrg.size = 0;
 
-    netdata_log_info("DBENGINE: tier %d now replaying snapshot ...", ctx->config.tier);
-    sql_replay_snapshot_to_mrg(ctx, ctx->config.snapshot.database);
-    netdata_log_info("DBENGINE: tier %d is ready for data collection and queries", ctx->config.tier);
+//    netdata_log_info("DBENGINE: tier %d now replaying snapshot ...", ctx->config.tier);
+//    sql_replay_snapshot_to_mrg(ctx, ctx->config.snapshot.database);
+//    netdata_log_info("DBENGINE: tier %d is ready for data collection and queries", ctx->config.tier);
 }
 
 void rrdeng_exit_mode(struct rrdengine_instance *ctx) {
@@ -1200,6 +1200,7 @@ int rrdeng_init(
 
     if (rrdeng_dbengine_spawn(ctx) && !init_rrd_files(ctx)) {
         // success - we run this ctx too
+        sql_replay_snapshot_to_mrg(ctx, ctx->config.snapshot.database);
         rrdeng_populate_mrg(ctx);
         return 0;
     }

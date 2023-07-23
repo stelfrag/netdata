@@ -402,7 +402,13 @@ size_t journalfile_v2_data_size_get(struct rrdengine_journalfile *journalfile) {
     return data_size;
 }
 
-void journalfile_v2_data_set(struct rrdengine_journalfile *journalfile, int fd, void *journal_data, uint32_t journal_data_size) {
+void journalfile_v2_data_set(
+    struct rrdengine_journalfile *journalfile,
+    int fd,
+    void *journal_data,
+    struct journal_v2_header *j2_header_only,
+    uint32_t journal_data_size, bool file_in_snapshot)
+{
     spinlock_lock(&journalfile->mmap.spinlock);
     spinlock_lock(&journalfile->v2.spinlock);
 
@@ -415,8 +421,9 @@ void journalfile_v2_data_set(struct rrdengine_journalfile *journalfile, int fd, 
     journalfile->mmap.size = journal_data_size;
     journalfile->v2.not_needed_since_s = now_monotonic_sec();
     journalfile->v2.flags |= JOURNALFILE_FLAG_IS_AVAILABLE | JOURNALFILE_FLAG_IS_MOUNTED;
+    journalfile->datafile->populate_snapshot.populated = file_in_snapshot;
 
-    struct journal_v2_header *j2_header = journalfile->mmap.data;
+    struct journal_v2_header *j2_header = j2_header_only ? j2_header_only : journalfile->mmap.data;
     journalfile->v2.first_time_s = (time_t)(j2_header->start_time_ut / USEC_PER_SEC);
     journalfile->v2.last_time_s = (time_t)(j2_header->end_time_ut / USEC_PER_SEC);
     journalfile->v2.size_of_directory = j2_header->metric_offset + j2_header->metric_count * sizeof(struct journal_metric_list);
@@ -893,6 +900,101 @@ static int journalfile_check_v2_metric_list(void *data_start, size_t file_size)
     return 0;
 }
 
+bool j2_validate_extent_crc(uv_file file, struct journal_v2_header *j2_header)
+{
+    int ret;
+    uv_buf_t iov;
+    uv_fs_t req;
+    struct journal_extent_list *j2_extent_list;
+    struct journal_v2_block_trailer *journal_v2_trailer;
+
+    size_t extent_list_size = j2_header->extent_trailer_offset - j2_header->extent_offset;
+
+    ret = posix_memalign((void *)&j2_extent_list, RRDFILE_ALIGNMENT, extent_list_size + sizeof(struct journal_v2_block_trailer));
+    if (unlikely(ret))
+        fatal("DBENGINE: posix_memalign:%s", strerror(ret));
+
+    iov = uv_buf_init((void *)j2_extent_list, extent_list_size + sizeof(struct journal_v2_block_trailer));
+
+    ret = uv_fs_read(NULL, &req, file, &iov, 1, j2_header->extent_offset, NULL);
+    if (ret < 0) {
+        netdata_log_error("DBENGINE: uv_fs_read: %s", uv_strerror(ret));
+        uv_fs_req_cleanup(&req);
+        ret = 1;
+        goto error;
+    }
+    //    fatal_assert(req.result >= 0);
+    uv_fs_req_cleanup(&req);
+
+    uLong crc;
+
+    ret = 0;
+    journal_v2_trailer = (struct journal_v2_block_trailer *) ((uint8_t *) j2_extent_list + extent_list_size);
+    crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, (uint8_t *) j2_extent_list, j2_header->extent_count * sizeof(struct journal_extent_list));
+    if (unlikely(crc32cmp(journal_v2_trailer->checksum, crc))) {
+        netdata_log_error("DBENGINE: extent list CRC32 check: FAILED");
+        ret = 1;
+    }
+error:
+    posix_memfree(j2_extent_list);
+    return ret;
+}
+
+static struct journal_v2_header *journalfile_v2_check_header(uv_file file, size_t journal_v2_file_size, size_t journal_v1_file_size, int *rc)
+{
+    int ret;
+    struct journal_v2_header *j2_header = NULL;
+    uv_buf_t iov;
+    uv_fs_t req;
+
+    ret = posix_memalign((void *)&j2_header, RRDFILE_ALIGNMENT, sizeof(*j2_header));
+    if (unlikely(ret))
+        fatal("DBENGINE: posix_memalign:%s", strerror(ret));
+
+    iov = uv_buf_init((void *)j2_header, sizeof(*j2_header));
+
+    ret = uv_fs_read(NULL, &req, file, &iov, 1, 0, NULL);
+    if (ret < 0) {
+        netdata_log_error("DBENGINE: uv_fs_read: %s", uv_strerror(ret));
+        uv_fs_req_cleanup(&req);
+        ret = 1;
+        goto error;
+    }
+    //    fatal_assert(req.result >= 0);
+    uv_fs_req_cleanup(&req);
+
+    if (ret == sizeof(*j2_header))
+        ret = 0;
+
+    if (j2_header->magic != JOURVAL_V2_MAGIC ||
+        j2_header->journal_v2_file_size != journal_v2_file_size ||
+        (journal_v1_file_size && j2_header->journal_v1_file_size != journal_v1_file_size))
+        ret = 1;
+    else if (j2_header->magic == JOURVAL_V2_REBUILD_MAGIC)
+        ret = 2;
+    else if (j2_header->magic == JOURVAL_V2_SKIP_MAGIC)
+        ret = 3;
+
+    //    info("DEBUG: magic                 %u" , j2_header->magic);
+    //    info("DEBUG: start_time_ut         %llu" , j2_header->start_time_ut);
+    //    info("DEBUG: end_time_ut           %llu" , j2_header->end_time_ut);
+    //    info("DEBUG: extent_count          %u" , j2_header->extent_count);
+    //    info("DEBUG: extent_offset         %u" , j2_header->extent_offset);
+    //    info("DEBUG: metric_count          %u" , j2_header->metric_count);
+    //    info("DEBUG: metric_offset         %u" , j2_header->metric_offset);
+    //    info("DEBUG: page_count            %u" , j2_header->page_count);
+    //    info("DEBUG: page_offset           %u" , j2_header->page_offset);
+    //    info("DEBUG: extent_trailer_offset %u" , j2_header->extent_trailer_offset);
+    //    info("DEBUG: metric_trailer_offset %u" , j2_header->metric_trailer_offset);
+    //    info("DEBUG: journal_v1_file_size  %u" , j2_header->journal_v1_file_size);
+    //    info("DEBUG: journal_v2_file_size  %u" , j2_header->journal_v2_file_size);
+
+error:
+    *rc = ret;
+    return j2_header;
+}
+
 //
 // Return
 //   0 Ok
@@ -900,107 +1002,126 @@ static int journalfile_check_v2_metric_list(void *data_start, size_t file_size)
 //   2 Force rebuild
 //   3 skip
 
-static int journalfile_v2_validate(void *data_start, size_t journal_v2_file_size, size_t journal_v1_file_size, bool skip_file_crc)
+static struct journal_v2_header *journalfile_v2_validate(uv_file file, size_t journal_v2_file_size, size_t journal_v1_file_size, int *ret, bool file_ok)
 {
     int rc;
-    uLong crc;
+    struct journal_v2_header *j2_header;
 
-    struct journal_v2_header *j2_header = (void *) data_start;
-    struct journal_v2_block_trailer *journal_v2_trailer;
+    *ret = 0;
+    j2_header = journalfile_v2_check_header(file, journal_v2_file_size, journal_v1_file_size, &rc);
 
-    if (j2_header->magic == JOURVAL_V2_REBUILD_MAGIC)
-        return 2;
-
-    if (j2_header->magic == JOURVAL_V2_SKIP_MAGIC)
-        return 3;
-
-    // Magic failure
-    if (j2_header->magic != JOURVAL_V2_MAGIC)
-        return 1;
-
-    if (j2_header->journal_v2_file_size != journal_v2_file_size)
-        return 1;
-
-    if (journal_v1_file_size && j2_header->journal_v1_file_size != journal_v1_file_size)
-        return 1;
-
-    journal_v2_trailer = (struct journal_v2_block_trailer *) ((uint8_t *) data_start + journal_v2_file_size - sizeof(*journal_v2_trailer));
-
-    crc = crc32(0L, Z_NULL, 0);
-    crc = crc32(crc, (void *) j2_header, sizeof(*j2_header));
-
-    rc = crc32cmp(journal_v2_trailer->checksum, crc);
-    if (unlikely(rc)) {
-        netdata_log_error("DBENGINE: file CRC32 check: FAILED");
-        return 1;
+    if (false == file_ok) {
+        rc = j2_validate_extent_crc(file, j2_header);
+        if (rc) {
+            *ret = 1;
+            return j2_header;
+        }
     }
 
     if (!db_engine_journal_check)
-        return 0;
+        return j2_header;
 
-    rc = journalfile_check_v2_extent_list(data_start, journal_v2_file_size);
-    if (rc) return 1;
-
-    //if (!db_engine_journal_check)
+    // TODO: Check metric list here as well
+    return j2_header;
+    //    else
+    //        j2_header = (void *) data_start;
+    //
+    //    struct journal_v2_block_trailer *journal_v2_trailer;
+    //
+    //    if (j2_header->magic == JOURVAL_V2_REBUILD_MAGIC)
+    //        return 2;
+    //
+    //    if (j2_header->magic == JOURVAL_V2_SKIP_MAGIC)
+    //        return 3;
+    //
+    //    // Magic failure
+    //    if (j2_header->magic != JOURVAL_V2_MAGIC)
+    //        return 1;
+    //
+    //    if (j2_header->journal_v2_file_size != journal_v2_file_size)
+    //        return 1;
+    //
+    //    if (journal_v1_file_size && j2_header->journal_v1_file_size != journal_v1_file_size)
+    //        return 1;
+    //
+    //    journal_v2_trailer = (struct journal_v2_block_trailer *) ((uint8_t *) data_start + journal_v2_file_size - sizeof(*journal_v2_trailer));
+    //
+    //    crc = crc32(0L, Z_NULL, 0);
+    //    crc = crc32(crc, (void *) j2_header, sizeof(*j2_header));
+    //
+    //    rc = crc32cmp(journal_v2_trailer->checksum, crc);
+    //    if (unlikely(rc)) {
+    //        error("DBENGINE: file CRC32 check: FAILED");
+    //        return 1;
+    //    }
+    //
+    //    rc = journalfile_check_v2_extent_list(data_start, journal_v2_file_size);
+    //    if (rc) return 1;
+    //
+    //    if (!db_engine_journal_check)
+    //        return 0;
+    //
+    //    rc = journalfile_check_v2_metric_list(data_start, journal_v2_file_size);
+    //    if (rc) return 1;
+    //
+    //    // Verify complete UUID chain
+    //
+    //    struct journal_metric_list *metric = (void *) (data_start + j2_header->metric_offset);
+    //
+    //    unsigned verified = 0;
+    //    unsigned entries;
+    //    unsigned total_pages = 0;
+    //
+    //    info("DBENGINE: checking %u metrics that exist in the journal", j2_header->metric_count);
+    //    for (entries = 0; entries < j2_header->metric_count; entries++) {
+    //
+    //        char uuid_str[UUID_STR_LEN];
+    //        uuid_unparse_lower(metric->uuid, uuid_str);
+    //        struct journal_page_header *metric_list_header = (void *) (data_start + metric->page_offset);
+    //        struct journal_page_header local_metric_list_header = *metric_list_header;
+    //
+    //        local_metric_list_header.crc = JOURVAL_V2_MAGIC;
+    //
+    //        crc = crc32(0L, Z_NULL, 0);
+    //        crc = crc32(crc, (void *) &local_metric_list_header, sizeof(local_metric_list_header));
+    //        rc = crc32cmp(metric_list_header->checksum, crc);
+    //
+    //        if (!rc) {
+    //            struct journal_v2_block_trailer *journal_trailer =
+    //                (void *) data_start + metric->page_offset + sizeof(struct journal_page_header) + (metric_list_header->entries * sizeof(struct journal_page_list));
+    //
+    //            crc = crc32(0L, Z_NULL, 0);
+    //            crc = crc32(crc, (uint8_t *) metric_list_header + sizeof(struct journal_page_header), metric_list_header->entries * sizeof(struct journal_page_list));
+    //            rc = crc32cmp(journal_trailer->checksum, crc);
+    //            internal_error(rc, "DBENGINE: index %u : %s entries %u at offset %u verified, DATA CRC computed %lu, stored %u", entries, uuid_str, metric->entries, metric->page_offset,
+    //                           crc, metric_list_header->crc);
+    //            if (!rc) {
+    //                total_pages += metric_list_header->entries;
+    //                verified++;
+    //            }
+    //        }
+    //
+    //        metric++;
+    //        if ((uint32_t)((uint8_t *) metric - (uint8_t *) data_start) > (uint32_t) journal_v2_file_size) {
+    //            info("DBENGINE: verification failed EOF reached -- total entries %u, verified %u", entries, verified);
+    //            return 1;
+    //        }
+    //    }
+    //
+    //    if (entries != verified) {
+    //        info("DBENGINE: verification failed -- total entries %u, verified %u", entries, verified);
+    //        return 1;
+    //    }
+    //    info("DBENGINE: verification succeeded -- total entries %u, verified %u (%u total pages)", entries, verified, total_pages);
+    //
     //    return 0;
-
-    rc = journalfile_check_v2_metric_list(data_start, journal_v2_file_size);
-    if (rc) return 1;
-
-    // Verify complete UUID chain
-
-    struct journal_metric_list *metric = (void *) (data_start + j2_header->metric_offset);
-
-    unsigned verified = 0;
-    unsigned entries;
-    unsigned total_pages = 0;
-
-    netdata_log_info("DBENGINE: checking %u metrics that exist in the journal", j2_header->metric_count);
-    for (entries = 0; entries < j2_header->metric_count; entries++) {
-
-        char uuid_str[UUID_STR_LEN];
-        uuid_unparse_lower(metric->uuid, uuid_str);
-        struct journal_page_header *metric_list_header = (void *) (data_start + metric->page_offset);
-        struct journal_page_header local_metric_list_header = *metric_list_header;
-
-        local_metric_list_header.crc = JOURVAL_V2_MAGIC;
-
-        crc = crc32(0L, Z_NULL, 0);
-        crc = crc32(crc, (void *) &local_metric_list_header, sizeof(local_metric_list_header));
-        rc = crc32cmp(metric_list_header->checksum, crc);
-
-        if (!rc) {
-            struct journal_v2_block_trailer *journal_trailer =
-                (void *) data_start + metric->page_offset + sizeof(struct journal_page_header) + (metric_list_header->entries * sizeof(struct journal_page_list));
-
-            crc = crc32(0L, Z_NULL, 0);
-            crc = crc32(crc, (uint8_t *) metric_list_header + sizeof(struct journal_page_header), metric_list_header->entries * sizeof(struct journal_page_list));
-            rc = crc32cmp(journal_trailer->checksum, crc);
-            internal_error(rc, "DBENGINE: index %u : %s entries %u at offset %u verified, DATA CRC computed %lu, stored %u", entries, uuid_str, metric->entries, metric->page_offset,
-                           crc, metric_list_header->crc);
-            if (!rc) {
-                total_pages += metric_list_header->entries;
-                verified++;
-            }
-        }
-
-        metric++;
-        if ((uint32_t)((uint8_t *) metric - (uint8_t *) data_start) > (uint32_t) journal_v2_file_size) {
-            netdata_log_info("DBENGINE: verification failed EOF reached -- total entries %u, verified %u", entries, verified);
-            return 1;
-        }
-    }
-
-    if (entries != verified) {
-        netdata_log_info("DBENGINE: verification failed -- total entries %u, verified %u", entries, verified);
-        return 1;
-    }
-    netdata_log_info("DBENGINE: verification succeeded -- total entries %u, verified %u (%u total pages)", entries, verified, total_pages);
-
-    return 0;
 }
 
 void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile) {
+
+    if (journalfile->datafile->populate_snapshot.populated)
+        return;
+
     usec_t started_ut = now_monotonic_usec();
 
     size_t data_size = 0;
@@ -1139,6 +1260,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     struct stat statbuf;
     size_t journal_v1_file_size = 0;
     size_t journal_v2_file_size;
+    uv_file file;
 
     journalfile_v1_generate_path(datafile, path_v1, sizeof(path_v1));
     ret = stat(path_v1, &statbuf);
@@ -1146,7 +1268,9 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         journal_v1_file_size = (uint32_t)statbuf.st_size;
 
     journalfile_v2_generate_path(datafile, path_v2, sizeof(path_v2));
-    fd = open(path_v2, O_RDONLY | O_CLOEXEC);
+    fd = open_file_for_io(path_v2, O_RDONLY, &file, use_direct_io);
+
+//    fd = open(path_v2, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         if (errno == ENOENT)
             return 1;
@@ -1170,20 +1294,45 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         return 1;
     }
 
+    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size);
+
     usec_t mmap_start_ut = now_monotonic_usec();
-    uint8_t *data_start = mmap(NULL, journal_v2_file_size, PROT_READ, MAP_SHARED, fd, 0);
-    if (data_start == MAP_FAILED) {
-        close(fd);
-        return 1;
-    }
 
     nd_log_daemon(NDLP_DEBUG, "DBENGINE: checking integrity of '%s'", path_v2);
 
     bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size);
+//    uint8_t *data_start = NULL;
+//    if (false == file_ok) {
+//        data_start = mmap(NULL, journal_v2_file_size, PROT_READ, MAP_SHARED, fd, 0);
+//        if (data_start == MAP_FAILED) {
+//            close(fd);
+//            return 1;
+//        }
+//    }
 
     netdata_log_info("DBENGINE: checking integrity of '%s' (FILE CRC CHECK \"%s\")", path_v2, file_ok ? "SKIP" : "YES");
     usec_t validation_start_ut = now_monotonic_usec();
-    int rc = journalfile_v2_validate(data_start, journal_v2_file_size, journal_v1_file_size, file_ok);
+
+//    if (false == file_ok) {
+//        int rc = journalfile_v2_validate(data_start, journal_v2_file_size, journal_v1_file_size, file_ok);
+//        if (unlikely(rc)) {
+//            if (rc == 2)
+//                error_report("File %s needs to be rebuilt", path_v2);
+//            else if (rc == 3)
+//                error_report("File %s will be skipped", path_v2);
+//            else
+//                error_report("File %s is invalid and it will be rebuilt", path_v2);
+//
+//            if (unlikely(munmap(data_start, journal_v2_file_size)))
+//                netdata_log_error("DBENGINE: failed to unmap '%s'", path_v2);
+//
+//            close(fd);
+//            return rc;
+//        }
+//    }
+    int rc;
+
+    struct journal_v2_header *j2_header = journalfile_v2_validate(file, journal_v2_file_size, journal_v1_file_size, &rc, file_ok);
     if (unlikely(rc)) {
         if (rc == 2)
             error_report("File %s needs to be rebuilt", path_v2);
@@ -1192,19 +1341,23 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         else
             error_report("File %s is invalid and it will be rebuilt", path_v2);
 
-        if (unlikely(munmap(data_start, journal_v2_file_size)))
-            netdata_log_error("DBENGINE: failed to unmap '%s'", path_v2);
-
+        //        if (data_start) {
+        //            if (unlikely(munmap(data_start, journal_v2_file_size)))
+        //                error("DBENGINE: failed to unmap '%s'", path_v2);
+        //        }
+        posix_memfree(j2_header);
         close(fd);
         return rc;
     }
 
-    struct journal_v2_header *j2_header = (void *) data_start;
+//    struct journal_v2_header *j2_header = (void *) data_start;
     uint32_t entries = j2_header->metric_count;
 
     if (unlikely(!entries)) {
-        if (unlikely(munmap(data_start, journal_v2_file_size)))
-            netdata_log_error("DBENGINE: failed to unmap '%s'", path_v2);
+//        if (unlikely(munmap(data_start, journal_v2_file_size)))
+//            netdata_log_error("DBENGINE: failed to unmap '%s'", path_v2);
+
+        posix_memfree(j2_header);
 
         close(fd);
         return 1;
@@ -1225,7 +1378,9 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     if (!db_engine_journal_check && false == file_ok)
         journalfile->v2.flags |= JOURNALFILE_FLAG_METRIC_CRC_CHECK;
-    journalfile_v2_data_set(journalfile, fd, data_start, journal_v2_file_size);
+//    journalfile_v2_data_set(journalfile, fd, data_start, journal_v2_file_size);
+    journalfile_v2_data_set(journalfile, fd, NULL, j2_header, journal_v2_file_size, file_ok);
+
 
     ctx_current_disk_space_increase(ctx, journal_v2_file_size);
 
@@ -1562,7 +1717,8 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
         netdata_log_info("DBENGINE: migrated journal file '%s', file size %zu", path, total_file_size);
 
         // msync(data_start, total_file_size, MS_SYNC);
-        journalfile_v2_data_set(journalfile, fd_v2, data_start, total_file_size);
+//        journalfile_v2_data_set(journalfile, fd_v2, data_start, total_file_size);
+        journalfile_v2_data_set(journalfile, fd_v2, data_start, NULL, total_file_size, false);
 
         internal_error(true, "DBENGINE: ACTIVATING NEW INDEX JNL %llu", (now_monotonic_usec() - start_loading) / USEC_PER_MS);
         ctx_current_disk_space_increase(ctx, total_file_size);
