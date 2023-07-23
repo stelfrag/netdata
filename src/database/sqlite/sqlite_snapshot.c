@@ -473,11 +473,11 @@ sqlite3 *sql_create_tier_snapshot_database(int tier)
 #define SQL_REPLAY_SNAPSHOT "SELECT m.metric_uuid, mr.first_time, mr.last_time, mr.update_every " \
         "FROM metric_retention mr, mrg.metric m WHERE mr.metric_id = m.metric_id;"
 
-void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx, sqlite3 *database)
+void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx)
 {
     sqlite3_stmt *res;
 
-    int rc = sqlite3_prepare_v2(database, SQL_REPLAY_SNAPSHOT, -1, &res, 0);
+    int rc = sqlite3_prepare_v2( ctx->config.snapshot.database, SQL_REPLAY_SNAPSHOT, -1, &res, 0);
     if (rc != SQLITE_OK)
         return;
 
@@ -486,6 +486,7 @@ void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx, sqlite3 *databas
     time_t now_s = max_acceptable_collected_time();
 
     size_t count = 0;
+    time_t min_start_time_s = LONG_MAX;
     while (sqlite3_step_monitored(res) == SQLITE_ROW) {
         uuid_t *uuid = (uuid_t *)sqlite3_column_blob(res, 0);
         time_t start_time_s = (time_t)sqlite3_column_int64(res, 1);
@@ -495,11 +496,20 @@ void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx, sqlite3 *databas
         mrg_update_metric_retention_and_granularity_by_uuid(
             main_mrg, (Word_t)ctx, uuid, start_time_s, end_time_s, update_every_s, now_s);
         count++;
+
+        min_start_time_s = MIN(min_start_time_s, start_time_s);
     }
+
+    time_t old = __atomic_load_n(&ctx->atomic.first_time_s, __ATOMIC_RELAXED);;
+    do {
+        if(old <= min_start_time_s)
+            break;
+    } while(!__atomic_compare_exchange_n(&ctx->atomic.first_time_s, &old, min_start_time_s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+
     usec_t ended_ut = now_monotonic_usec();
 
-    netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms",
-        ctx->config.tier, count, (double)(ended_ut - started_ut) / USEC_PER_MS);
+    netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms (minimum start_time_s = %ld)",
+        ctx->config.tier, count, (double)(ended_ut - started_ut) / USEC_PER_MS, min_start_time_s);
 
 }
 
@@ -530,7 +540,7 @@ void snapshot_init(struct rrdengine_instance *ctx)
 
     sqlite3_stmt *res;
 
-    rc = sqlite3_prepare_v2(ctx->config.snapshot.database, "SELECT fileno,metric_count,first_time,last_time,file_size FROM metric_file_info", -1, &res, 0);
+    rc = sqlite3_prepare_v2(ctx->config.snapshot.database, "SELECT fileno,metric_count,first_time,last_time,file_size FROM metric_file_info ORDER BY fileno ASC", -1, &res, 0);
     if (rc != SQLITE_OK)
         return;
 
