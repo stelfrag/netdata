@@ -1254,11 +1254,6 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     size_t journal_v2_file_size;
     uv_file file;
 
-    journalfile_v1_generate_path(datafile, path_v1, sizeof(path_v1));
-    ret = stat(path_v1, &statbuf);
-    if (!ret)
-        journal_v1_file_size = (uint32_t)statbuf.st_size;
-
     journalfile_v2_generate_path(datafile, path_v2, sizeof(path_v2));
     fd = open_file_for_io(path_v2, O_RDONLY, &file, use_direct_io);
 
@@ -1303,7 +1298,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 //        }
 //    }
 
-    netdata_log_info("DBENGINE: checking integrity of '%s' (FILE CRC CHECK \"%s\")", path_v2, file_ok ? "SKIP" : "YES");
+    //netdata_log_info("DBENGINE: checking integrity of '%s' (FILE CRC CHECK \"%s\")", path_v2, file_ok ? "SKIP" : "YES");
     usec_t validation_start_ut = now_monotonic_usec();
 
 //    if (false == file_ok) {
@@ -1326,6 +1321,15 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     int rc;
 
     if (false == file_ok) {
+
+        journalfile_v1_generate_path(datafile, path_v1, sizeof(path_v1));
+        ret = stat(path_v1, &statbuf);
+        if (!ret)
+            journal_v1_file_size = (uint32_t)statbuf.st_size;
+
+        if (j2_header && j2_header->magic == 0x01)
+            freez(j2_header);
+
         j2_header = journalfile_v2_validate(file, journal_v2_file_size, journal_v1_file_size, &rc, file_ok);
         if (unlikely(rc)) {
             if (rc == 2)
@@ -1346,7 +1350,6 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     }
 
 //    struct journal_v2_header *j2_header = (void *) data_start;
-
     uint32_t entries = j2_header->metric_count;
 
     if (unlikely(!entries)) {
@@ -1365,12 +1368,13 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     usec_t finished_ut = now_monotonic_usec();
 
     nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 '%s' loaded, size: %0.2f MiB, metrics: %0.2f k, "
-         "mmap: %0.2f ms, validate: %0.2f ms"
+         "mmap: %0.2f ms, validate: %0.2f ms (fast load \"%s\")"
          , path_v2
          , (double)journal_v2_file_size / 1024 / 1024
          , (double)entries / 1000
          , ((double)(validation_start_ut - mmap_start_ut) / USEC_PER_MS)
-         , ((double)(finished_ut - validation_start_ut) / USEC_PER_MS)
+         , ((double)(finished_ut - validation_start_ut) / USEC_PER_MS),
+        file_ok ? "Yes" : "No"
          );
 
     // Initialize the journal file to be able to access the data
@@ -1379,7 +1383,6 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         journalfile->v2.flags |= JOURNALFILE_FLAG_METRIC_CRC_CHECK;
 //    journalfile_v2_data_set(journalfile, fd, data_start, journal_v2_file_size);
     journalfile_v2_data_set(journalfile, fd, NULL, j2_header, journal_v2_file_size, file_ok);
-
 
     ctx_current_disk_space_increase(ctx, journal_v2_file_size);
 
