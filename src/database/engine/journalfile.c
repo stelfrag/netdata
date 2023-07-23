@@ -224,7 +224,8 @@ static struct journal_v2_header *journalfile_v2_mounted_data_get(struct rrdengin
 
             if(flags & JOURNALFILE_FLAG_MOUNTED_FOR_RETENTION) {
                 // we need the entire metrics directory into memory to process it
-                madvise_willneed(journalfile->mmap.data, journalfile->v2.size_of_directory);
+                if (journalfile->v2.size_of_directory)
+                    madvise_willneed(journalfile->mmap.data, journalfile->v2.size_of_directory);
             }
             else {
                 // let the kernel know that we don't want read-ahead on this file
@@ -427,6 +428,9 @@ void journalfile_v2_data_set(
     journalfile->v2.first_time_s = (time_t)(j2_header->start_time_ut / USEC_PER_SEC);
     journalfile->v2.last_time_s = (time_t)(j2_header->end_time_ut / USEC_PER_SEC);
     journalfile->v2.size_of_directory = j2_header->metric_offset + j2_header->metric_count * sizeof(struct journal_metric_list);
+
+    if (j2_header->magic == 0x01)
+        freez(j2_header);
 
     journalfile_v2_mounted_data_unmount(journalfile, true, true);
 
@@ -1152,37 +1156,36 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
 //        (int)entries,
 //        (int)j2_header->journal_v2_file_size);
 
-    bool file_in_snapshot = check_metric_count_judy(
-        ctx, (int)journalfile->datafile->fileno, (int)entries, (int)j2_header->journal_v2_file_size);
+//    bool file_in_snapshot = check_metric_count_judy(
+//        ctx, (int)journalfile->datafile->fileno, (int)entries, (int)j2_header->journal_v2_file_size);
+//
+//    if (file_in_snapshot) {
+//       journalfile->datafile->populate_snapshot.populated = true;
+//        netdata_log_info("TIER %d, File %d found in snapshot with %d entries (Judy)", ctx->config.tier, (int) journalfile->datafile->fileno, (int) entries);
+//    }
+//    else {
+    journalfile->datafile->populate_snapshot.populated = false;
 
-    if (file_in_snapshot) {
-        journalfile->datafile->populate_snapshot.populated = true;
-        netdata_log_info("TIER %d, File %d found in snapshot with %d entries (Judy)", ctx->config.tier, (int) journalfile->datafile->fileno, (int) entries);
+    for (size_t i = 0; i < entries; i++) {
+        time_t start_time_s = header_start_time_s + metric->delta_start_s;
+        time_t end_time_s = header_start_time_s + metric->delta_end_s;
+
+        mrg_update_metric_retention_and_granularity_by_uuid(
+            main_mrg, (Word_t)ctx, &metric->uuid, start_time_s, end_time_s, metric->update_every_s, now_s);
+
+        metric++;
     }
-    else {
-        journalfile->datafile->populate_snapshot.populated = false;
-
-        for (size_t i = 0; i < entries; i++) {
-            time_t start_time_s = header_start_time_s + metric->delta_start_s;
-            time_t end_time_s = header_start_time_s + metric->delta_end_s;
-
-            mrg_update_metric_retention_and_granularity_by_uuid(
-                main_mrg, (Word_t)ctx, &metric->uuid, start_time_s, end_time_s, metric->update_every_s, now_s);
-
-            metric++;
-        }
-    }
+  //  }
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
 
-    if (!file_in_snapshot)
-        nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
-            , ctx->config.tier, journalfile->datafile->fileno
-            , (double)data_size / 1024 / 1024
-            , (double)entries / 1000
-            , ((double)(ended_ut - started_ut) / USEC_PER_MS)
-            );
+    //if (!file_in_snapshot)
+    nd_log_daemon(NDLP_DEBUG,"DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
+        , ctx->config.tier, journalfile->datafile->fileno
+        , (double)data_size / 1024 / 1024
+        , (double)entries / 1000
+        , ((double)(ended_ut - started_ut) / USEC_PER_MS));
 
     time_t old = __atomic_load_n(&ctx->atomic.first_time_s, __ATOMIC_RELAXED);;
     do {
@@ -1294,7 +1297,8 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         return 1;
     }
 
-    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size);
+    struct journal_v2_header *j2_header = NULL;
+    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size, &j2_header);
 
     usec_t mmap_start_ut = now_monotonic_usec();
 
@@ -1332,32 +1336,38 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 //    }
     int rc;
 
-    struct journal_v2_header *j2_header = journalfile_v2_validate(file, journal_v2_file_size, journal_v1_file_size, &rc, file_ok);
-    if (unlikely(rc)) {
-        if (rc == 2)
-            error_report("File %s needs to be rebuilt", path_v2);
-        else if (rc == 3)
-            error_report("File %s will be skipped", path_v2);
-        else
-            error_report("File %s is invalid and it will be rebuilt", path_v2);
+    if (false == file_ok) {
+        j2_header = journalfile_v2_validate(file, journal_v2_file_size, journal_v1_file_size, &rc, file_ok);
+        if (unlikely(rc)) {
+            if (rc == 2)
+                error_report("File %s needs to be rebuilt", path_v2);
+            else if (rc == 3)
+                error_report("File %s will be skipped", path_v2);
+            else
+                error_report("File %s is invalid and it will be rebuilt", path_v2);
 
-        //        if (data_start) {
-        //            if (unlikely(munmap(data_start, journal_v2_file_size)))
-        //                error("DBENGINE: failed to unmap '%s'", path_v2);
-        //        }
-        posix_memfree(j2_header);
-        close(fd);
-        return rc;
+            //        if (data_start) {
+            //            if (unlikely(munmap(data_start, journal_v2_file_size)))
+            //                error("DBENGINE: failed to unmap '%s'", path_v2);
+            //        }
+            posix_memfree(j2_header);
+            close(fd);
+            return rc;
+        }
     }
 
 //    struct journal_v2_header *j2_header = (void *) data_start;
+
     uint32_t entries = j2_header->metric_count;
 
     if (unlikely(!entries)) {
 //        if (unlikely(munmap(data_start, journal_v2_file_size)))
 //            netdata_log_error("DBENGINE: failed to unmap '%s'", path_v2);
 
-        posix_memfree(j2_header);
+        if (j2_header->magic == 0x01)
+            freez(j2_header);
+        else
+            posix_memfree(j2_header);
 
         close(fd);
         return 1;
