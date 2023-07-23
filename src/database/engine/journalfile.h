@@ -158,7 +158,7 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
 
 bool journalfile_v2_data_available(struct rrdengine_journalfile *journalfile);
 size_t journalfile_v2_data_size_get(struct rrdengine_journalfile *journalfile);
-void journalfile_v2_data_set(struct rrdengine_journalfile *journalfile, int fd, void *journal_data, uint32_t journal_data_size);
+void journalfile_v2_data_set(struct rrdengine_journalfile *journalfile, int fd, void *journal_data, struct journal_v2_header *j2_header_only, uint32_t journal_data_size, bool file_in_snapshot);
 struct journal_v2_header *journalfile_v2_data_acquire(struct rrdengine_journalfile *journalfile, size_t *data_size, time_t wanted_first_time_s, time_t wanted_last_time_s);
 void journalfile_v2_data_release(struct rrdengine_journalfile *journalfile);
 void journalfile_v2_data_unmount_cleanup(time_t now_s);
