@@ -21,8 +21,8 @@ int sql_add_metric_uuid_retention(
     time_t last_time_t,
     int update_every);
 
-void sql_snapshot_begin_transaction(sqlite3 *database, SPINLOCK *spinlock);
-void sql_snapshot_commit_or_rollaback_transaction(sqlite3 *database, SPINLOCK *spinlock, bool commit);
+void sql_snapshot_begin_transaction(struct rrdengine_instance *ctx);
+void sql_snapshot_commit_or_rollaback_transaction(struct rrdengine_instance *ctx);
 sqlite3 *sql_create_tier_snapshot_database(int tier);
 bool sql_check_metric_count(sqlite3_stmt *res, int fileno, int entries, int file_size);
 sqlite3_stmt *snapshot_prepare_add_file_retention(sqlite3 *database);

@@ -406,19 +406,16 @@ failed:
     return store_rc != SQLITE_DONE;
 }
 
-void sql_snapshot_begin_transaction(sqlite3 *database, SPINLOCK *spinlock __maybe_unused)
+void sql_snapshot_begin_transaction(struct rrdengine_instance *ctx)
 {
-    spinlock_lock(spinlock);
-    db_execute(database,"BEGIN TRANSACTION");
+    spinlock_lock(&ctx->config.snapshot.spinlock);
+    (void) db_execute(ctx->config.snapshot.database,"BEGIN TRANSACTION");
 }
 
-void sql_snapshot_commit_or_rollaback_transaction(sqlite3 *database, SPINLOCK *spinlock __maybe_unused, bool commit)
+void sql_snapshot_commit_or_rollaback_transaction(struct rrdengine_instance *ctx)
 {
-    if (commit)
-        db_execute(database,"COMMIT TRANSACTION");
-    else
-        db_execute(database,"ROLLBACK TRANSACTION");
-    spinlock_unlock(spinlock);
+    (void) db_execute(ctx->config.snapshot.database,"COMMIT TRANSACTION");
+    spinlock_unlock(&ctx->config.snapshot.spinlock);
 }
 
 sqlite3 *sql_create_tier_snapshot_database(int tier)

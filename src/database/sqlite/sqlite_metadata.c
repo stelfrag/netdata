@@ -1845,10 +1845,14 @@ static void snapshot_create_replay(uv_work_t *req)
        if(!datafile)
            break;
 
+       if (!(datafile->journalfile->v2.flags & JOURNALFILE_FLAG_IS_AVAILABLE)) {
+           netdata_log_info("DEBUG: SKIP snapshot retention for %d", (int) datafile->fileno);
+           break;
+        }
+
        netdata_log_info("DEBUG: Checking snapshot retention for %d", (int) datafile->fileno);
        //sql_mark_file_to_rebuild(ctx->config.snapshot.mark, (int) datafile->fileno, (int) 0);
-       journalfile_v2_populate_retention_to_snapshot(ctx, datafile->journalfile);
-       datafile->populate_snapshot.populated = true;
+       datafile->populate_snapshot.populated = journalfile_v2_populate_retention_to_snapshot(ctx, datafile->journalfile);
        spinlock_unlock(&datafile->populate_snapshot.spinlock);
 
    } while(1);
