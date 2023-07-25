@@ -1194,13 +1194,13 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     } while(!__atomic_compare_exchange_n(&ctx->atomic.first_time_s, &old, global_first_time_s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
 }
 
-void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile) {
+bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile) {
     usec_t started_ut = now_monotonic_usec();
 
     size_t data_size = 0;
     struct journal_v2_header *j2_header = journalfile_v2_data_acquire(journalfile, &data_size, 0, 0);
     if(!j2_header)
-        return;
+        return false;
 
     uint8_t *data_start = (uint8_t *)j2_header;
     uint32_t entries = j2_header->metric_count;
@@ -1210,13 +1210,9 @@ void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
     time_t header_end_time_s  = (time_t) (j2_header->end_time_ut / USEC_PER_SEC);
     int fileno = (int) journalfile->datafile->fileno;
 
-    sql_snapshot_begin_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock);
+    sql_snapshot_begin_transaction(ctx);
 
-    //int rc = sql_snapshot_reset_fileno(ctx->config.snapshot.database, fileno);
-
-    int rc;
-//    if (likely(!rc)) {
-    rc = sql_snapshot_store_file_info(
+    int rc = sql_snapshot_store_file_info(
         ctx->config.snapshot.database,
         fileno,
         (int)entries,
@@ -1240,9 +1236,8 @@ void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
             metric++;
         }
     }
-//    }
 
-    sql_snapshot_commit_or_rollaback_transaction(ctx->config.snapshot.database, &ctx->config.snapshot.spinlock, true);
+    sql_snapshot_commit_or_rollaback_transaction(ctx);
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
@@ -1253,6 +1248,8 @@ void journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
         journalfile->datafile->fileno,
         (double)entries / 1000,
         ((double)(ended_ut - started_ut) / USEC_PER_MS));
+
+    return true;
 }
 
 int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile, struct rrdengine_datafile *datafile)
