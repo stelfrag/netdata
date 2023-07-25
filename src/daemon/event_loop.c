@@ -53,7 +53,8 @@ void register_libuv_worker_jobs() {
     worker_register_job_name(UV_EVENT_METADATA_STORE, "metadata store host");
     worker_register_job_name(UV_EVENT_METADATA_CLEANUP, "metadata cleanup");
     worker_register_job_name(UV_EVENT_METADATA_ML_LOAD, "metadata load ml models");
-    worker_register_job_name(UV_EVENT_METADATA_SNAPSHOT, "snapshot maintain");
+    worker_register_job_name(UV_EVENT_METADATA_SNAPSHOT, "snapshot create");
+    worker_register_job_name(UV_EVENT_METADATA_UPDATE_SNAPSHOT, "snapshot update");
 
     // netdatacli
     worker_register_job_name(UV_EVENT_SCHEDULE_CMD, "schedule command");

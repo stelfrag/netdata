@@ -171,6 +171,7 @@ enum metadata_opcode {
     METADATA_UNITTEST,
     METADATA_ML_LOAD_MODELS,
     METADATA_BUILD_SNAPSHOT,
+    METADATA_UPDATE_SNAPSHOT,
     // leave this last
     // we need it to check for worker utilization
     METADATA_MAX_ENUMERATIONS_DEFINED
@@ -1845,12 +1846,10 @@ static void snapshot_create_replay(uv_work_t *req)
        if(!datafile)
            break;
 
-       if (!(datafile->journalfile->v2.flags & JOURNALFILE_FLAG_IS_AVAILABLE)) {
-           netdata_log_info("DEBUG: SKIP snapshot retention for %d", (int) datafile->fileno);
+       if (!(datafile->journalfile->v2.flags & JOURNALFILE_FLAG_IS_AVAILABLE))
            break;
-        }
 
-       netdata_log_info("DEBUG: Checking snapshot retention for %d", (int) datafile->fileno);
+       //netdata_log_info("DEBUG: Checking snapshot retention for %d", (int) datafile->fileno);
        //sql_mark_file_to_rebuild(ctx->config.snapshot.mark, (int) datafile->fileno, (int) 0);
        datafile->populate_snapshot.populated = journalfile_v2_populate_retention_to_snapshot(ctx, datafile->journalfile);
        spinlock_unlock(&datafile->populate_snapshot.spinlock);
@@ -1872,6 +1871,79 @@ static void snapshot_create_replay(uv_work_t *req)
 //   rc = sqlite3_finalize(ctx->config.snapshot.check);
 //   if (rc != SQLITE_OK)
 //       error_report("Failed to finalize statement that populates metrics in tier %d", (int) ctx->config.tier);
+
+   worker_is_idle();
+}
+
+static void after_snapshot_update(uv_work_t *req, int status)
+{
+   UNUSED(status);
+   UNUSED(req);
+   struct snapshot_update *su = req->data;
+   struct rrdengine_instance *ctx = su->ctx;
+   netdata_log_info("DEBUG: snapshot update retention for tier %d completed", ctx->config.tier);
+   ctx->config.snapshot.running = false;
+   freez(su->uuid_list);
+   (void) JudyLFreeArray(&su->JudyL, PJE0);
+   freez(req);
+}
+
+static void snapshot_update(uv_work_t *req)
+{
+   register_libuv_worker_jobs();
+
+   worker_is_busy(UV_EVENT_METADATA_SNAPSHOT);
+
+   struct snapshot_update *su = req->data;
+   struct rrdengine_instance *ctx = su->ctx;
+
+   struct uuid_first_time_s *uuid_first_t_entry;
+   struct uuid_first_time_s *uuid_first_entry_list = su->uuid_list;
+
+   // DELETE ALL THE FILES ARE ARE PROCESSING
+   char sql[512];
+   snprintfz(sql, 511, "DELETE FROM metric_file_info WHERE fileno < %d", su->fileno);
+   (void)db_execute(ctx->config.snapshot.database, sql);
+
+   snprintfz(sql, 511, "DELETE FROM metric_retention WHERE last_fileno < %d", su->fileno);
+   (void)db_execute(ctx->config.snapshot.database, sql);
+
+   netdata_log_info("DEBUG: PROCESSING SNAPSHOT UPDATE -- deleting files upto %d", su->fileno);
+   for (size_t index = 0; index < su->count; ++index) {
+       uuid_first_t_entry = &uuid_first_entry_list[index];
+       if (false == uuid_first_t_entry->snapshot_valid)
+           continue;
+
+       (void) sql_add_metric_uuid_retention(
+           ctx->config.snapshot.lookup,
+           ctx->config.snapshot.store,
+           ctx->config.snapshot.res,
+           uuid_first_t_entry->uuid,
+            su->fileno,
+           uuid_first_t_entry->first_time_s,
+           mrg_metric_get_latest_time_s(main_mrg, uuid_first_t_entry->metric),
+           (int) mrg_metric_get_update_every_s(main_mrg, uuid_first_t_entry->metric));
+
+       mrg_metric_release(main_mrg, uuid_first_t_entry->metric);
+   }
+   netdata_log_info("DEBUG: PROCESSING SNAPSHOT DONE");
+
+   netdata_log_info("DEBUG: PROCESSING SNAPSHOT DELETIONS");
+   Word_t index = 0;
+   while (index < su->entries) {
+       uuid_t metric_uuid;
+       char metric_uuid_str[UUID_STR_LEN];
+       Pvoid_t *PValue = JudyLGet(su->JudyL, index++, PJE0);
+       if (PValue) {
+           memcpy(&metric_uuid[0], (Word_t *)PValue, 8);
+           PValue = JudyLGet(su->JudyL, index++ , PJE0);
+           if (PValue)
+                memcpy(&metric_uuid[8], (Word_t *)PValue, 8);
+       }
+       uuid_unparse_lower(metric_uuid, metric_uuid_str);
+       netdata_log_info("DEBUG: Deleting UUID [%s]");
+   }
+   netdata_log_info("DEBUG: PROCESSING SNAPSHOT DELETIONS DONE");
 
    worker_is_idle();
 }
@@ -2465,7 +2537,7 @@ static void metadata_event_loop(void *arg)
                     if (unlikely(ctx->config.snapshot.running))
                         break;
 
-                    ctx->config.snapshot.running= true;
+                    ctx->config.snapshot.running = true;
 
                     uv_work_t *metadata_build_snapshot = callocz(1, sizeof(uv_work_t));
                     metadata_build_snapshot->data = ctx;
@@ -2474,6 +2546,23 @@ static void metadata_event_loop(void *arg)
                             loop, metadata_build_snapshot, snapshot_create_replay, after_snapshot_create_replay))) {
                         ctx->config.snapshot.running = false;
                         freez(metadata_build_snapshot);
+                    }
+                    break;
+                case METADATA_UPDATE_SNAPSHOT:;
+
+                    struct snapshot_update *su = (struct snapshot_update *) cmd.param[0];
+                    if (unlikely(ctx->config.snapshot.running))
+                        break;
+
+                    ctx->config.snapshot.running = true;
+
+                    uv_work_t *metadata_update_snapshot = callocz(1, sizeof(uv_work_t));
+                    metadata_update_snapshot->data = su;
+
+                    if (unlikely(uv_queue_work(
+                            loop, metadata_update_snapshot, snapshot_update, after_snapshot_update))) {
+                        ctx->config.snapshot.running = false;
+                        freez(metadata_update_snapshot);
                     }
                     break;
                 case METADATA_UNITTEST:;
@@ -2634,6 +2723,14 @@ void metaqueue_build_snapshot(struct rrdengine_instance *ctx)
         return;
     queue_metadata_cmd(METADATA_BUILD_SNAPSHOT, ctx, NULL);
 }
+
+void metaqueue_update_snapshot(struct rrdengine_instance *ctx)
+{
+    if (unlikely(!metasync_worker.loop))
+        return;
+    queue_metadata_cmd(METADATA_UPDATE_SNAPSHOT, ctx, NULL);
+}
+
 
 void metaqueue_host_update_info(RRDHOST *host)
 {

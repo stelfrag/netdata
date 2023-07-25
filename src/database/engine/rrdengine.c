@@ -934,14 +934,6 @@ static void after_database_rotate(struct rrdengine_instance *ctx __maybe_unused,
     __atomic_store_n(&ctx->atomic.now_deleting_files, false, __ATOMIC_RELAXED);
 }
 
-struct uuid_first_time_s {
-    uuid_t *uuid;
-    time_t first_time_s;
-    METRIC *metric;
-    size_t pages_found;
-    size_t df_matched;
-    size_t df_index_oldest;
-};
 
 struct rrdengine_datafile *datafile_release_and_acquire_next_for_retention(struct rrdengine_instance *ctx, struct rrdengine_datafile *datafile) {
 
@@ -1131,11 +1123,16 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
     struct uuid_first_time_s *uuid_first_t_entry;
     struct uuid_first_time_s *uuid_first_entry_list = callocz(count, sizeof(struct uuid_first_time_s));
 
+    struct snapshot_update *su = callocz(1, sizeof(*su));
+    su->ctx = ctx;
+
     size_t added = 0;
     for (size_t index = 0; index < count; ++index) {
         METRIC *metric = mrg_metric_get_and_acquire(main_mrg, &uuid_list[index].uuid, (Word_t) ctx);
-        if (!metric)
+        if (!metric) {
+            // Add this UUID to be deleted
             continue;
+        }
 
         uuid_first_entry_list[added].metric = metric;
         uuid_first_entry_list[added].first_time_s = LONG_MAX;
@@ -1166,6 +1163,7 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
     size_t deleted_metrics = 0, zero_retention_referenced = 0, zero_disk_retention = 0, zero_disk_but_live = 0;
     for (size_t index = 0; index < added; ++index) {
         uuid_first_t_entry = &uuid_first_entry_list[index];
+        uuid_first_t_entry->snapshot_valid = true;
         if (likely(uuid_first_t_entry->first_time_s != LONG_MAX)) {
 
             time_t old_first_time_s = mrg_metric_get_first_time_s(main_mrg, uuid_first_t_entry->metric);
@@ -1178,7 +1176,7 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
                     __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
                 }
             }
-            mrg_metric_release(main_mrg, uuid_first_t_entry->metric);
+            //mrg_metric_release(main_mrg, uuid_first_t_entry->metric);
         }
         else {
             zero_disk_retention++;
@@ -1199,14 +1197,35 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
                     deleted_metrics++;
                 else
                     zero_retention_referenced++;
+                // Add this UUID to be deleted
+
+                uuid_first_t_entry->snapshot_valid = false;
+                Pvoid_t *PValue = JudyLIns(&su->JudyL, su->entries++, PJE0);
+                if (PValue) {
+                    Word_t part1, part2;
+                    memcpy(&part1, &uuid_first_t_entry->uuid[0], 8);
+                    memcpy(&part2, &uuid_first_t_entry->uuid[8], 8);
+                    *((Word_t *) PValue) = part1;
+                    PValue = JudyLIns(&su->JudyL, su->entries++, PJE0);
+                    if (PValue)
+                        *((Word_t *) PValue) = part2;
+                }
             }
             else {
                 zero_disk_but_live++;
-                mrg_metric_release(main_mrg, uuid_first_t_entry->metric);
+                // This will be released by the SNAPSHOT UPDATE process
+                //mrg_metric_release(main_mrg, uuid_first_t_entry->metric);
             }
         }
     }
-    freez(uuid_first_entry_list);
+    // TODO: List needs to be updated
+    // TODO: DELETE datafiles upto NEXT datafile
+    su->count = added;
+    su->uuid_list = uuid_first_entry_list;
+    su->fileno = first_datafile_remaining->fileno;
+
+    metaqueue_update_snapshot(ctx);
+    //freez(uuid_first_entry_list);
 
     internal_error(zero_disk_retention,
                    "DBENGINE: deleted %zu metrics, zero retention but referenced %zu (out of %zu total, of which %zu have main cache retention) zero on-disk retention tier %d metrics from metrics registry",

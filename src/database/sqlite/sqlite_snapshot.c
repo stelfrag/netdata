@@ -440,7 +440,7 @@ sqlite3 *sql_create_tier_snapshot_database(int tier)
     char buf[1024 + 1] = "";
     const char *list[2] = { buf, NULL };
 
-    int target_version = DB_SNAPSHOT_VERSION;
+//    int target_version = DB_SNAPSHOT_VERSION;
 
     // TODO:
     //    if (likely(!memory))
@@ -503,17 +503,12 @@ void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx)
             break;
     } while(!__atomic_compare_exchange_n(&ctx->atomic.first_time_s, &old, min_start_time_s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
 
+    freez(ctx->config.snapshot.metric_file_info);
+    JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
     usec_t ended_ut = now_monotonic_usec();
 
     netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms (minimum start_time_s = %ld)",
         ctx->config.tier, count, (double)(ended_ut - started_ut) / USEC_PER_MS, min_start_time_s);
-
-    freez(ctx->config.snapshot.metric_file_info);
-    JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
-
-    ended_ut = now_monotonic_usec();
-    netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms (minimum start_time_s = %ld) Freed memory",
-                     ctx->config.tier, count, (double)(ended_ut - started_ut) / USEC_PER_MS, min_start_time_s);
 }
 
 static int return_int_cb(void *data, int argc, char **argv, char **column)
