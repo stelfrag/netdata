@@ -509,6 +509,26 @@ bool pdc_release_and_destroy_if_unreferenced(PDC *pdc, bool worker, bool router)
 uint64_t rrdeng_target_data_file_size(struct rrdengine_instance *ctx);
 
 struct page_descr_with_data *page_descriptor_get(void);
+typedef struct metric METRIC;
+
+struct uuid_first_time_s {
+    uuid_t *uuid;
+    time_t first_time_s;
+    METRIC *metric;
+    size_t pages_found;
+    size_t df_matched;
+    size_t df_index_oldest;
+    bool snapshot_valid;
+};
+
+struct snapshot_update {
+    size_t count;   // Entries in uuid_list
+    int fileno;     // Delete all files below this
+    struct uuid_first_time_s *uuid_list;
+    struct rrdengine_instance *ctx;
+    Word_t entries; // Entries in JudyL
+    Pvoid_t JudyL;
+};
 
 typedef struct validated_page_descriptor {
     time_t start_time_s;
