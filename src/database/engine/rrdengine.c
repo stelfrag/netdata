@@ -1179,6 +1179,7 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
             // there is no retention for this metric
             bool has_retention = mrg_metric_zero_disk_retention(main_mrg, uuid_first_t_entry->metric);
             if (!has_retention) {
+
                 time_t first_time_s = mrg_metric_get_first_time_s(main_mrg, uuid_first_t_entry->metric);
                 time_t last_time_s = mrg_metric_get_latest_time_s(main_mrg, uuid_first_t_entry->metric);
                 time_t update_every_s = mrg_metric_get_update_every_s(main_mrg, uuid_first_t_entry->metric);
@@ -1193,18 +1194,25 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
                 else
                     zero_retention_referenced++;
                 // Add this UUID to be deleted
-
                 uuid_first_t_entry->snapshot_valid = false;
                 Pvoid_t *PValue = JudyLIns(&su->JudyL, su->entries++, PJE0);
                 if (PValue) {
-                    Word_t part1, part2;
-                    memcpy(&part1, &uuid_first_t_entry->uuid[0], 8);
-                    memcpy(&part2, &uuid_first_t_entry->uuid[8], 8);
-                    *((Word_t *) PValue) = part1;
+                    struct {
+                        uint64_t part1;
+                        uint64_t part2;
+                    } my_uuid;
+                    memcpy(&my_uuid, &uuid_first_t_entry->uuid[0], 16);
+                    *((Word_t *) PValue) = my_uuid.part1;
                     PValue = JudyLIns(&su->JudyL, su->entries++, PJE0);
                     if (PValue)
-                        *((Word_t *) PValue) = part2;
+                        *((Word_t *) PValue) = my_uuid.part2;
                 }
+
+                bool deleted = mrg_metric_release_and_delete(main_mrg, uuid_first_t_entry->metric);
+                if(deleted)
+                    deleted_metrics++;
+                else
+                    zero_retention_referenced++;
             }
             else {
                 zero_disk_but_live++;
@@ -1217,9 +1225,9 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
     // TODO: DELETE datafiles upto NEXT datafile
     su->count = added;
     su->uuid_list = uuid_first_entry_list;
-    su->fileno = first_datafile_remaining->fileno;
+    su->fileno = (int) first_datafile_remaining->fileno;
 
-    metaqueue_update_snapshot(ctx);
+    metaqueue_update_snapshot(su);
     //freez(uuid_first_entry_list);
 
     internal_error(zero_disk_retention,

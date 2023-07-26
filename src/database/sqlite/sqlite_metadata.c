@@ -1641,17 +1641,20 @@ static void after_snapshot_update(uv_work_t *req, int status)
    struct snapshot_update *su = req->data;
    struct rrdengine_instance *ctx = su->ctx;
    netdata_log_info("DEBUG: snapshot update retention for tier %d completed", ctx->config.tier);
-   ctx->config.snapshot.running = false;
+//   ctx->config.snapshot.running = false;
    freez(su->uuid_list);
    (void) JudyLFreeArray(&su->JudyL, PJE0);
    freez(req);
 }
+
+SPINLOCK snapshot_update_spinlock = NETDATA_SPINLOCK_INITIALIZER;
 
 static void snapshot_update(uv_work_t *req)
 {
    register_libuv_worker_jobs();
 
    worker_is_busy(UV_EVENT_METADATA_SNAPSHOT);
+   spinlock_lock(&snapshot_update_spinlock);
 
    struct snapshot_update *su = req->data;
    struct rrdengine_instance *ctx = su->ctx;
@@ -1689,21 +1692,50 @@ static void snapshot_update(uv_work_t *req)
 
    netdata_log_info("DEBUG: PROCESSING SNAPSHOT DELETIONS");
    Word_t index = 0;
-   while (index < su->entries) {
-       uuid_t metric_uuid;
-       char metric_uuid_str[UUID_STR_LEN];
-       Pvoid_t *PValue = JudyLGet(su->JudyL, index++, PJE0);
-       if (PValue) {
-           memcpy(&metric_uuid[0], (Word_t *)PValue, 8);
-           PValue = JudyLGet(su->JudyL, index++ , PJE0);
-           if (PValue)
-                memcpy(&metric_uuid[8], (Word_t *)PValue, 8);
+
+#define SQL_DEL_UUID "DELETE FROM metric_retention WHERE metric_id in (SELECT metric_id FROM mrg.metric m WHERE m.metric_uuid = @uuid)"
+
+   sql_snapshot_begin_transaction(ctx);
+   sqlite3_stmt *del_uuid;
+
+   int rc = sqlite3_prepare_v2(ctx->config.snapshot.database, SQL_DEL_UUID, -1, &del_uuid, 0);
+
+   if (rc == SQLITE_OK) {
+       while (index < su->entries) {
+           uuid_t metric_uuid;
+           char metric_uuid_str[UUID_STR_LEN];
+           struct {
+                uint64_t part1;
+                uint64_t part2;
+           } my_uuid;
+           Pvoid_t *PValue = JudyLGet(su->JudyL, index++, PJE0);
+           if (PValue) {
+                my_uuid.part1 = *(Word_t *)PValue;
+                PValue = JudyLGet(su->JudyL, index++, PJE0);
+                if (PValue)
+                    my_uuid.part2 = *(Word_t *)PValue;
+           }
+           memcpy(&metric_uuid, &my_uuid, 16);
+           uuid_unparse_lower(metric_uuid, metric_uuid_str);
+           netdata_log_info("DEBUG: Deleting UUID [%s]", metric_uuid_str);
+           rc = sqlite3_bind_blob(del_uuid, 1, &metric_uuid, sizeof(uuid_t), SQLITE_STATIC);
+           (void) rc;
+
+           rc = execute_insert(del_uuid);
+           if (unlikely(rc != SQLITE_DONE))
+                error_report("Failed to store host claim id rc = %d", rc);
+
+           rc = sqlite3_reset(del_uuid);
+           (void) rc;
        }
-       uuid_unparse_lower(metric_uuid, metric_uuid_str);
-       netdata_log_info("DEBUG: Deleting UUID [%s]");
    }
+
+   sql_snapshot_commit_or_rollaback_transaction(ctx);
    netdata_log_info("DEBUG: PROCESSING SNAPSHOT DELETIONS DONE");
 
+   (void) sqlite3_finalize(del_uuid);
+
+   spinlock_unlock(&snapshot_update_spinlock);
    worker_is_idle();
 }
 
@@ -2308,17 +2340,17 @@ static void metadata_event_loop(void *arg)
                 case METADATA_UPDATE_SNAPSHOT:;
 
                     struct snapshot_update *su = (struct snapshot_update *) cmd.param[0];
-                    if (unlikely(ctx->config.snapshot.running))
-                        break;
+                    //if (unlikely(ctx->config.snapshot.running))
+                    //    break;
 
-                    ctx->config.snapshot.running = true;
+                    //ctx->config.snapshot.running = true;
 
                     uv_work_t *metadata_update_snapshot = callocz(1, sizeof(uv_work_t));
                     metadata_update_snapshot->data = su;
 
                     if (unlikely(uv_queue_work(
                             loop, metadata_update_snapshot, snapshot_update, after_snapshot_update))) {
-                        ctx->config.snapshot.running = false;
+//                        ctx->config.snapshot.running = false;
                         freez(metadata_update_snapshot);
                     }
                     break;
@@ -2481,11 +2513,11 @@ void metaqueue_build_snapshot(struct rrdengine_instance *ctx)
     queue_metadata_cmd(METADATA_BUILD_SNAPSHOT, ctx, NULL);
 }
 
-void metaqueue_update_snapshot(struct rrdengine_instance *ctx)
+void metaqueue_update_snapshot(struct snapshot_update *su)
 {
     if (unlikely(!metasync_worker.loop))
         return;
-    queue_metadata_cmd(METADATA_UPDATE_SNAPSHOT, ctx, NULL);
+    queue_metadata_cmd(METADATA_UPDATE_SNAPSHOT, su, NULL);
 }
 
 
