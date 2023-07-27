@@ -1192,7 +1192,7 @@ int rrdeng_init(
     ctx->config.snapshot.spinlock.locked = false;
     ctx->config.snapshot.running = false;
     ctx->config.snapshot.JudyL = (Pvoid_t) NULL;
-    snapshot_init(ctx);
+    snapshot_init((STORAGE_INSTANCE *) ctx);
 
     ctx->atomic.first_time_s = LONG_MAX;
     ctx->atomic.metrics = 0;
@@ -1200,7 +1200,7 @@ int rrdeng_init(
 
     if (rrdeng_dbengine_spawn(ctx) && !init_rrd_files(ctx)) {
         // success - we run this ctx too
-        sql_replay_snapshot_to_mrg(ctx);
+        sql_replay_snapshot_to_mrg((STORAGE_INSTANCE *) ctx);
         rrdeng_populate_mrg(ctx);
         return 0;
     }

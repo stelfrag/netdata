@@ -1210,7 +1210,7 @@ bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
     time_t header_end_time_s  = (time_t) (j2_header->end_time_ut / USEC_PER_SEC);
     int fileno = (int) journalfile->datafile->fileno;
 
-    sql_snapshot_begin_transaction(ctx);
+    sql_snapshot_begin_transaction((STORAGE_INSTANCE *) ctx);
 
     int rc = sql_snapshot_store_file_info(
         ctx->config.snapshot.database,
@@ -1237,7 +1237,7 @@ bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
         }
     }
 
-    sql_snapshot_commit_or_rollaback_transaction(ctx);
+    sql_snapshot_commit_transaction((STORAGE_INSTANCE *)ctx);
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
@@ -1263,7 +1263,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     uv_file file;
 
     journalfile_v2_generate_path(datafile, path_v2, sizeof(path_v2));
-    fd = open_file_for_io(path_v2, O_RDONLY, &file, use_direct_io);
+    fd = open_file_for_io(path_v2, O_RDONLY, &file, rrdb.use_direct_io);
 
 //    fd = open(path_v2, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
@@ -1290,7 +1290,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     }
 
     struct journal_v2_header *j2_header = NULL;
-    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size, &j2_header);
+    bool file_ok = check_metric_count_judy((STORAGE_INSTANCE *) ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size, &j2_header);
 
     usec_t mmap_start_ut = now_monotonic_usec();
 
@@ -1733,7 +1733,7 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
         internal_error(true, "DBENGINE: ACTIVATING NEW INDEX JNL %llu", (now_monotonic_usec() - start_loading) / USEC_PER_MS);
         ctx_current_disk_space_increase(ctx, total_file_size);
         freez(uuid_list);
-        metaqueue_build_snapshot(ctx);
+        metaqueue_build_snapshot((STORAGE_INSTANCE *) ctx);
         return;
     }
     else {

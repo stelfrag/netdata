@@ -21,8 +21,8 @@ int sql_add_metric_uuid_retention(
     time_t last_time_t,
     int update_every);
 
-void sql_snapshot_begin_transaction(struct rrdengine_instance *ctx);
-void sql_snapshot_commit_or_rollaback_transaction(struct rrdengine_instance *ctx);
+void sql_snapshot_begin_transaction(STORAGE_INSTANCE *db_instance);
+void sql_snapshot_commit_transaction(STORAGE_INSTANCE *db_instance);
 sqlite3 *sql_create_tier_snapshot_database(int tier);
 bool sql_check_metric_count(sqlite3_stmt *res, int fileno, int entries, int file_size);
 sqlite3_stmt *snapshot_prepare_add_file_retention(sqlite3 *database);
@@ -31,7 +31,7 @@ sqlite3_stmt *snapshot_prepare_store_metric(sqlite3 *database);
 sqlite3_stmt *snapshot_prepare_check(sqlite3 *database);
 int sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, time_t first_time_t, time_t last_time_t, size_t file_size);
 int sql_snapshot_reset_fileno(sqlite3 *database, int fileno);
-void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx);
-void snapshot_init(struct rrdengine_instance *ctx);
-bool check_metric_count_judy(struct rrdengine_instance *ctx, int fileno, int entries, int file_size, struct journal_v2_header **j2_header);
+void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance);
+void snapshot_init(STORAGE_INSTANCE *db_instance);
+bool check_metric_count_judy(STORAGE_INSTANCE *db_instance, int fileno, int entries, int file_size, struct journal_v2_header **j2_header);
 #endif //NETDATA_SQLITE_SNAPSHOT_H

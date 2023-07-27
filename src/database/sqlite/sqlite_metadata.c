@@ -1670,7 +1670,7 @@ static void snapshot_update(uv_work_t *req)
    snprintfz(sql, 511, "DELETE FROM metric_retention WHERE last_fileno < %d", su->fileno);
    (void)db_execute(ctx->config.snapshot.database, sql);
 
-   netdata_log_info("DEBUG: PROCESSING SNAPSHOT UPDATE -- deleting files upto %d", su->fileno);
+   netdata_log_info("DEBUG: PROCESSING SNAPSHOT UPDATE FOR TIER -- deleting files upto %d", ctx->config.tier, su->fileno);
    for (size_t index = 0; index < su->count; ++index) {
        uuid_first_t_entry = &uuid_first_entry_list[index];
        if (false == uuid_first_t_entry->snapshot_valid)
@@ -1695,7 +1695,7 @@ static void snapshot_update(uv_work_t *req)
 
 #define SQL_DEL_UUID "DELETE FROM metric_retention WHERE metric_id in (SELECT metric_id FROM mrg.metric m WHERE m.metric_uuid = @uuid)"
 
-   sql_snapshot_begin_transaction(ctx);
+   sql_snapshot_begin_transaction((STORAGE_INSTANCE *)ctx);
    sqlite3_stmt *del_uuid;
 
    int rc = sqlite3_prepare_v2(ctx->config.snapshot.database, SQL_DEL_UUID, -1, &del_uuid, 0);
@@ -1730,7 +1730,7 @@ static void snapshot_update(uv_work_t *req)
        }
    }
 
-   sql_snapshot_commit_or_rollaback_transaction(ctx);
+   sql_snapshot_commit_transaction((STORAGE_INSTANCE *)ctx);
    netdata_log_info("DEBUG: PROCESSING SNAPSHOT DELETIONS DONE");
 
    (void) sqlite3_finalize(del_uuid);
@@ -2506,10 +2506,11 @@ void metaqueue_store_claim_id(nd_uuid_t *host_uuid, nd_uuid_t *claim_uuid)
     queue_metadata_cmd(METADATA_STORE_CLAIM_ID, local_host_uuid, local_claim_uuid);
 }
 
-void metaqueue_build_snapshot(struct rrdengine_instance *ctx)
+void metaqueue_build_snapshot(STORAGE_INSTANCE *db_instance)
 {
     if (unlikely(!metasync_worker.loop))
         return;
+    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
     queue_metadata_cmd(METADATA_BUILD_SNAPSHOT, ctx, NULL);
 }
 
