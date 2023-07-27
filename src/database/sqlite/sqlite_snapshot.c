@@ -406,14 +406,16 @@ failed:
     return store_rc != SQLITE_DONE;
 }
 
-void sql_snapshot_begin_transaction(struct rrdengine_instance *ctx)
+void sql_snapshot_begin_transaction(STORAGE_INSTANCE *db_instance)
 {
+    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
     spinlock_lock(&ctx->config.snapshot.spinlock);
     (void) db_execute(ctx->config.snapshot.database,"BEGIN TRANSACTION");
 }
 
-void sql_snapshot_commit_or_rollaback_transaction(struct rrdengine_instance *ctx)
+void sql_snapshot_commit_transaction(STORAGE_INSTANCE *db_instance)
 {
+    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
     (void) db_execute(ctx->config.snapshot.database,"COMMIT TRANSACTION");
     spinlock_unlock(&ctx->config.snapshot.spinlock);
 }
@@ -470,10 +472,11 @@ sqlite3 *sql_create_tier_snapshot_database(int tier)
 #define SQL_REPLAY_SNAPSHOT "SELECT m.metric_uuid, mr.first_time, mr.last_time, mr.update_every " \
         "FROM metric_retention mr, mrg.metric m WHERE mr.metric_id = m.metric_id;"
 
-void sql_replay_snapshot_to_mrg(struct rrdengine_instance *ctx)
+void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
 {
     sqlite3_stmt *res;
 
+    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
     int rc = sqlite3_prepare_v2( ctx->config.snapshot.database, SQL_REPLAY_SNAPSHOT, -1, &res, 0);
     if (rc != SQLITE_OK)
         return;
@@ -520,12 +523,13 @@ static int return_int_cb(void *data, int argc, char **argv, char **column)
     return 0;
 }
 
-void snapshot_init(struct rrdengine_instance *ctx)
+void snapshot_init(STORAGE_INSTANCE *db_instance)
 {
     char *err_msg = NULL;
     char sql[128];
     int row_count;
 
+    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
     snprintf(sql, 127, "SELECT COUNT(1) FROM metric_file_info");
     int rc = sqlite3_exec_monitored(ctx->config.snapshot.database, sql, return_int_cb, (void *) &row_count, &err_msg);
     if (rc != SQLITE_OK) {
@@ -563,9 +567,11 @@ void snapshot_init(struct rrdengine_instance *ctx)
         error_report("Failed to finalize");
 }
 
-bool check_metric_count_judy(struct rrdengine_instance *ctx,
+bool check_metric_count_judy(STORAGE_INSTANCE *db_instance,
                              int fileno, int entries, int file_size, struct journal_v2_header **j2_header)
 {
+    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
+
     Pvoid_t *PValue = JudyLGet(ctx->config.snapshot.JudyL, (Word_t) fileno, PJE0);
     if (!PValue)
         return false;
