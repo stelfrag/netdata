@@ -1252,7 +1252,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     uv_file file;
 
     journalfile_v2_generate_path(datafile, path_v2, sizeof(path_v2));
-    fd = open_file_for_io(path_v2, O_RDONLY, &file, rrdb.use_direct_io);
+    fd = open_file_for_io(path_v2, O_RDONLY, &file, use_direct_io);
 
 //    fd = open(path_v2, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
