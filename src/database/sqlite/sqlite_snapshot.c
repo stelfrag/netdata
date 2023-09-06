@@ -463,7 +463,7 @@ sqlite3 *sql_create_tier_snapshot_database(int tier)
 
     snprintfz(buf, 1024, "ATTACH DATABASE \"%s/netdata-metric.db\" as mrg;", netdata_configured_cache_dir);
 
-    if(init_database_batch(database, DB_CHECK_NONE, 0, list)) return NULL;
+    if(init_database_batch(database, list)) return NULL;
 
     netdata_log_info("SQLite database initialization completed");
     return database;
