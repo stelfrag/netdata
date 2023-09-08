@@ -1007,8 +1007,10 @@ void dbengine_init(char *hostname) {
     else if(!created_tiers)
         fatal("DBENGINE on '%s', failed to initialize databases at '%s'.", hostname, netdata_configured_cache_dir);
 
-    for(size_t tier = 0; tier < storage_tiers ;tier++)
+    for (size_t tier = 0; tier < storage_tiers; tier++) {
         rrdeng_readiness_wait(multidb_ctx[tier]);
+        metaqueue_build_snapshot((STORAGE_INSTANCE *)multidb_ctx[tier]);
+    }
 
     calculate_tier_disk_space_percentage();
 
@@ -1043,6 +1045,13 @@ int rrd_init(char *hostname, struct rrdhost_system_info *system_info, bool unitt
     if (unlikely(sql_init_context_database(system_info ? 0 : 1))) {
         error_report("Failed to initialize context metadata database");
     }
+
+    if (unlikely(sql_init_snapshot_database(system_info ? 0 : 1))) {
+        error_report("Failed to initialize snapshot metadata database");
+    }
+
+    if(!unittest)
+        metadata_sync_init();
 
     if (unlikely(unittest)) {
         dbengine_enabled = true;
