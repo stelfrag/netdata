@@ -366,6 +366,7 @@ struct rrdengine_instance {
             sqlite3_stmt *res;
             sqlite3_stmt *lookup;
             sqlite3_stmt *store;
+            sqlite3_stmt *store_metric_id;
             sqlite3_stmt *check;
             bool running;
             Pvoid_t JudyL;
