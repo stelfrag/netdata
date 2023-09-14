@@ -196,16 +196,36 @@ failed:
     return metric_id;
 }
 
+SPINLOCK metric_spinlock = NETDATA_SPINLOCK_INITIALIZER;
+Pvoid_t metricHS = (Pvoid_t) NULL;
+
 int sql_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid_t *metric_uuid)
 {
-    int metric_id;
+    int metric_id = 0;
 
-    metric_id = sql_get_metric_id_from_uuid(lookup_res, metric_uuid);
-    if (metric_id == -1) {
-        metric_id = sql_add_metric_uuid(add_res, metric_uuid);
-        if (metric_id == -1)
-            return sql_get_metric_id_from_uuid(lookup_res, metric_uuid);
+    spinlock_lock(&metric_spinlock);
+    Pvoid_t *PValue = JudyHSGet(metricHS,  metric_uuid, sizeof(*metric_uuid));
+    if (PValue && *PValue)
+        metric_id = (int) *((Word_t *)PValue);
+    spinlock_unlock(&metric_spinlock);
+
+    if (!metric_id) {
+        metric_id = sql_get_metric_id_from_uuid(lookup_res, metric_uuid);
+        if (metric_id == -1) {
+            metric_id = sql_add_metric_uuid(add_res, metric_uuid);
+            if (metric_id == -1)
+                metric_id = sql_get_metric_id_from_uuid(lookup_res, metric_uuid);
+
+            if (metric_id != -1) {
+                spinlock_lock(&metric_spinlock);
+                PValue = JudyHSIns(&metricHS,  metric_uuid, sizeof(*metric_uuid), PJE0);
+                if (PValue && !*PValue)
+                    *((Word_t *)PValue) = (Word_t) metric_id;
+                spinlock_unlock(&metric_spinlock);
+            }
+        }
     }
+
     return metric_id;
 }
 
@@ -214,6 +234,62 @@ int sql_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid
         " (metric_id, fileno, first_time, last_time, update_every) VALUES " \
         " (@metric_id, @fileno, @first_time, @last_time, @update_every) "
 */
+
+//from metric_retention limit 10;
+//metric_id  first_fileno  last_fileno  first_time  last_time   update_every
+//    ---------  ------------  -----------  ----------  ----------  ------------
+//    1          406           465          1693790245  1694275869  1
+
+int sql_add_metric_id_retention(sqlite3_stmt *res, int metric_id, int start_fileno, int end_fileno, time_t first_time_t, time_t last_time_t, int update_every)
+{
+    int rc;
+
+    rc = sqlite3_bind_int(res, 1, metric_id);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind metric_id parameter to get sql_add_metric_file_retention");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int(res, 2, start_fileno);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind fileno parameter to get sql_add_metric_file_retention");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int(res, 3, end_fileno);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind fileno parameter to get sql_add_metric_file_retention");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 4, first_time_t);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind first_time_t parameter to get sql_add_metric_file_retention");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int64(res, 5, last_time_t);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind last_time_t parameter to get sql_add_metric_file_retention");
+        goto failed;
+    }
+
+    rc = sqlite3_bind_int(res, 6, update_every);
+    if (unlikely(rc != SQLITE_OK)) {
+        error_report("Failed to bind update_every parameter to get sql_add_metric_file_retention");
+        goto failed;
+    }
+
+    rc = sqlite3_step_monitored(res);
+    if (unlikely(rc != SQLITE_DONE))
+        error_report("Failed store file metric retention");
+
+failed:
+    if (unlikely(sqlite3_reset(res) != SQLITE_OK))
+        error_report("Failed to reset the prepared statement when sql_add_metric_file_retention");
+
+    return rc != SQLITE_DONE;
+}
 
 #define SQL_ADD_METRIC_TIER_FILE_RETENTION "INSERT INTO v_metric_file_retention " \
         " (metric_id, fileno, first_time, last_time, update_every) VALUES " \
@@ -283,6 +359,21 @@ int sql_add_metric_uuid_retention(sqlite3_stmt *lookup_res, sqlite3_stmt *add_re
     return 0;
 }
 
+//CREATE TABLE metric_retention (metric_id INTEGER PRIMARY KEY, first_fileno INTEGER, last_fileno INTEGER, first_time INTEGER, last_time INTEGER, update_every INTEGER);
+
+#define SQL_STORE_METRIC_ID                                                                                                \
+    "INSERT OR REPLACE INTO metric_retention (metric_id, first_fileno, last_fileno, first_time, last_time, update_every) " \
+    "VALUES (@metric_id, @first_file, @last_file, @first_time, @last_time, @update)"
+
+sqlite3_stmt *snapshot_prepare_store_metric_id(sqlite3 *database)
+{
+    sqlite3_stmt *res;
+    int rc = sqlite3_prepare_v2(database, SQL_STORE_METRIC_ID, -1, &res, 0);
+    if (rc != SQLITE_OK)
+        return NULL;
+
+    return res;
+}
 
 #define SQL_SNAPSHOT_GET_FILE_INFO "SELECT metric_count, file_size FROM metric_file_info WHERE fileno = @fileno"
 
@@ -469,7 +560,7 @@ sqlite3 *sql_create_tier_snapshot_database(int tier)
     return database;
 }
 
-#define SQL_REPLAY_SNAPSHOT "SELECT m.metric_uuid, mr.first_time, mr.last_time, mr.update_every " \
+#define SQL_REPLAY_SNAPSHOT "SELECT m.metric_uuid, mr.first_time, mr.last_time, mr.update_every, m.metric_id, mr.first_fileno, mr.last_fileno " \
         "FROM metric_retention mr, mrg.metric m WHERE mr.metric_id = m.metric_id;"
 
 void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
@@ -480,6 +571,9 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
     int rc = sqlite3_prepare_v2( ctx->config.snapshot.database, SQL_REPLAY_SNAPSHOT, -1, &res, 0);
     if (rc != SQLITE_OK)
         return;
+
+    JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
+    ctx->config.snapshot.JudyL = NULL;
 
     usec_t started_ut = now_monotonic_usec();
 
@@ -492,6 +586,27 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
         time_t start_time_s = (time_t)sqlite3_column_int64(res, 1);
         time_t end_time_s = (time_t)sqlite3_column_int64(res, 2);
         time_t update_every_s = (time_t)sqlite3_column_int64(res, 3);
+        int metric_id = (int) sqlite3_column_int(res, 4);
+
+        spinlock_lock(&metric_spinlock);
+        Pvoid_t *PValue = JudyHSIns(&metricHS,  uuid, sizeof(*uuid), PJE0);
+        if (PValue && !*PValue)
+            *((Word_t *)PValue) = (Word_t) metric_id;
+        spinlock_unlock(&metric_spinlock);
+
+        struct metric_data *this_metric;
+        PValue = JudyLIns(&ctx->config.snapshot.JudyL, (Word_t) metric_id, PJE0);
+        if (PValue && *PValue)
+            this_metric = *PValue;
+        else {
+            this_metric = callocz(1, sizeof(*this_metric));
+            *PValue = this_metric;
+            this_metric->first_fileno = (int) sqlite3_column_int(res, 5);
+            this_metric->last_fileno = (int) sqlite3_column_int(res, 6);
+            this_metric->start_time_s = start_time_s;
+            this_metric->end_time_s = end_time_s;
+            this_metric->update_every_s = (int) update_every_s;
+        }
 
         mrg_update_metric_retention_and_granularity_by_uuid(
             main_mrg, (Word_t)ctx, uuid, start_time_s, end_time_s, update_every_s, now_s);
@@ -507,7 +622,7 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
     } while(!__atomic_compare_exchange_n(&ctx->atomic.first_time_s, &old, min_start_time_s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
 
     freez(ctx->config.snapshot.metric_file_info);
-    JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
+//    JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
     usec_t ended_ut = now_monotonic_usec();
 
     netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms (minimum start_time_s = %ld)",

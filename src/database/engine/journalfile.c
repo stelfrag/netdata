@@ -1210,7 +1210,8 @@ bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
     time_t header_end_time_s  = (time_t) (j2_header->end_time_ut / USEC_PER_SEC);
     int fileno = (int) journalfile->datafile->fileno;
 
-    sql_snapshot_begin_transaction((STORAGE_INSTANCE *) ctx);
+//    sql_snapshot_begin_transaction((STORAGE_INSTANCE *) ctx);
+    struct metric_data *this_metric;
 
     int rc = sql_snapshot_store_file_info(
         ctx->config.snapshot.database,
@@ -1224,20 +1225,65 @@ bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
         for (size_t i = 0; i < entries && !rc; i++) {
             time_t start_time_s = header_start_time_s + metric->delta_start_s;
             time_t end_time_s = header_start_time_s + metric->delta_end_s;
-            rc = sql_add_metric_uuid_retention(
-                ctx->config.snapshot.lookup,
-                ctx->config.snapshot.store,
-                ctx->config.snapshot.res,
-                &metric->uuid,
-                fileno,
-                start_time_s,
-                end_time_s,
-                (int)metric->update_every_s);
+
+            // Find metric id from JudyHS or create in the DB
+            int metric_id =
+                sql_create_metric_uuid(ctx->config.snapshot.lookup, ctx->config.snapshot.store, &metric->uuid);
+
+            Pvoid_t *PValue = JudyLIns(&ctx->config.snapshot.JudyL, (Word_t)metric_id, PJE0);
+            if (PValue && *PValue)
+                this_metric = *PValue;
+            else {
+                this_metric = callocz(1, sizeof(*this_metric));
+                *PValue = this_metric;
+                this_metric->first_fileno = fileno;
+                this_metric->start_time_s = start_time_s;
+            }
+
+            if (fileno < this_metric->first_fileno) {
+                this_metric->first_fileno = fileno;
+                this_metric->updated = true;
+            }
+
+            if (fileno > this_metric->last_fileno) {
+                this_metric->last_fileno = fileno;
+                this_metric->updated = true;
+            }
+            if (start_time_s < this_metric->start_time_s) {
+                this_metric->start_time_s = start_time_s;
+                this_metric->updated = true;
+            }
+
+            if (end_time_s > this_metric->end_time_s) {
+                this_metric->end_time_s = end_time_s;
+                this_metric->updated = true;
+            }
+
+            if (this_metric->update_every_s != (int)metric->update_every_s) {
+                this_metric->update_every_s = (int)metric->update_every_s;
+                this_metric->updated = true;
+            }
+
+            //            this_metric->first_fileno = MIN(this_metric->first_fileno, fileno);
+//            this_metric->last_fileno = MAX(this_metric->last_fileno, fileno);
+//            this_metric->start_time_s = MIN(this_metric->start_time_s, start_time_s);
+//            this_metric->end_time_s = MAX(this_metric->end_time_s, end_time_s);
+//            this_metric->update_every_s = (int)metric->update_every_s;
+
+//            rc = sql_add_metric_uuid_retention(
+//                ctx->config.snapshot.lookup,
+//                ctx->config.snapshot.store,
+//                ctx->config.snapshot.res,
+//                &metric->uuid,
+//                fileno,
+//                start_time_s,
+//                end_time_s,
+//                (int)metric->update_every_s);
             metric++;
         }
     }
 
-    sql_snapshot_commit_transaction((STORAGE_INSTANCE *)ctx);
+//    sql_snapshot_commit_transaction((STORAGE_INSTANCE *)ctx);
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();

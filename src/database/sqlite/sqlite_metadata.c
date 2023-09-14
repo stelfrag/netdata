@@ -1612,7 +1612,40 @@ static void snapshot_create_replay(uv_work_t *req)
 
    } while(1);
 
-//   int rc = sqlite3_finalize(ctx->config.snapshot.res);
+   Pvoid_t *PValue;
+   Word_t metric_id = 0;
+   bool first = true;
+
+   netdata_log_info("DEBUG: Adding metric id to database for tier %d (%d metrics)", ctx->config.tier, JudyLCount(ctx->config.snapshot.JudyL, 0, -1, PJE0));
+
+   int count = 0;
+   while((PValue = JudyLFirstThenNext(ctx->config.snapshot.JudyL, &metric_id, &first))) {
+       struct metric_data *this_metric = *PValue;
+       int rc;
+
+       if (this_metric->updated) {
+           rc = sql_add_metric_id_retention(
+               ctx->config.snapshot.store_metric_id,
+               (int)metric_id,
+               this_metric->first_fileno,
+               this_metric->last_fileno,
+               this_metric->start_time_s,
+               this_metric->end_time_s,
+               (int)this_metric->update_every_s);
+           UNUSED(rc);
+
+           count++;
+       }
+       freez(this_metric);
+   }
+   JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
+   netdata_log_info("DEBUG: Adding metric id to database for tier %d -- done (added %d entries)", ctx->config.tier, count);
+
+//   int rc = sqlite3_finalize(ctx->config.snapshot.store_metric_id);
+//   if (rc != SQLITE_OK)
+//       error_report("Failed to finalize statement that populates metrics IDs in tier %d", (int) ctx->config.tier);
+//
+//   rc = sqlite3_finalize(ctx->config.snapshot.res);
 //   if (rc != SQLITE_OK)
 //       error_report("Failed to finalize statement that populates metrics in tier %d", (int) ctx->config.tier);
 //
