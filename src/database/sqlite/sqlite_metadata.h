@@ -38,7 +38,7 @@ void detect_machine_guid_change(uuid_t *host_uuid);
 void metadata_queue_load_host_context(RRDHOST *host);
 void metadata_delete_host_chart_labels(char *machine_guid);
 void vacuum_database(sqlite3 *database, const char *db_alias, int threshold, int vacuum_pc);
-void metaqueue_build_snapshot(struct rrdengine_instance *ctx);
+void metaqueue_build_snapshot(STORAGE_INSTANCE *ctx);
 void metaqueue_update_snapshot(struct snapshot_update *su);
 
 int sql_metadata_cache_stats(int op);
