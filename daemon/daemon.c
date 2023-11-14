@@ -73,7 +73,7 @@ static void fix_directory_file_permissions(const char *dirname, uid_t uid, gid_t
                     fix_directory_file_permissions(filename, uid, gid, recursive);
             }
             else
-                error("Cannot chown %s '%s' to %u:%u", de->d_type == DT_DIR ? "directory" : "file", filename, (unsigned int)uid, (unsigned int)gid);
+                netdata_log_error("Cannot chown %s '%s' to %u:%u", de->d_type == DT_DIR ? "directory" : "file", filename, (unsigned int)uid, (unsigned int)gid);
         }
     }
     closedir(dir);
