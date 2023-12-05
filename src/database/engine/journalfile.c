@@ -1342,7 +1342,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     nd_log_daemon(NDLP_DEBUG, "DBENGINE: checking integrity of '%s'", path_v2);
 
-    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size);
+//    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size);
 //    uint8_t *data_start = NULL;
 //    if (false == file_ok) {
 //        data_start = mmap(NULL, journal_v2_file_size, PROT_READ, MAP_SHARED, fd, 0);
