@@ -1349,7 +1349,6 @@ static void *populate_mrg_tp_worker(struct rrdengine_instance *ctx __maybe_unuse
         if(!datafile)
             break;
 
-        // TODO: Needs a check context to scan the datafile in the snapshot DB
         journalfile_v2_populate_retention_to_mrg(ctx, datafile->journalfile);
         datafile->populate_mrg.populated = true;
         spinlock_unlock(&datafile->populate_mrg.spinlock);

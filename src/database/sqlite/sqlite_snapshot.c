@@ -46,18 +46,13 @@ const char *database_snapshot_tier_config[] = {
         "last_fileno = MAX(last_fileno, excluded.last_fileno),  update_every = excluded.update_every; " \
         "END;",
 
-    "PRAGMA synchronous=0;",
-    "PRAGMA journal_mode=OFF;",
-    "PRAGMA temp_store=MEMORY;",
-	"PRAGMA read_uncommitted=0;",
+    "PRAGMA synchronous=0",
+    "PRAGMA journal_mode=OFF",
+    "PRAGMA temp_store=MEMORY",
+	"PRAGMA read_uncommitted=0",
 
     NULL
 };
-
-//const char *database_snapshot_cleanup[] = {
-//
-//    NULL
-//};
 
 sqlite3 *db_snapshot = NULL;
 
@@ -86,9 +81,6 @@ int sql_init_snapshot_database(int memory)
 
     netdata_log_info("SQLite database %s initialization", sqlite_database);
 
-//    char buf[1024 + 1] = "";
-//    const char *list[2] = { buf, NULL };
-
 //    int target_version = DB_SNAPSHOT_VERSION;
 
     // TODO:
@@ -107,7 +99,7 @@ int sql_init_snapshot_database(int memory)
         }
     }
 
-    netdata_log_info("SQLite database initialization completed");
+    netdata_log_info("SQLite metric database initialization complete");
 
     return 0;
 }
@@ -199,14 +191,14 @@ failed:
 SPINLOCK metric_spinlock = NETDATA_SPINLOCK_INITIALIZER;
 Pvoid_t metricHS = (Pvoid_t) NULL;
 
-int sql_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid_t *metric_uuid)
+int sql_find_or_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid_t *metric_uuid)
 {
     int metric_id = 0;
 
     spinlock_lock(&metric_spinlock);
-    Pvoid_t *PValue = JudyHSGet(metricHS,  metric_uuid, sizeof(*metric_uuid));
+    Pvoid_t *PValue = JudyHSGet(metricHS, metric_uuid, sizeof(*metric_uuid));
     if (PValue && *PValue)
-        metric_id = (int) *((Word_t *)PValue);
+        metric_id = (int)*((Word_t *)PValue);
     spinlock_unlock(&metric_spinlock);
 
     if (!metric_id) {
@@ -218,9 +210,9 @@ int sql_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid
 
             if (metric_id != -1) {
                 spinlock_lock(&metric_spinlock);
-                PValue = JudyHSIns(&metricHS,  metric_uuid, sizeof(*metric_uuid), PJE0);
+                PValue = JudyHSIns(&metricHS, metric_uuid, sizeof(*metric_uuid), PJE0);
                 if (PValue && !*PValue)
-                    *((Word_t *)PValue) = (Word_t) metric_id;
+                    *((Word_t *)PValue) = (Word_t)metric_id;
                 spinlock_unlock(&metric_spinlock);
             }
         }
@@ -240,43 +232,50 @@ int sql_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid
 //    ---------  ------------  -----------  ----------  ----------  ------------
 //    1          406           465          1693790245  1694275869  1
 
-int sql_add_metric_id_retention(sqlite3_stmt *res, int metric_id, int start_fileno, int end_fileno, time_t first_time_t, time_t last_time_t, int update_every)
+int sql_add_metric_id_retention(
+    sqlite3_stmt *res,
+    int metric_id,
+    int start_fileno,
+    int end_fileno,
+    time_t first_time_t,
+    time_t last_time_t,
+    uint32_t update_every)
 {
     int rc;
 
     rc = sqlite3_bind_int(res, 1, metric_id);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind metric_id parameter to get sql_add_metric_file_retention");
+        error_report("Failed to bind metric_id parameter to sql_add_metric_id_retention");
         goto failed;
     }
 
     rc = sqlite3_bind_int(res, 2, start_fileno);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind fileno parameter to get sql_add_metric_file_retention");
+        error_report("Failed to bind start_fileno parameter to sql_add_metric_id_retention");
         goto failed;
     }
 
     rc = sqlite3_bind_int(res, 3, end_fileno);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind fileno parameter to get sql_add_metric_file_retention");
+        error_report("Failed to bind end_fileno parameter to sql_add_metric_id_retention");
         goto failed;
     }
 
     rc = sqlite3_bind_int64(res, 4, first_time_t);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind first_time_t parameter to get sql_add_metric_file_retention");
+        error_report("Failed to bind first_time_t parameter to sql_add_metric_id_retention");
         goto failed;
     }
 
     rc = sqlite3_bind_int64(res, 5, last_time_t);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind last_time_t parameter to get sql_add_metric_file_retention");
+        error_report("Failed to bind last_time_t parameter to sql_add_metric_id_retention");
         goto failed;
     }
 
-    rc = sqlite3_bind_int(res, 6, update_every);
+    rc = sqlite3_bind_int(res, 6, (int) update_every);
     if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind update_every parameter to get sql_add_metric_file_retention");
+        error_report("Failed to bind update_every parameter to sql_add_metric_id_retention");
         goto failed;
     }
 
@@ -286,7 +285,7 @@ int sql_add_metric_id_retention(sqlite3_stmt *res, int metric_id, int start_file
 
 failed:
     if (unlikely(sqlite3_reset(res) != SQLITE_OK))
-        error_report("Failed to reset the prepared statement when sql_add_metric_file_retention");
+        error_report("Failed to reset the prepared statement when calling sql_add_metric_id_retention");
 
     return rc != SQLITE_DONE;
 }
@@ -299,67 +298,6 @@ sqlite3_stmt *snapshot_prepare_add_file_retention(sqlite3 *database)
 {
     return prepare_statement_v2(database, SQL_ADD_METRIC_TIER_FILE_RETENTION);
 }
-
-int sql_add_metric_file_retention(sqlite3_stmt *res, int metric_id, int fileno, time_t first_time_t, time_t last_time_t, int update_every)
-{
-    int rc;
-
-    rc = sqlite3_bind_int(res, 1, metric_id);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind metric_id parameter to get sql_add_metric_file_retention");
-        goto failed;
-    }
-
-    rc = sqlite3_bind_int(res, 2, fileno);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind fileno parameter to get sql_add_metric_file_retention");
-        goto failed;
-    }
-
-    rc = sqlite3_bind_int64(res, 3, first_time_t);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind first_time_t parameter to get sql_add_metric_file_retention");
-        goto failed;
-    }
-
-    rc = sqlite3_bind_int64(res, 4, last_time_t);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind last_time_t parameter to get sql_add_metric_file_retention");
-        goto failed;
-    }
-
-    rc = sqlite3_bind_int(res, 5, update_every);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind update_every parameter to get sql_add_metric_file_retention");
-        goto failed;
-    }
-
-    rc = sqlite3_step_monitored(res);
-    if (unlikely(rc != SQLITE_DONE))
-        error_report("Failed store file metric retention");
-
-failed:
-    if (unlikely(sqlite3_reset(res) != SQLITE_OK))
-        error_report("Failed to reset the prepared statement when sql_add_metric_file_retention");
-
-    return rc != SQLITE_DONE;
-}
-
-int sql_add_metric_uuid_retention(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, sqlite3_stmt *res, uuid_t *metric_uuid, int fileno, time_t first_time_t, time_t last_time_t, int update_every)
-{
-    int metric_id = sql_create_metric_uuid(lookup_res,add_res, metric_uuid);
-
-    if (unlikely(metric_id == -1))
-        return 1;
-
-    if (unlikely(sql_add_metric_file_retention(res, metric_id, fileno, first_time_t, last_time_t, update_every))) {
-        error_report("Failed to store metric retention");
-        return 1;
-    }
-    return 0;
-}
-
-//CREATE TABLE metric_retention (metric_id INTEGER PRIMARY KEY, first_fileno INTEGER, last_fileno INTEGER, first_time INTEGER, last_time INTEGER, update_every INTEGER);
 
 #define SQL_STORE_METRIC_ID                                                                                                \
     "INSERT OR REPLACE INTO metric_retention (metric_id, first_fileno, last_fileno, first_time, last_time, update_every) " \
@@ -387,36 +325,9 @@ sqlite3_stmt *snapshot_prepare_check(sqlite3 *database)
     return res;
 }
 
-bool sql_check_metric_count(sqlite3_stmt *res, int fileno, int entries, int file_size)
-{
-    int rc;
-    bool match = false;
-
-    rc = sqlite3_bind_int(res, 1, fileno);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind fileno parameter to get sql_check_metric_count");
-        goto failed;
-    }
-
-    rc = sqlite3_step_monitored(res);
-    int metric_count = 0;
-    int stored_file_size = 0;
-    if (likely(rc == SQLITE_ROW)) {
-        metric_count = sqlite3_column_int(res, 0);
-        stored_file_size = sqlite3_column_int(res, 1);
-    }
-    match = (metric_count == entries && stored_file_size == file_size);
-
-failed:
-    if (unlikely(sqlite3_reset(res) != SQLITE_OK))
-        error_report("Failed to reset the prepared statement when selecting node instance information");
-
-    return match;
-}
-
-
-#define SQL_SNAPSHOT_STORE_FILE_INFO "INSERT OR REPLACE INTO metric_file_info (fileno, metric_count, first_time, last_time, file_size) VALUES " \
-        "(@fileno, @metric_count, @first_time, @last_time, @file_size)"
+#define SQL_SNAPSHOT_STORE_FILE_INFO                                                                                   \
+    "INSERT OR REPLACE INTO metric_file_info (fileno, metric_count, first_time, last_time, file_size) VALUES "         \
+    "(@fileno, @metric_count, @first_time, @last_time, @file_size)"
 
 int sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, time_t first_time_t, time_t last_time_t, size_t file_size)
 {
@@ -469,48 +380,6 @@ failed:
     return store_rc != SQLITE_DONE;
 }
 
-#define SQL_SNAPSHOT_RESET_FILE "DELETE FROM metric_file_retention WHERE fileno = @fileno "
-
-int sql_snapshot_reset_fileno(sqlite3 *database, int fileno)
-{
-    sqlite3_stmt *res;
-    int store_rc = 0;
-
-    int rc = sqlite3_prepare_v2(database, SQL_SNAPSHOT_RESET_FILE, -1, &res, 0);
-    if (rc != SQLITE_OK)
-        return 1;
-
-    rc = sqlite3_bind_int(res, 1, fileno);
-    if (unlikely(rc != SQLITE_OK)) {
-        error_report("Failed to bind metric_id parameter to get sql_add_metric_file_retention");
-        goto failed;
-    }
-
-    store_rc = execute_insert(res);
-    if (unlikely(store_rc != SQLITE_DONE))
-        error_report("Failed to sql_snapshot_reset_fileno info rc = %d", rc);
-
-failed:
-    if (unlikely(sqlite3_finalize(res) != SQLITE_OK))
-        error_report("Failed to finalize statement when sql_snapshot_reset_fileno");
-
-    return store_rc != SQLITE_DONE;
-}
-
-void sql_snapshot_begin_transaction(STORAGE_INSTANCE *db_instance)
-{
-    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
-    spinlock_lock(&ctx->config.snapshot.spinlock);
-    (void) db_execute(ctx->config.snapshot.database,"BEGIN TRANSACTION");
-}
-
-void sql_snapshot_commit_transaction(STORAGE_INSTANCE *db_instance)
-{
-    struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
-    (void) db_execute(ctx->config.snapshot.database,"COMMIT TRANSACTION");
-    spinlock_unlock(&ctx->config.snapshot.spinlock);
-}
-
 sqlite3 *sql_create_tier_snapshot_database(int tier)
 {
     char *err_msg = NULL;
@@ -552,11 +421,11 @@ sqlite3 *sql_create_tier_snapshot_database(int tier)
         }
     }
 
-    snprintfz(buf, 1024, "ATTACH DATABASE \"%s/netdata-metric.db\" as mrg;", netdata_configured_cache_dir);
+    snprintfz(buf, sizeof(buf) - 1, "ATTACH DATABASE \"%s/netdata-metric.db\" AS mrg", netdata_configured_cache_dir);
 
     if(init_database_batch(database, list)) return NULL;
 
-    netdata_log_info("SQLite database initialization completed");
+    netdata_log_info("SQLite snapshot database for tier %d completed", tier);
     return database;
 }
 
@@ -572,6 +441,7 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
     if (rc != SQLITE_OK)
         return;
 
+    // During startup this holds file info for the ctx but no longer needed (key fileno, value -> idx)
     JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
     ctx->config.snapshot.JudyL = NULL;
 
@@ -585,7 +455,7 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
         uuid_t *uuid = (uuid_t *)sqlite3_column_blob(res, 0);
         time_t start_time_s = (time_t)sqlite3_column_int64(res, 1);
         time_t end_time_s = (time_t)sqlite3_column_int64(res, 2);
-        time_t update_every_s = (time_t)sqlite3_column_int64(res, 3);
+        uint32_t update_every_s = (uint32_t)sqlite3_column_int(res, 3);
         int metric_id = (int) sqlite3_column_int(res, 4);
 
         spinlock_lock(&metric_spinlock);
@@ -605,7 +475,7 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
             this_metric->last_fileno = (int) sqlite3_column_int(res, 6);
             this_metric->start_time_s = start_time_s;
             this_metric->end_time_s = end_time_s;
-            this_metric->update_every_s = (int) update_every_s;
+            this_metric->update_every_s = update_every_s;
         }
 
         mrg_update_metric_retention_and_granularity_by_uuid(
@@ -615,18 +485,18 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
         min_start_time_s = MIN(min_start_time_s, start_time_s);
     }
 
-    time_t old = __atomic_load_n(&ctx->atomic.first_time_s, __ATOMIC_RELAXED);;
+    time_t old = __atomic_load_n(&ctx->atomic.first_time_s, __ATOMIC_RELAXED);
     do {
         if(old <= min_start_time_s)
             break;
     } while(!__atomic_compare_exchange_n(&ctx->atomic.first_time_s, &old, min_start_time_s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
 
     freez(ctx->config.snapshot.metric_file_info);
-//    JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
     usec_t ended_ut = now_monotonic_usec();
 
-    netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms (minimum start_time_s = %ld)",
-        ctx->config.tier, count, (double)(ended_ut - started_ut) / USEC_PER_MS, min_start_time_s);
+    if (count)
+        netdata_log_info("sql_replay_snapshot_to_mrg: TIER %d load %zu entries in %0.2f ms (minimum start_time_s = %ld)",
+            ctx->config.tier, count, (double)(ended_ut - started_ut) / USEC_PER_MS, min_start_time_s);
 }
 
 static int return_int_cb(void *data, int argc, char **argv, char **column)
@@ -634,9 +504,13 @@ static int return_int_cb(void *data, int argc, char **argv, char **column)
     int *status = data;
     UNUSED(argc);
     UNUSED(column);
-    *status = str2uint32_t(argv[0], NULL);
+    *status = (int) str2uint32_t(argv[0], NULL);
     return 0;
 }
+
+#define SQL_GET_METRIC_FILE_INFO                                                                                       \
+    "SELECT fileno,metric_count,first_time,last_time,file_size FROM metric_file_info "                                 \
+    "ORDER BY fileno ASC"
 
 void snapshot_init(STORAGE_INSTANCE *db_instance)
 {
@@ -645,19 +519,18 @@ void snapshot_init(STORAGE_INSTANCE *db_instance)
     int row_count;
 
     struct rrdengine_instance *ctx = (struct rrdengine_instance *) db_instance;
-    snprintf(sql, 127, "SELECT COUNT(1) FROM metric_file_info");
+    snprintf(sql, sizeof(sql) - 1, "SELECT COUNT(1) FROM metric_file_info");
     int rc = sqlite3_exec_monitored(ctx->config.snapshot.database, sql, return_int_cb, (void *) &row_count, &err_msg);
     if (rc != SQLITE_OK) {
-        netdata_log_info("Error checking table existence; %s", err_msg);
+        netdata_log_info("Failed to count metric_file_info entries, error \"%s\"", err_msg);
         sqlite3_free(err_msg);
     }
 
     ctx->config.snapshot.metric_file_info = NULL;
 
-
     sqlite3_stmt *res;
 
-    rc = sqlite3_prepare_v2(ctx->config.snapshot.database, "SELECT fileno,metric_count,first_time,last_time,file_size FROM metric_file_info ORDER BY fileno ASC", -1, &res, 0);
+    rc = sqlite3_prepare_v2(ctx->config.snapshot.database, SQL_GET_METRIC_FILE_INFO, -1, &res, 0);
     if (rc != SQLITE_OK)
         return;
 

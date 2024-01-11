@@ -169,9 +169,9 @@ enum metadata_opcode {
     METADATA_MAINTENANCE,
     METADATA_SYNC_SHUTDOWN,
     METADATA_UNITTEST,
-    METADATA_ML_LOAD_MODELS,
+//    METADATA_ML_LOAD_MODELS,
     METADATA_BUILD_SNAPSHOT,
-    METADATA_UPDATE_SNAPSHOT,
+//    METADATA_UPDATE_SNAPSHOT,
     // leave this last
     // we need it to check for worker utilization
     METADATA_MAX_ENUMERATIONS_DEFINED
@@ -1565,22 +1565,24 @@ void vacuum_database(sqlite3 *database, const char *db_alias, int threshold, int
    }
 }
 
-static void after_snapshot_create_replay(uv_work_t *req, int status)
+static void after_snapshot_create(uv_work_t *req, int status)
 {
    UNUSED(status);
-   UNUSED(req);
    struct rrdengine_instance *ctx = req->data;
-   netdata_log_info("DEBUG: snapshot retention for tier %d completed", ctx->config.tier);
+   nd_log(NDLS_DAEMON, NDLP_DEBUG,"snapshot retention for tier %d completed", ctx->config.tier);
    freez(req);
 }
 
-static void snapshot_create_replay(uv_work_t *req)
+// Scan the files for a tier and collect snapshot information
+
+static void snapshot_create(uv_work_t *req)
 {
    register_libuv_worker_jobs();
 
    worker_is_busy(UV_EVENT_METADATA_SNAPSHOT);
 
    struct rrdengine_instance *ctx = req->data;
+   errno = 0;
 
    do {
        struct rrdengine_datafile *datafile = NULL;
@@ -1604,8 +1606,7 @@ static void snapshot_create_replay(uv_work_t *req)
        if(!datafile)
            break;
 
-       netdata_log_info("DEBUG: Checking snapshot retention for %d", (int) datafile->fileno);
-       //sql_mark_file_to_rebuild(ctx->config.snapshot.mark, (int) datafile->fileno, (int) 0);
+       //nd_log(NDLS_DAEMON, NDLP_DEBUG, "Checking snapshot retention for %d", (int) datafile->fileno);
        journalfile_v2_populate_retention_to_snapshot(ctx, datafile->journalfile);
        datafile->populate_snapshot.populated = true;
        spinlock_unlock(&datafile->populate_snapshot.spinlock);
@@ -1616,7 +1617,8 @@ static void snapshot_create_replay(uv_work_t *req)
    Word_t metric_id = 0;
    bool first = true;
 
-   netdata_log_info("DEBUG: Adding metric id to database for tier %d (%d metrics)", ctx->config.tier, JudyLCount(ctx->config.snapshot.JudyL, 0, -1, PJE0));
+   Word_t metrics = JudyLCount(ctx->config.snapshot.JudyL, 0, -1, PJE0);
+   nd_log(NDLS_DAEMON, NDLP_DEBUG, "Updating snapshot for tier %d (%zu metrics)", ctx->config.tier, metrics);
 
    int count = 0;
    while((PValue = JudyLFirstThenNext(ctx->config.snapshot.JudyL, &metric_id, &first))) {
@@ -1631,7 +1633,7 @@ static void snapshot_create_replay(uv_work_t *req)
                this_metric->last_fileno,
                this_metric->start_time_s,
                this_metric->end_time_s,
-               (int)this_metric->update_every_s);
+               this_metric->update_every_s);
            UNUSED(rc);
 
            count++;
@@ -1639,7 +1641,7 @@ static void snapshot_create_replay(uv_work_t *req)
        freez(this_metric);
    }
    JudyLFreeArray(&ctx->config.snapshot.JudyL, PJE0);
-   netdata_log_info("DEBUG: Adding metric id to database for tier %d -- done (added %d entries)", ctx->config.tier, count);
+   nd_log(NDLS_DAEMON, NDLP_DEBUG, "Processed snapshot to database for tier %d (added %d entries)", ctx->config.tier, count);
 
 //   int rc = sqlite3_finalize(ctx->config.snapshot.store_metric_id);
 //   if (rc != SQLITE_OK)
@@ -2246,8 +2248,8 @@ static void metadata_event_loop(void *arg)
                     uv_work_t *metadata_build_snapshot = callocz(1, sizeof(uv_work_t));
                     metadata_build_snapshot->data = ctx;
 
-                    if (unlikely(uv_queue_work(
-                            loop, metadata_build_snapshot, snapshot_create_replay, after_snapshot_create_replay))) {
+                    if (unlikely(
+                            uv_queue_work(loop, metadata_build_snapshot, snapshot_create, after_snapshot_create))) {
                         ctx->config.snapshot.running = false;
                         freez(metadata_build_snapshot);
                     }

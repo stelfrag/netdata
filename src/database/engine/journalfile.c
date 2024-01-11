@@ -904,7 +904,7 @@ static int journalfile_check_v2_metric_list(void *data_start, size_t file_size)
     return 0;
 }
 
-bool j2_validate_extent_crc(uv_file file, struct journal_v2_header *j2_header)
+static bool j2_validate_extent_crc(uv_file file, struct journal_v2_header *j2_header)
 {
     int ret;
     uv_buf_t iov;
@@ -931,7 +931,6 @@ bool j2_validate_extent_crc(uv_file file, struct journal_v2_header *j2_header)
     uv_fs_req_cleanup(&req);
 
     uLong crc;
-
     ret = 0;
     journal_v2_trailer = (struct journal_v2_block_trailer *) ((uint8_t *) j2_extent_list + extent_list_size);
     crc = crc32(0L, Z_NULL, 0);
@@ -1149,21 +1148,6 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     time_t header_start_time_s  = (time_t) (j2_header->start_time_ut / USEC_PER_SEC);
     time_t global_first_time_s = header_start_time_s;
     time_t now_s = max_acceptable_collected_time();
-
-//    bool file_in_snapshot = sql_check_metric_count(
-//        ctx->config.snapshot.check,
-//        (int)journalfile->datafile->fileno,
-//        (int)entries,
-//        (int)j2_header->journal_v2_file_size);
-
-//    bool file_in_snapshot = check_metric_count_judy(
-//        ctx, (int)journalfile->datafile->fileno, (int)entries, (int)j2_header->journal_v2_file_size);
-//
-//    if (file_in_snapshot) {
-//       journalfile->datafile->populate_snapshot.populated = true;
-//        netdata_log_info("TIER %d, File %d found in snapshot with %d entries (Judy)", ctx->config.tier, (int) journalfile->datafile->fileno, (int) entries);
-//    }
-//    else {
     journalfile->datafile->populate_snapshot.populated = false;
 
     for (size_t i = 0; i < entries; i++) {
@@ -1175,12 +1159,10 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
 
         metric++;
     }
-  //  }
 
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
 
-    //if (!file_in_snapshot)
     nd_log_daemon(NDLP_DEBUG,"DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
         , ctx->config.tier, journalfile->datafile->fileno
         , (double)data_size / 1024 / 1024
@@ -1194,8 +1176,9 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     } while(!__atomic_compare_exchange_n(&ctx->atomic.first_time_s, &old, global_first_time_s, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
 }
 
-bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile) {
-    usec_t started_ut = now_monotonic_usec();
+bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ctx, struct rrdengine_journalfile *journalfile)
+{
+//    usec_t started_ut = now_monotonic_usec();
 
     size_t data_size = 0;
     struct journal_v2_header *j2_header = journalfile_v2_data_acquire(journalfile, &data_size, 0, 0);
@@ -1210,9 +1193,7 @@ bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
     time_t header_end_time_s  = (time_t) (j2_header->end_time_ut / USEC_PER_SEC);
     int fileno = (int) journalfile->datafile->fileno;
 
-//    sql_snapshot_begin_transaction((STORAGE_INSTANCE *) ctx);
-    struct metric_data *this_metric;
-
+    // Store file the journafile info in the database
     int rc = sql_snapshot_store_file_info(
         ctx->config.snapshot.database,
         fileno,
@@ -1221,79 +1202,68 @@ bool journalfile_v2_populate_retention_to_snapshot(struct rrdengine_instance *ct
         header_end_time_s,
         j2_header->journal_v2_file_size);
 
-    if (likely(!rc)) {
-        for (size_t i = 0; i < entries && !rc; i++) {
-            time_t start_time_s = header_start_time_s + metric->delta_start_s;
-            time_t end_time_s = header_start_time_s + metric->delta_end_s;
-
-            // Find metric id from JudyHS or create in the DB
-            int metric_id =
-                sql_create_metric_uuid(ctx->config.snapshot.lookup, ctx->config.snapshot.store, &metric->uuid);
-
-            Pvoid_t *PValue = JudyLIns(&ctx->config.snapshot.JudyL, (Word_t)metric_id, PJE0);
-            if (PValue && *PValue)
-                this_metric = *PValue;
-            else {
-                this_metric = callocz(1, sizeof(*this_metric));
-                *PValue = this_metric;
-                this_metric->first_fileno = fileno;
-                this_metric->start_time_s = start_time_s;
-            }
-
-            if (fileno < this_metric->first_fileno) {
-                this_metric->first_fileno = fileno;
-                this_metric->updated = true;
-            }
-
-            if (fileno > this_metric->last_fileno) {
-                this_metric->last_fileno = fileno;
-                this_metric->updated = true;
-            }
-            if (start_time_s < this_metric->start_time_s) {
-                this_metric->start_time_s = start_time_s;
-                this_metric->updated = true;
-            }
-
-            if (end_time_s > this_metric->end_time_s) {
-                this_metric->end_time_s = end_time_s;
-                this_metric->updated = true;
-            }
-
-            if (this_metric->update_every_s != (int)metric->update_every_s) {
-                this_metric->update_every_s = (int)metric->update_every_s;
-                this_metric->updated = true;
-            }
-
-            //            this_metric->first_fileno = MIN(this_metric->first_fileno, fileno);
-//            this_metric->last_fileno = MAX(this_metric->last_fileno, fileno);
-//            this_metric->start_time_s = MIN(this_metric->start_time_s, start_time_s);
-//            this_metric->end_time_s = MAX(this_metric->end_time_s, end_time_s);
-//            this_metric->update_every_s = (int)metric->update_every_s;
-
-//            rc = sql_add_metric_uuid_retention(
-//                ctx->config.snapshot.lookup,
-//                ctx->config.snapshot.store,
-//                ctx->config.snapshot.res,
-//                &metric->uuid,
-//                fileno,
-//                start_time_s,
-//                end_time_s,
-//                (int)metric->update_every_s);
-            metric++;
-        }
+    if (rc) {
+        journalfile_v2_data_release(journalfile);
+        return false;
     }
 
-//    sql_snapshot_commit_transaction((STORAGE_INSTANCE *)ctx);
+    for (size_t i = 0; i < entries; i++) {
+        struct metric_data *this_metric;
+
+        time_t start_time_s = header_start_time_s + metric->delta_start_s;
+        time_t end_time_s = header_start_time_s + metric->delta_end_s;
+
+        // Find metric id from JudyHS or create in the DB
+        int metric_id =
+            sql_find_or_create_metric_uuid(ctx->config.snapshot.lookup, ctx->config.snapshot.store, &metric->uuid);
+
+        Pvoid_t *PValue = JudyLIns(&ctx->config.snapshot.JudyL, (Word_t)metric_id, PJE0);
+        if (PValue && *PValue)
+            this_metric = *PValue;
+        else {
+            this_metric = callocz(1, sizeof(*this_metric));
+            *PValue = this_metric;
+            this_metric->first_fileno = fileno;
+            this_metric->start_time_s = start_time_s;
+        }
+
+        if (fileno < this_metric->first_fileno) {
+            this_metric->first_fileno = fileno;
+            this_metric->updated = true;
+        }
+
+        if (fileno > this_metric->last_fileno) {
+            this_metric->last_fileno = fileno;
+            this_metric->updated = true;
+        }
+
+        if (start_time_s < this_metric->start_time_s) {
+            this_metric->start_time_s = start_time_s;
+            this_metric->updated = true;
+        }
+
+        if (end_time_s > this_metric->end_time_s) {
+            this_metric->end_time_s = end_time_s;
+            this_metric->updated = true;
+        }
+
+        if (this_metric->update_every_s != metric->update_every_s) {
+            this_metric->update_every_s = metric->update_every_s;
+            this_metric->updated = true;
+        }
+
+        metric++;
+    }
 
     journalfile_v2_data_release(journalfile);
-    usec_t ended_ut = now_monotonic_usec();
+//    usec_t ended_ut = now_monotonic_usec();
 
-    netdata_log_info(
-        "DBENGINE: SNAPSHOT for tier %d, journalfile %u populated, metrics: %0.2f k, %0.2f ms",
-        ctx->config.tier,
-        journalfile->datafile->fileno,
-        (double)entries / 1000,
-        ((double)(ended_ut - started_ut) / USEC_PER_MS));
+//    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+//        "DBENGINE: SNAPSHOT for tier %d, journalfile %u populated, metrics: %0.2f k, %0.2f ms",
+//        ctx->config.tier,
+//        journalfile->datafile->fileno,
+//        (double)entries / 1000,
+//        ((double)(ended_ut - started_ut) / USEC_PER_MS));
 
     return true;
 }
@@ -1311,7 +1281,6 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
     journalfile_v2_generate_path(datafile, path_v2, sizeof(path_v2));
     fd = open_file_for_io(path_v2, O_RDONLY, &file, use_direct_io);
 
-//    fd = open(path_v2, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         if (errno == ENOENT)
             return 1;
@@ -1342,36 +1311,8 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     nd_log_daemon(NDLP_DEBUG, "DBENGINE: checking integrity of '%s'", path_v2);
 
-//    bool file_ok = check_metric_count_judy(ctx, (int) datafile->fileno, 0, (int) journal_v2_file_size);
-//    uint8_t *data_start = NULL;
-//    if (false == file_ok) {
-//        data_start = mmap(NULL, journal_v2_file_size, PROT_READ, MAP_SHARED, fd, 0);
-//        if (data_start == MAP_FAILED) {
-//            close(fd);
-//            return 1;
-//        }
-//    }
-
-    //netdata_log_info("DBENGINE: checking integrity of '%s' (FILE CRC CHECK \"%s\")", path_v2, file_ok ? "SKIP" : "YES");
     usec_t validation_start_ut = now_monotonic_usec();
 
-//    if (false == file_ok) {
-//        int rc = journalfile_v2_validate(data_start, journal_v2_file_size, journal_v1_file_size, file_ok);
-//        if (unlikely(rc)) {
-//            if (rc == 2)
-//                error_report("File %s needs to be rebuilt", path_v2);
-//            else if (rc == 3)
-//                error_report("File %s will be skipped", path_v2);
-//            else
-//                error_report("File %s is invalid and it will be rebuilt", path_v2);
-//
-//            if (unlikely(munmap(data_start, journal_v2_file_size)))
-//                netdata_log_error("DBENGINE: failed to unmap '%s'", path_v2);
-//
-//            close(fd);
-//            return rc;
-//        }
-//    }
     int rc;
 
     if (false == file_ok) {
@@ -1381,6 +1322,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         if (!ret)
             journal_v1_file_size = (uint32_t)statbuf.st_size;
 
+        // Check if header was created from snapshot and release it
         if (j2_header && j2_header->magic == 0x01)
             freez(j2_header);
 
@@ -1393,28 +1335,19 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
             else
                 error_report("File %s is invalid and it will be rebuilt", path_v2);
 
-            //        if (data_start) {
-            //            if (unlikely(munmap(data_start, journal_v2_file_size)))
-            //                error("DBENGINE: failed to unmap '%s'", path_v2);
-            //        }
             posix_memfree(j2_header);
             close(fd);
             return rc;
         }
     }
 
-//    struct journal_v2_header *j2_header = (void *) data_start;
     uint32_t entries = j2_header->metric_count;
 
     if (unlikely(!entries)) {
-//        if (unlikely(munmap(data_start, journal_v2_file_size)))
-//            netdata_log_error("DBENGINE: failed to unmap '%s'", path_v2);
-
         if (j2_header->magic == 0x01)
             freez(j2_header);
         else
             posix_memfree(j2_header);
-
         close(fd);
         return 1;
     }
@@ -1435,7 +1368,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     if (!db_engine_journal_check && false == file_ok)
         journalfile->v2.flags |= JOURNALFILE_FLAG_METRIC_CRC_CHECK;
-//    journalfile_v2_data_set(journalfile, fd, data_start, journal_v2_file_size);
+
     journalfile_v2_data_set(journalfile, fd, NULL, j2_header, journal_v2_file_size, file_ok);
 
     ctx_current_disk_space_increase(ctx, journal_v2_file_size);
