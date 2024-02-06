@@ -1105,6 +1105,8 @@ set(RRD_PLUGIN_FILES
         src/database/sqlite/sqlite_aclk_node.h
         src/database/sqlite/sqlite_aclk_alert.c
         src/database/sqlite/sqlite_aclk_alert.h
+        src/database/sqlite/sqlite_snapshot.c
+        src/database/sqlite/sqlite_snapshot.h
         src/database/sqlite/sqlite3.c
         src/database/sqlite/sqlite3.h
         src/database/sqlite/sqlite3recover.c
