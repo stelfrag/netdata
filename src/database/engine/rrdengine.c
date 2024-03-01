@@ -1187,25 +1187,6 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
                 else
                     zero_retention_referenced++;
                 // Add this UUID to be deleted
-                uuid_first_t_entry->snapshot_valid = false;
-                Pvoid_t *PValue = JudyLIns(&su->JudyL, su->entries++, PJE0);
-                if (PValue) {
-                    struct {
-                        uint64_t part1;
-                        uint64_t part2;
-                    } my_uuid;
-                    memcpy(&my_uuid, &uuid_first_t_entry->uuid[0], 16);
-                    *((Word_t *) PValue) = my_uuid.part1;
-                    PValue = JudyLIns(&su->JudyL, su->entries++, PJE0);
-                    if (PValue)
-                        *((Word_t *) PValue) = my_uuid.part2;
-                }
-
-                bool deleted = mrg_metric_release_and_delete(main_mrg, uuid_first_t_entry->metric);
-                if(deleted)
-                    deleted_metrics++;
-                else
-                    zero_retention_referenced++;
             }
             else {
                 zero_disk_but_live++;

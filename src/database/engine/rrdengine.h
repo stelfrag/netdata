@@ -519,7 +519,6 @@ struct uuid_first_time_s {
     size_t pages_found;
     size_t df_matched;
     size_t df_index_oldest;
-    bool snapshot_valid;
 };
 
 struct snapshot_update {
