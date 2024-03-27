@@ -18,7 +18,6 @@ struct metric_data {
 };
 
 int sql_init_snapshot_database(int memory);
-void sql_close_snapshot_database(void);
 
 sqlite3 *sql_create_tier_snapshot_database(int tier);
 

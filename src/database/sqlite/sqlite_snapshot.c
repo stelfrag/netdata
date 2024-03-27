@@ -104,23 +104,6 @@ int sql_init_snapshot_database(int memory)
     return 0;
 }
 
-/*
- * Close the sqlite database
- */
-
-void sql_close_snapshot_database(void)
-{
-    int rc;
-    if (unlikely(!db_snapshot))
-        return;
-
-    netdata_log_info("Closing SQLite database");
-
-    rc = sqlite3_close_v2(db_snapshot);
-    if (unlikely(rc != SQLITE_OK))
-        error_report("Error %d while closing the metric snapshot SQLite database, %s", rc, sqlite3_errstr(rc));
-}
-
 static inline sqlite3_stmt *prepare_statement_v2(sqlite3 *database, const char *query)
 {
     sqlite3_stmt *res;
