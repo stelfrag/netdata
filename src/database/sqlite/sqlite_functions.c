@@ -363,6 +363,7 @@ void sql_close_database(sqlite3 *database, const char *database_name)
 }
 
 extern sqlite3 *db_context_meta;
+extern sqlite3 *db_snapshot;
 
 void sqlite_close_databases(void)
 {
@@ -370,6 +371,7 @@ void sqlite_close_databases(void)
 
     sql_close_database(db_context_meta, "CONTEXT");
     sql_close_database(db_meta, "METADATA");
+    sql_close_database(db_snapshot, "SNAPSHOT");
 }
 
 uint64_t get_total_database_space(void)
