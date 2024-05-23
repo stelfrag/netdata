@@ -1275,6 +1275,7 @@ set(WINDOWS_PLUGIN_FILES
         src/collectors/windows.plugin/perflib-dump.c
         src/collectors/windows.plugin/perflib-storage.c
         src/collectors/windows.plugin/perflib-processor.c
+        src/collectors/windows.plugin/perflib-processor-performance.c
         src/collectors/windows.plugin/perflib-network.c
         src/collectors/windows.plugin/perflib-memory.c
         src/collectors/windows.plugin/perflib-processes.c

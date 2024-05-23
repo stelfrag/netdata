@@ -12,6 +12,10 @@ struct processor {
     RRDDIM *rd_irq;
     RRDDIM *rd_dpc;
     RRDDIM *rd_idle;
+    RRDSET *st_performance;
+    RRDDIM *rd_performance;
+    RRDDIM *rd_utility;
+    RRDDIM *rd_limit;
 
 //    RRDSET *st2;
 //    RRDDIM *rd2_busy;
@@ -22,6 +26,9 @@ struct processor {
     COUNTER_DATA percentDPCTime;
     COUNTER_DATA percentInterruptTime;
     COUNTER_DATA percentIdleTime;
+    COUNTER_DATA percentPerformance;
+    COUNTER_DATA percentPerformanceUtility;
+    COUNTER_DATA percentPerformanceLimit;
 };
 
 struct processor total = { 0 };
@@ -33,6 +40,9 @@ void initialize_processor_keys(struct processor *p) {
     p->percentDPCTime.key = "% DPC Time";
     p->percentInterruptTime.key = "% Interrupt Time";
     p->percentIdleTime.key = "% Idle Time";
+    p->percentPerformance.key = "% Performance";
+    p->percentPerformanceUtility.key = "% Performance Utility";
+    p->percentPerformanceLimit.key = "% Performance Limit";
 }
 
 void dict_processor_insert_cb(const DICTIONARY_ITEM *item __maybe_unused, void *value, void *data __maybe_unused) {
@@ -95,6 +105,9 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
         perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentDPCTime);
         perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentInterruptTime);
         perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentIdleTime);
+        perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentPerformance);
+        perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentPerformanceUtility);
+        perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentPerformanceLimit);
 
         if(!p->st) {
             p->st = rrdset_create_localhost(
@@ -122,6 +135,24 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
                 rrdlabels_add(p->st->rrdlabels, "cpu", windows_shared_buffer, RRDLABEL_SRC_AUTO);
             else
                 cpus_var = rrdvar_host_variable_add_and_acquire(localhost, "active_processors");
+
+            p->st_performance = rrdset_create_localhost(
+                is_total ? "system" : "cpu"
+                , is_total ? "cpu" : windows_shared_buffer, NULL
+                , is_total ? "cpu" : "utilization"
+                , is_total ? "system.cpu" : "cpu.cpu"
+                , is_total ? "Total CPU Utilization" : "Core Utilization"
+                , "percentage"
+                , PLUGIN_WINDOWS_NAME
+                , "PerflibProcessor"
+                , is_total ? NETDATA_CHART_PRIO_SYSTEM_CPU : NETDATA_CHART_PRIO_CPU_PER_CORE
+                , update_every
+                , RRDSET_TYPE_STACKED
+            );
+
+            p->rd_performance = rrddim_add(p->st_performance, "performance", NULL, 1, 1, RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL);
+            p->rd_limit       = rrddim_add(p->st_performance, "limit",       NULL, 1, 1, RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL);
+            p->rd_utility     = rrddim_add(p->st_performance, "utilization", NULL, 1, 1, RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL);
         }
 
         uint64_t user = p->percentUserTime.current.Data;
@@ -129,6 +160,9 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
         uint64_t dpc = p->percentDPCTime.current.Data;
         uint64_t irq = p->percentInterruptTime.current.Data;
         uint64_t idle = p->percentIdleTime.current.Data;
+        uint64_t limit = p->percentPerformanceLimit.current.Data;
+        uint64_t performance = p->percentPerformance.current.Data;
+        uint64_t utilization = p->percentPerformanceUtility.current.Data;
 
         rrddim_set_by_pointer(p->st, p->rd_user, (collected_number)user);
         rrddim_set_by_pointer(p->st, p->rd_system, (collected_number)system);
@@ -136,6 +170,13 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
         rrddim_set_by_pointer(p->st, p->rd_dpc, (collected_number)dpc);
         rrddim_set_by_pointer(p->st, p->rd_idle, (collected_number)idle);
         rrdset_done(p->st);
+
+        rrddim_set_by_pointer(p->st_performance, p->rd_limit, (collected_number)limit);
+        rrddim_set_by_pointer(p->st_performance, p->rd_performance, (collected_number)performance);
+        rrddim_set_by_pointer(p->st_performance, p->rd_utility, (collected_number)utilization);
+        
+        rrdset_done(p->st_performance);
+
 
 //        if(!p->st2) {
 //            p->st2 = rrdset_create_localhost(
