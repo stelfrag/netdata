@@ -31,7 +31,7 @@ struct processor {
     COUNTER_DATA percentPerformanceLimit;
 };
 
-struct processor total = { 0 };
+static struct processor total = { 0 };
 
 void initialize_processor_keys(struct processor *p) {
     p->percentProcessorTime.key = "% Processor Time";
@@ -75,6 +75,8 @@ static bool do_processors(PERF_DATA_BLOCK *pDataBlock, int update_every) {
 
         if(!getInstanceName(pDataBlock, pObjectType, pi, windows_shared_buffer, sizeof(windows_shared_buffer)))
             strncpyz(windows_shared_buffer, "[unknown]", sizeof(windows_shared_buffer) - 1);
+
+	netdata_log_info("DEBUG: [%s]", windows_shared_buffer);
 
         bool is_total = false;
         struct processor *p;

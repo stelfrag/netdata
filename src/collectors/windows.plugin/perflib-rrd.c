@@ -29,7 +29,7 @@ RRDDIM *perflib_rrddim_add(RRDSET *st, const char *id, const char *name, collect
 
         case PERF_OBJ_TIME_TIMER:
         case PERF_COUNTER_TIMER:
-        case PERF_100NSEC_TIMER:
+        //case PERF_100NSEC_TIMER:
         case PERF_PRECISION_SYSTEM_TIMER:
         case PERF_PRECISION_100NS_TIMER:
         case PERF_PRECISION_OBJECT_TIMER:
@@ -136,14 +136,17 @@ collected_number perflib_rrddim_set_by_pointer(RRDSET *st, RRDDIM *rd, COUNTER_D
         case PERF_COUNTER_100NS_QUEUELEN_TYPE:
         case PERF_COUNTER_OBJ_TIME_QUEUELEN_TYPE:
         case PERF_COUNTER_LARGE_QUEUELEN_TYPE:
-        case PERF_AVERAGE_BULK:  // normally not displayed
-            // (N1 - N0) / (D1 - D0)
-            value = (collected_number)cd->current.Data;
-            break;
+		value = (collected_number)cd->current.Data;
+		break;
+
+        //case PERF_AVERAGE_BULK:  // normally not displayed
+            // (N1 - N0) / (D1 - D0)            
+        //    value = (collected_number)cd->current.Data;
+        //    break;
 
         case PERF_OBJ_TIME_TIMER:
         case PERF_COUNTER_TIMER:
-        case PERF_100NSEC_TIMER:
+        //case PERF_100NSEC_TIMER:
         case PERF_PRECISION_SYSTEM_TIMER:
         case PERF_PRECISION_100NS_TIMER:
         case PERF_PRECISION_OBJECT_TIMER:
@@ -152,7 +155,26 @@ collected_number perflib_rrddim_set_by_pointer(RRDSET *st, RRDDIM *rd, COUNTER_D
             value = (collected_number)cd->current.Data;
             break;
 
-        case PERF_COUNTER_TIMER_INV:
+	case PERF_AVERAGE_BULK:
+         	 if(!VALID_DELTA(cd)) return 0;
+            numerator = cd->current.Data - cd->previous.Data;
+            denominator = cd->current.Time - cd->previous.Time;
+            doubleValue = 100.0 * (1.0 - ((double)numerator / (double)denominator));
+            // printf("Display value is (timer-inv): %f%%\n", doubleValue);
+            value = (collected_number)(doubleValue);
+            break;
+
+//        case PERF_COUNTER_TIMER:
+        case PERF_100NSEC_TIMER:
+            // 100 * (1 - ((N1 - N0) / (D1 - D0)))
+            if(!VALID_DELTA(cd)) return 0;
+            numerator = cd->current.Data - cd->previous.Data;
+            denominator = cd->current.Time - cd->previous.Time;
+            doubleValue = 100.0 * (1.0 - ((double)numerator / (double)denominator));
+            // printf("Display value is (timer-inv): %f%%\n", doubleValue);
+            value = (collected_number)(doubleValue);
+            break;
+
         case PERF_100NSEC_TIMER_INV:
             // 100 * (1 - ((N1 - N0) / (D1 - D0)))
             if(!VALID_DELTA(cd)) return 0;
@@ -289,8 +311,8 @@ double perflibCalculateValue(RAW_DATA *current, RAW_DATA *previous) {
             // (N1 - N0) / (D1 - D0)
             numerator = current->Data - previous->Data;
             denominator = current->Time - previous->Time;
-            doubleValue = (double)numerator / denominator;
-            if (previous->CounterType != PERF_AVERAGE_BULK) {
+            doubleValue = (double)numerator / 1.0 * denominator;
+            if (previous->CounterType == PERF_AVERAGE_BULK) {
                 // printf("Display value is (queuelen): %f\n", doubleValue);
                 return doubleValue;
             }

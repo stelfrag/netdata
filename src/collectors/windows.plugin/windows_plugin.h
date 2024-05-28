@@ -18,6 +18,7 @@ int do_PerflibStorage(int update_every, usec_t dt);
 int do_PerflibNetwork(int update_every, usec_t dt);
 int do_PerflibProcesses(int update_every, usec_t dt);
 int do_PerflibProcessor(int update_every, usec_t dt);
+int do_PerflibProcessorPerformance(int update_every, usec_t dt);
 int do_PerflibMemory(int update_every, usec_t dt);
 
 #include "perflib.h"
