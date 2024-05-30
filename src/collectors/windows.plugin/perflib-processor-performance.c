@@ -19,7 +19,7 @@ struct processor_performance {
 struct processor_performance total = { 0 };
 
 void initialize_processor_performance_keys(struct processor_performance *p) {
-    p->percentPerformance.key = "% Performance";
+    p->percentPerformance.key = "% Processor Performance";
     p->percentPerformanceUtility.key = "% Performance Utility";
     p->percentPerformanceLimit.key = "% Performance Limit";
 }
