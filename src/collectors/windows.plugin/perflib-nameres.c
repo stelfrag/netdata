@@ -3,17 +3,6 @@
 #include "windows_plugin.h"
 #include "windows-internals.h"
 
-//struct collection_data {
-//    bool collected_metadata;
-
-//    RRDSET *st;
-//    RRDDIM *rd_resolve;
-//    RRDDIM *rd_cache;
-
-//    COUNTER_DATA resolve;
-//    COUNTER_DATA cache;
-//};
-
 COUNTER_DATA resolve = {.key = "Resolve"};
 COUNTER_DATA cache = {.key = "Cache Entry"};
 
@@ -26,50 +15,38 @@ static bool do_name_resolution(PERF_DATA_BLOCK *pDataBlock, int update_every)
     PERF_OBJECT_TYPE *pObjectType = perflibFindObjectTypeByName(pDataBlock, "Peer Name Resolution Protocol");
     if(!pObjectType) return false;
 
-    PERF_INSTANCE_DEFINITION *pi = NULL;
-    for(LONG i = 0; i < pObjectType->NumInstances ; i++) {
-        pi = perflibForEachInstance(pDataBlock, pObjectType, pi);
-        if (!pi)
-            break;
+    if (!st) {
+        st = rrdset_create_localhost(
+            "network",
+            "resolution",
+            NULL,
+            "network",
+            NULL,
+            "Name Resolution Statistics",
+            "entries",
+            PLUGIN_WINDOWS_NAME,
+            "PerflibNetwork",
+            NETDATA_CHART_PRIO_IPV4_PACKETS,
+            update_every,
+            RRDSET_TYPE_LINE);
 
-        if (!st) {
-            st = rrdset_create_localhost(
-                "network",
-                "resolution",
-                NULL,
-                "network",
-                NULL,
-                "Name Resolution Statistics",
-                "entries",
-                PLUGIN_WINDOWS_NAME,
-                "PerflibNetwork",
-                NETDATA_CHART_PRIO_IPV4_PACKETS,
-                update_every,
-                RRDSET_TYPE_LINE);
-
-            rd_resolve = rrddim_add(st, "resolve", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-            rd_cache = rrddim_add(st, "cache", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
-        }
-
-        perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &cache);
-        perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &resolve);
-
-        rrddim_set_by_pointer(st, rd_cache, cache.current.Data);
-        rrddim_set_by_pointer(st, rd_resolve, resolve.current.Data);
-
-        rrdset_done(st);
+        rd_resolve = rrddim_add(st, "resolve", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+        rd_cache = rrddim_add(st, "cache", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
     }
+
+    perflibGetObjectCounter(pDataBlock, pObjectType, &cache);
+    perflibGetObjectCounter(pDataBlock, pObjectType, &resolve);
+
+    rrddim_set_by_pointer(st, rd_cache, cache.current.Data);
+    rrddim_set_by_pointer(st, rd_resolve, resolve.current.Data);
+
+    rrdset_done(st);
 
     return true;
 }
 
-int do_Perflib_nameres(int update_every, usec_t dt __maybe_unused) {
-//    static bool initialized = false;
-
-//    if(unlikely(!initialized)) {
-//        initialize();
-//        initialized = true;
-//    }
+int do_Perflib_nameres(int update_every, usec_t dt __maybe_unused)
+{
 
     DWORD id = RegistryFindIDByName("Peer Name Resolution Protocol");
     if(id == PERFLIB_REGISTRY_NAME_NOT_FOUND)
