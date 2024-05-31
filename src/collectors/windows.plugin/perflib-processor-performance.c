@@ -41,7 +41,7 @@ static void initialize(void) {
 }
 
 static bool do_processors_performance(PERF_DATA_BLOCK *pDataBlock, int update_every) {
-    PERF_OBJECT_TYPE *pObjectType = perflibFindObjectTypeByName(pDataBlock, "Processor Performance");
+    PERF_OBJECT_TYPE *pObjectType = perflibFindObjectTypeByName(pDataBlock, "Processor Information");
     if(!pObjectType) return false;
 
     static const RRDVAR_ACQUIRED *cpus_var = NULL;
@@ -127,7 +127,7 @@ int do_PerflibProcessorPerformance(int update_every, usec_t dt __maybe_unused) {
         initialized = true;
     }
 
-    DWORD id = RegistryFindIDByName("Processor Performance");
+    DWORD id = RegistryFindIDByName("Processor Information");
     if(id == PERFLIB_REGISTRY_NAME_NOT_FOUND)
         return -1;
 
