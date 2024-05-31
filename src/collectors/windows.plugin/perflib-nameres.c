@@ -3,9 +3,6 @@
 #include "windows_plugin.h"
 #include "windows-internals.h"
 
-COUNTER_DATA resolve = {.key = "Resolve"};
-COUNTER_DATA cache = {.key = "Cache Entry"};
-
 static bool do_name_resolution(PERF_DATA_BLOCK *pDataBlock, int update_every)
 {
     static RRDSET *st = NULL;
@@ -14,6 +11,9 @@ static bool do_name_resolution(PERF_DATA_BLOCK *pDataBlock, int update_every)
 
     PERF_OBJECT_TYPE *pObjectType = perflibFindObjectTypeByName(pDataBlock, "Peer Name Resolution Protocol");
     if(!pObjectType) return false;
+
+    static COUNTER_DATA resolve = {.key = "Resolve"};
+    static COUNTER_DATA cache = {.key = "Cache Entry"};
 
     if (!st) {
         st = rrdset_create_localhost(
@@ -37,7 +37,7 @@ static bool do_name_resolution(PERF_DATA_BLOCK *pDataBlock, int update_every)
     perflibGetObjectCounter(pDataBlock, pObjectType, &cache);
     perflibGetObjectCounter(pDataBlock, pObjectType, &resolve);
 
-    rrddim_set_by_pointer(st, rd_cache, cache.current.Data);
+    rrddim_set_by_pointer(st, rd_cache, (collected_number) cache.current.Data);
     rrddim_set_by_pointer(st, rd_resolve, resolve.current.Data);
 
     rrdset_done(st);

@@ -6,7 +6,7 @@
 struct processor_performance {
     bool collected_metadata;
 
-    RRDSET *st_performance;
+    RRDSET *st;
     RRDDIM *rd_performance;
     RRDDIM *rd_utility;
     RRDDIM *rd_limit;
@@ -82,8 +82,8 @@ static bool do_processors_performance(PERF_DATA_BLOCK *pDataBlock, int update_ev
         perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentPerformanceUtility);
         perflibGetInstanceCounter(pDataBlock, pObjectType, pi, &p->percentPerformanceLimit);
 
-        if(!p->st_performance) {
-            p->st_performance = rrdset_create_localhost(
+        if(!p->st) {
+            p->st = rrdset_create_localhost(
                 is_total ? "system" : "cpu"
                 , is_total ? "cpu" : windows_shared_buffer, NULL
                 , is_total ? "cpu" : "utilization"
@@ -97,20 +97,20 @@ static bool do_processors_performance(PERF_DATA_BLOCK *pDataBlock, int update_ev
                 , RRDSET_TYPE_STACKED
             );
 
-            p->rd_performance = perflib_rrddim_add(p->st_performance, "performance", NULL, 1, 1, &p->percentPerformance);
-            p->rd_limit       = perflib_rrddim_add(p->st_performance, "limit",       NULL, 1, 1, &p->percentPerformanceLimit);
-            p->rd_utility     = perflib_rrddim_add(p->st_performance, "utilization", NULL, 1, 1, &p->percentPerformanceUtility);
+            p->rd_performance = rrddim_add(p->st, "performance", NULL, 1, 1, RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL);
+            p->rd_limit       = rrddim_add(p->st, "limit",       NULL, 1, 1, RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL);
+            p->rd_utility     = rrddim_add(p->st, "utilization", NULL, 1, 1, RRD_ALGORITHM_PCENT_OVER_DIFF_TOTAL);
         }
 
         uint64_t limit = p->percentPerformanceLimit.current.Data;
         uint64_t performance = p->percentPerformance.current.Data;
         uint64_t utilization = p->percentPerformanceUtility.current.Data;
 
-        perflib_rrddim_set_by_pointer(p->st_performance, p->rd_limit, &p->percentPerformanceLimit);
-        perflib_rrddim_set_by_pointer(p->st_performance, p->rd_performance,  &p->percentPerformance);
-        perflib_rrddim_set_by_pointer(p->st_performance, p->rd_utility, &p->percentPerformanceUtility);
+        rrddim_set_by_pointer(p->st, p->rd_limit, (collected_number) limit);
+        rrddim_set_by_pointer(p->st, p->rd_performance,  (collected_number) performance);
+        rrddim_set_by_pointer(p->st, p->rd_utility, (collected_number) utilization);
         
-        rrdset_done(p->st_performance);
+        rrdset_done(p->st);
     }
 
     if(cpus_var)
