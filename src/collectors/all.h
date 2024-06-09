@@ -20,6 +20,7 @@
 
 #define NETDATA_CHART_PRIO_SYSTEM_CPU                   100
 #define NETDATA_CHART_PRIO_SYSTEM_LOAD                  100
+#define NETDATA_CHART_PRIO_SYSTEM_CPU_KERNEL_SYNC       100
 #define NETDATA_CHART_PRIO_SYSTEM_IO                    150
 #define NETDATA_CHART_PRIO_SYSTEM_PGPGIO                151
 #define NETDATA_CHART_PRIO_SYSTEM_RAM                   200

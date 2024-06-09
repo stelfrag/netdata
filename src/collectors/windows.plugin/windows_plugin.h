@@ -19,6 +19,9 @@ int do_PerflibNetwork(int update_every, usec_t dt);
 int do_PerflibProcesses(int update_every, usec_t dt);
 int do_PerflibProcessor(int update_every, usec_t dt);
 int do_PerflibProcessorPerformance(int update_every, usec_t dt);
+int do_PerflibSynchronizationPerformance(int update_every, usec_t dt);
+int do_PerflibBatteryStatus(int update_every, usec_t dt);
+int do_PerflibLdapClientPerformance(int update_every, usec_t dt);
 int do_Perflib_nameres(int update_every, usec_t dt __maybe_unused);
 int do_PerflibMemory(int update_every, usec_t dt);
 

@@ -1276,6 +1276,9 @@ set(WINDOWS_PLUGIN_FILES
         src/collectors/windows.plugin/perflib-storage.c
         src/collectors/windows.plugin/perflib-processor.c
         src/collectors/windows.plugin/perflib-processor-performance.c
+        src/collectors/windows.plugin/perflib-synchronization.c
+        src/collectors/windows.plugin/perflib-ldap-client.c
+        src/collectors/windows.plugin/perflib-battery-status.c
         src/collectors/windows.plugin/perflib-nameres.c
         src/collectors/windows.plugin/perflib-network.c
         src/collectors/windows.plugin/perflib-memory.c
