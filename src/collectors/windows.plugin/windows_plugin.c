@@ -25,6 +25,7 @@ static struct proc_module {
     {.name = "PerflibLdapClientPerformance",    .dim = "PerflibLdapClientPerformance",        .func = do_PerflibLdapClientPerformance},
     {.name = "PerflibSynchronizationPerformance",    .dim = "PerflibSynchronizationPerformance",        .func = do_PerflibSynchronizationPerformance},
     {.name = "PerflibBatteryStatus",    .dim = "PerflibBatteryStatus",        .func = do_PerflibBatteryStatus},
+    {.name = "PerflibThermalZoneInformation",    .dim = "PerflibThermalZoneInformation",        .func = do_PerflibThermalZoneInformation},
 //    {.name = "PerflibNameResolution",    .dim = "PerflibNameResolution",        .func = do_Perflib_nameres},
     {.name = "PerflibMemory",       .dim = "PerflibMemory",           .func = do_PerflibMemory},
     {.name = "PerflibStorage",      .dim = "PerflibStorage",          .func = do_PerflibStorage},
