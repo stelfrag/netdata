@@ -120,7 +120,7 @@ sqlite3_stmt *snapshot_prepare_lookup_metric(sqlite3 *database)
     return prepare_statement_v2(database, "SELECT metric_id FROM metric WHERE metric_uuid = @metric_uuid");
 }
 
-int sql_get_metric_id_from_uuid(sqlite3_stmt *res, uuid_t *metric_uuid)
+int sql_get_metric_id_from_uuid(sqlite3_stmt *res, nd_uuid_t *metric_uuid)
 {
     int rc;
 
@@ -149,7 +149,7 @@ sqlite3_stmt *snapshot_prepare_store_metric(sqlite3 *database)
     return prepare_statement_v2(database, "INSERT OR IGNORE INTO metric(metric_uuid) VALUES (@metric_uuid) RETURNING metric_id");
 }
 // Add a uuid and return rowid in the database
-int sql_add_metric_uuid(sqlite3_stmt *res, uuid_t *metric_uuid)
+int sql_add_metric_uuid(sqlite3_stmt *res, nd_uuid_t *metric_uuid)
 {
     int rc;
 
@@ -174,7 +174,7 @@ failed:
 SPINLOCK metric_spinlock = NETDATA_SPINLOCK_INITIALIZER;
 Pvoid_t metricHS = (Pvoid_t) NULL;
 
-int sql_find_or_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid_t *metric_uuid)
+int sql_find_or_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, nd_uuid_t *metric_uuid)
 {
     int metric_id = 0;
 
@@ -435,7 +435,7 @@ void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance)
     size_t count = 0;
     time_t min_start_time_s = LONG_MAX;
     while (sqlite3_step_monitored(res) == SQLITE_ROW) {
-        uuid_t *uuid = (uuid_t *)sqlite3_column_blob(res, 0);
+        nd_uuid_t *uuid = (nd_uuid_t *)sqlite3_column_blob(res, 0);
         time_t start_time_s = (time_t)sqlite3_column_int64(res, 1);
         time_t end_time_s = (time_t)sqlite3_column_int64(res, 2);
         uint32_t update_every_s = (uint32_t)sqlite3_column_int(res, 3);

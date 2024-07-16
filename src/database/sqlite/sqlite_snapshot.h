@@ -29,7 +29,7 @@ int sql_snapshot_store_file_info(sqlite3 *database, int fileno,  int entries, ti
 void sql_replay_snapshot_to_mrg(STORAGE_INSTANCE *db_instance);
 void snapshot_init(STORAGE_INSTANCE *db_instance);
 bool check_metric_count_judy(STORAGE_INSTANCE *db_instance, int fileno, int entries, int file_size, struct journal_v2_header **j2_header);
-int sql_find_or_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, uuid_t *metric_uuid);
+int sql_find_or_create_metric_uuid(sqlite3_stmt *lookup_res, sqlite3_stmt *add_res, nd_uuid_t *metric_uuid);
 int sql_add_metric_id_retention(sqlite3_stmt *res, int metric_id, int start_fileno, int end_fileno, time_t first_time_t, time_t last_time_t, uint32_t update_every);
 sqlite3_stmt *snapshot_prepare_store_metric_id(sqlite3 *database);
 #endif //NETDATA_SQLITE_SNAPSHOT_H

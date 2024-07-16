@@ -513,7 +513,7 @@ struct page_descr_with_data *page_descriptor_get(void);
 typedef struct metric METRIC;
 
 struct uuid_first_time_s {
-    uuid_t *uuid;
+    nd_uuid_t *uuid;
     time_t first_time_s;
     METRIC *metric;
     size_t pages_found;
