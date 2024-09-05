@@ -44,7 +44,7 @@ void rrdeng_store_metric_next(STORAGE_COLLECT_HANDLE *sch, usec_t point_in_time_
                                      uint16_t count,
                                      uint16_t anomaly_count,
                                      SN_FLAGS flags);
-int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
+int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch, bool save_metrics);
 
 void rrdeng_load_metric_init(STORAGE_METRIC_HANDLE *smh, struct storage_engine_query_handle *seqh,
                                     time_t start_time_s, time_t end_time_s, STORAGE_PRIORITY priority);

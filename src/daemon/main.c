@@ -472,7 +472,6 @@ void netdata_cleanup_and_exit(int ret, const char *action, const char *action_re
     watcher_step_complete(WATCHER_STEP_ID_CLOSE_SQL_DATABASES);
     sqlite_library_shutdown();
 
-
     // unlink the pid
     if(pidfile && *pidfile) {
         if(unlink(pidfile) != 0)

@@ -162,7 +162,8 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
 }
 
-bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd) {
+bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd, bool save_metrics)
+{
     ND_LOG_STACK lgs[] = {
         ND_LOG_FIELD_TXT(NDF_NIDL_NODE, rrdhost_hostname(rd->rrdset->rrdhost)),
         ND_LOG_FIELD_TXT(NDF_NIDL_CONTEXT, rrdset_context(rd->rrdset)),
@@ -180,7 +181,7 @@ bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd) {
         if(rd->tiers[tier].sch) {
             tiers_available++;
 
-            if (storage_engine_store_finalize(rd->tiers[tier].sch))
+            if (storage_engine_store_finalize(rd->tiers[tier].sch, save_metrics))
                 tiers_said_no_retention++;
 
             rd->tiers[tier].sch = NULL;
@@ -207,7 +208,7 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
     netdata_log_debug(D_RRD_CALLS, "rrddim_free() %s.%s", rrdset_name(st), rrddim_name(rd));
 
-    if (!rrddim_finalize_collection_and_check_retention(rd) && rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
+    if (!rrddim_finalize_collection_and_check_retention(rd, true) && rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
         /* This metric has no data and no references */
         metaqueue_delete_dimension_uuid(&rd->metric_uuid);
     }

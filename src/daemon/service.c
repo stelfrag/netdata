@@ -36,7 +36,7 @@ static void svc_rrddim_obsolete_to_archive(RRDDIM *rd) {
 
     if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
         /* only a collector can mark a chart as obsolete, so we must remove the reference */
-        if (!rrddim_finalize_collection_and_check_retention(rd)) {
+        if (!rrddim_finalize_collection_and_check_retention(rd, true)) {
             /* This metric has no data and no references */
             metaqueue_delete_dimension_uuid(&rd->metric_uuid);
         }

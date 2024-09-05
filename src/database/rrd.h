@@ -504,16 +504,17 @@ static inline void storage_engine_store_flush(STORAGE_COLLECT_HANDLE *sch) {
         rrddim_store_metric_flush(sch);
 }
 
-int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch);
+int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch, bool save_metrics);
 int rrddim_collect_finalize(STORAGE_COLLECT_HANDLE *sch);
 // a finalization function to run after collection is over
 // returns 1 if it's safe to delete the dimension
-static inline int storage_engine_store_finalize(STORAGE_COLLECT_HANDLE *sch) {
+static inline int storage_engine_store_finalize(STORAGE_COLLECT_HANDLE *sch, bool save_metrics)
+{
     internal_fatal(!is_valid_backend(sch->seb), "STORAGE: invalid backend");
 
 #ifdef ENABLE_DBENGINE
     if(likely(sch->seb == STORAGE_ENGINE_BACKEND_DBENGINE))
-        return rrdeng_store_metric_finalize(sch);
+        return rrdeng_store_metric_finalize(sch, save_metrics);
 #endif
 
     return rrddim_collect_finalize(sch);
@@ -1552,9 +1553,9 @@ collected_number rrddim_timed_set_by_pointer(RRDSET *st, RRDDIM *rd, struct time
 collected_number rrddim_set_by_pointer(RRDSET *st, RRDDIM *rd, collected_number value);
 collected_number rrddim_set(RRDSET *st, const char *id, collected_number value);
 
-bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd);
-void rrdset_finalize_collection(RRDSET *st, bool dimensions_too);
-void rrdhost_finalize_collection(RRDHOST *host);
+bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd, bool save_metrics);
+void rrdset_finalize_collection(RRDSET *st, bool dimensions_too, bool save_metrics);
+void rrdhost_finalize_collection(RRDHOST *host, bool save_metrics);
 void rrd_finalize_collection_for_all_hosts(void);
 
 long align_entries_to_pagesize(RRD_MEMORY_MODE mode, long entries);

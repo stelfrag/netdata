@@ -1322,7 +1322,7 @@ void rrdhost_free_all(void) {
 void rrd_finalize_collection_for_all_hosts(void) {
     RRDHOST *host;
     dfe_start_reentrant(rrdhost_root_index, host) {
-        rrdhost_finalize_collection(host);
+        rrdhost_finalize_collection(host, host == localhost);
     }
     dfe_done(host);
 }
@@ -1511,7 +1511,8 @@ void reload_host_labels(void) {
     rrdpush_send_host_labels(localhost);
 }
 
-void rrdhost_finalize_collection(RRDHOST *host) {
+void rrdhost_finalize_collection(RRDHOST *host, bool save_metrics)
+{
     ND_LOG_STACK lgs[] = {
         ND_LOG_FIELD_TXT(NDF_NIDL_NODE, rrdhost_hostname(host)),
         ND_LOG_FIELD_END(),
@@ -1523,8 +1524,9 @@ void rrdhost_finalize_collection(RRDHOST *host) {
            rrdhost_hostname(host));
 
     RRDSET *st;
-    rrdset_foreach_read(st, host)
-        rrdset_finalize_collection(st, true);
+    rrdset_foreach_read(st, host) {
+        rrdset_finalize_collection(st, true, save_metrics);
+    }
     rrdset_foreach_done(st);
 }
 

@@ -125,7 +125,7 @@ static void generate_dbengine_chart(void *arg)
         thread_info->time_max = time_current;
     }
     for (j = 0; j < DSET_DIMS; ++j) {
-        rrdeng_store_metric_finalize((rd[j])->tiers[0].sch);
+        rrdeng_store_metric_finalize((rd[j])->tiers[0].sch, true);
     }
 }
 

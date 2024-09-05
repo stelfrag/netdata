@@ -298,7 +298,8 @@ static void rrdset_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     ml_chart_new(st);
 }
 
-void rrdset_finalize_collection(RRDSET *st, bool dimensions_too) {
+void rrdset_finalize_collection(RRDSET *st, bool dimensions_too, bool save_metrics)
+{
     ND_LOG_STACK lgs[] = {
         ND_LOG_FIELD_TXT(NDF_NIDL_NODE, rrdhost_hostname(st->rrdhost)),
         ND_LOG_FIELD_TXT(NDF_NIDL_CONTEXT, rrdset_context(st)),
@@ -314,7 +315,7 @@ void rrdset_finalize_collection(RRDSET *st, bool dimensions_too) {
     if(dimensions_too) {
         RRDDIM *rd;
         rrddim_foreach_read(rd, st)
-            rrddim_finalize_collection_and_check_retention(rd);
+            rrddim_finalize_collection_and_check_retention(rd, save_metrics);
         rrddim_foreach_done(rd);
     }
 
@@ -338,7 +339,7 @@ static void rrdset_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
     rrdset_flag_clear(st, RRDSET_FLAG_INDEXED_ID);
 
-    rrdset_finalize_collection(st, false);
+    rrdset_finalize_collection(st, false, true);
 
     rrdset_rrdpush_send_chart_slot_release(st);
 

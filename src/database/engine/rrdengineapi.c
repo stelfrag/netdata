@@ -307,7 +307,8 @@ STORAGE_COLLECT_HANDLE *rrdeng_store_metric_init(STORAGE_METRIC_HANDLE *smh, uin
     return (STORAGE_COLLECT_HANDLE *)handle;
 }
 
-void rrdeng_store_metric_flush_current_page(STORAGE_COLLECT_HANDLE *sch) {
+void rrdeng_store_metric_flush_current_page(STORAGE_COLLECT_HANDLE *sch)
+{
     struct rrdeng_collect_handle *handle = (struct rrdeng_collect_handle *)sch;
 
     if (unlikely(!handle->pgc_page))
@@ -651,11 +652,20 @@ void rrdeng_store_metric_next(STORAGE_COLLECT_HANDLE *sch,
  * Releases the database reference from the handle for storing metrics.
  * Returns 1 if it's safe to delete the dimension.
  */
-int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch) {
+int rrdeng_store_metric_finalize(STORAGE_COLLECT_HANDLE *sch, bool save_metrics)
+{
     struct rrdeng_collect_handle *handle = (struct rrdeng_collect_handle *)sch;
     struct rrdengine_instance *ctx = mrg_metric_ctx(handle->metric);
 
     handle->page_flags |= RRDENG_PAGE_COLLECT_FINALIZE;
+    if (false == save_metrics) {
+        __atomic_sub_fetch(&ctx->atomic.collectors_running, 1, __ATOMIC_RELAXED);
+
+        if((handle->options & RRDENG_1ST_METRIC_WRITER) && !mrg_metric_clear_writer(main_mrg, handle->metric))
+            internal_fatal(true, "DBENGINE: metric is already released");
+        return 0;
+    }
+
     rrdeng_store_metric_flush_current_page(sch);
     rrdeng_page_alignment_release(handle->alignment);
 
