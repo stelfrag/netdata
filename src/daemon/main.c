@@ -426,25 +426,25 @@ void netdata_cleanup_and_exit(int ret, const char *action, const char *action_re
 
 #ifdef ENABLE_DBENGINE
         if(dbengine_enabled) {
-            size_t running = 1;
-            size_t count = 10;
-            while(running && count) {
-                running = 0;
-                for (size_t tier = 0; tier < storage_tiers; tier++)
-                    running += rrdeng_collectors_running(multidb_ctx[tier]);
-
-                if (running) {
-                    nd_log_limit_static_thread_var(erl, 1, 100 * USEC_PER_MS);
-                    nd_log_limit(&erl, NDLS_DAEMON, NDLP_NOTICE, "waiting for %zu collectors to finish", running);
-                }
-                count--;
-            }
+//            size_t running = 1;
+//            size_t count = 10;
+//            while(running && count) {
+//                running = 0;
+//                for (size_t tier = 0; tier < storage_tiers; tier++)
+//                    running += rrdeng_collectors_running(multidb_ctx[tier]);
+//
+//                if (running) {
+//                    nd_log_limit_static_thread_var(erl, 1, 100 * USEC_PER_MS);
+//                    nd_log_limit(&erl, NDLS_DAEMON, NDLP_NOTICE, "waiting for %zu collectors to finish", running);
+//                }
+//                count--;
+//            }
             watcher_step_complete(WATCHER_STEP_ID_WAIT_FOR_DBENGINE_COLLECTORS_TO_FINISH);
 
-            while (pgc_hot_and_dirty_entries(main_cache)) {
-                pgc_flush_all_hot_and_dirty_pages(main_cache, PGC_SECTION_ALL);
-                sleep_usec(100 * USEC_PER_MS);
-            }
+//            while (pgc_hot_and_dirty_entries(main_cache)) {
+//                pgc_flush_all_hot_and_dirty_pages(main_cache, PGC_SECTION_ALL);
+//                sleep_usec(100 * USEC_PER_MS);
+//            }
             watcher_step_complete(WATCHER_STEP_ID_WAIT_FOR_DBENGINE_MAIN_CACHE_TO_FINISH_FLUSHING);
 
             for (size_t tier = 0; tier < storage_tiers; tier++)
