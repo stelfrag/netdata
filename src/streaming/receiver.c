@@ -848,6 +848,7 @@ static void rrdpush_receive(struct receiver_state *rpt)
     // receive data
     size_t count = streaming_parser(rpt, &cd, rpt->fd, (rpt->ssl.conn) ? &rpt->ssl : NULL);
 
+    set_host_stream_alert_status(rpt->host, false);
     // the parser stopped
     receiver_set_exit_reason(rpt, STREAM_HANDSHAKE_DISCONNECT_PARSER_EXIT, false);
 

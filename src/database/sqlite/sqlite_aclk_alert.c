@@ -991,6 +991,19 @@ done:
     SQLITE_FINALIZE(res);
 }
 
+void set_host_stream_alert_status(RRDHOST *host, bool status)
+{
+    struct aclk_sync_cfg_t *wc = host->aclk_config;
+
+    if (!wc)
+        return;
+
+    if (unlikely(!host->health.health_enabled))
+        return;
+
+    wc->stream_alerts = status;
+}
+
 // Start streaming alerts
 void aclk_start_alert_streaming(char *node_id, uint64_t cloud_version)
 {
