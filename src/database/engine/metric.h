@@ -76,6 +76,9 @@ bool mrg_metric_clear_writer(MRG *mrg, METRIC *metric);
 
 void mrg_get_statistics(MRG *mrg, struct mrg_statistics *s);
 struct aral_statistics *mrg_aral_stats(void);
+//size_t mrg_aral_structures(void);
+//size_t mrg_aral_overhead(void);
+
 
 void mrg_update_metric_retention_and_granularity_by_uuid(
         MRG *mrg, Word_t section, nd_uuid_t *uuid,

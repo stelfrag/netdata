@@ -1,6 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "rrdengine.h"
 
+static void update_journal_v2_samples(struct rrdengine_datafile *datafile, uint64_t samples)
+{
+    if (!datafile)
+        return;
+
+    char path[RRDENG_PATH_MAX];
+    journalfile_v2_generate_path(datafile, path, sizeof(path));
+
+    struct rrdengine_instance *ctx = datafile->ctx;
+    int fd_write = open(path, O_RDWR | O_CLOEXEC);
+    if (fd_write < 0)
+        return;
+
+    uint8_t *data_start_write = mmap(NULL, RRDENG_BLOCK_SIZE, PROT_WRITE, MAP_SHARED, fd_write, 0);
+    struct journal_v2_metadata *j2_metadata = (void *)data_start_write + sizeof(struct journal_v2_header);
+    j2_metadata->magic = JOURVAL_V2_METAMAGIC;
+    j2_metadata->samples = samples;
+    close(fd_write);
+    munmap(data_start_write, RRDENG_BLOCK_SIZE);
+
+    sql_set_journal_sample_count(ctx->config.tier, path, samples);
+}
+
 static void after_extent_write_journalfile_v1_io(uv_fs_t* req)
 {
     worker_is_busy(RRDENG_FLUSH_TRANSACTION_BUFFER_CB);
@@ -401,7 +424,13 @@ size_t journalfile_v2_data_size_get(struct rrdengine_journalfile *journalfile) {
     return data_size;
 }
 
-void journalfile_v2_data_set(struct rrdengine_journalfile *journalfile, int fd, void *journal_data, uint32_t journal_data_size) {
+void journalfile_v2_data_set(
+    struct rrdengine_instance *ctx,
+    struct rrdengine_journalfile *journalfile,
+    int fd,
+    void *journal_data,
+    uint32_t journal_data_size)
+{
     spinlock_lock(&journalfile->mmap.spinlock);
     spinlock_lock(&journalfile->v2.spinlock);
 
@@ -419,6 +448,17 @@ void journalfile_v2_data_set(struct rrdengine_journalfile *journalfile, int fd, 
     journalfile->v2.first_time_s = (time_t)(j2_header->start_time_ut / USEC_PER_SEC);
     journalfile->v2.last_time_s = (time_t)(j2_header->end_time_ut / USEC_PER_SEC);
     journalfile->v2.size_of_directory = j2_header->metric_offset + j2_header->metric_count * sizeof(struct journal_metric_list);
+
+    struct journal_v2_metadata *j2_metadata = (void *) j2_header + sizeof(struct journal_v2_header);
+
+    uint64_t samples = j2_metadata->samples;
+
+    if (samples) {
+        uint64_t remove_samples = journalfile->v2.samples;
+        __atomic_add_fetch(&ctx->atomic.samples, samples - remove_samples, __ATOMIC_RELAXED);
+        journalfile->v2.samples = 0;
+        nd_log_daemon(NDLP_DEBUG, "CTX: Tier %d, adding %zu samples (removing %zu samples)", ctx->config.tier, samples, remove_samples);
+    }
 
     journalfile_v2_mounted_data_unmount(journalfile, true, true);
 
@@ -562,6 +602,8 @@ int journalfile_destroy_unsafe(struct rrdengine_journalfile *journalfile, struct
 
     if(journalfile_v2_data_available(journalfile))
         journalfile_v2_data_unmap_permanently(journalfile);
+
+    sql_delete_journal_samples(ctx->config.tier, path_v2);
 
     return ret;
 }
@@ -716,6 +758,7 @@ static void journalfile_restore_extent_metadata(struct rrdengine_instance *ctx, 
             if (vd.update_every_s) {
                 uint64_t samples = (vd.end_time_s - vd.start_time_s) / vd.update_every_s;
                 __atomic_add_fetch(&ctx->atomic.samples, samples, __ATOMIC_RELAXED);
+                __atomic_add_fetch(&journalfile->v2.samples, samples, __ATOMIC_RELAXED);
             }
         }
         Word_t metric_id = mrg_metric_id(main_mrg, metric);
@@ -851,6 +894,44 @@ static uint64_t journalfile_iterate_transactions(struct rrdengine_instance *ctx,
 skip_file:
     posix_memfree(buf);
     return max_id;
+}
+
+int64_t calculate_metric_samples(time_t journal_start_time_s, struct journal_page_header *page_list_header)
+{
+    uint64_t samples = 0;
+
+    struct journal_page_list *page_list = (struct journal_page_list *)((uint8_t *) page_list_header + sizeof(*page_list_header));
+    uint32_t uuid_page_entries = page_list_header->entries;
+
+    for (uint32_t index = 0; index < uuid_page_entries; index++) {
+        struct journal_page_list *page = &page_list[index];
+
+        time_t page_first_time_s = page->delta_start_s + journal_start_time_s;
+        time_t page_last_time_s = page->delta_end_s + journal_start_time_s;
+        uint32_t update_every_s = page->update_every_s;
+        if (update_every_s)
+            samples += (page_last_time_s - page_first_time_s) / page->update_every_s;
+    }
+
+    return samples;
+}
+
+int64_t calculate_journal_samples(struct journal_v2_header *j2_header)
+{
+    uint64_t samples = 0;
+
+    time_t journal_start_time_s = (time_t) (j2_header->start_time_ut / USEC_PER_SEC);
+
+    size_t journal_metric_count = (size_t)j2_header->metric_count;
+    struct journal_metric_list *uuid_list = (struct journal_metric_list *)((uint8_t *) j2_header + j2_header->metric_offset);
+
+    for (uint32_t index = 0; index < journal_metric_count; index++) {
+        struct journal_metric_list *metric = &uuid_list[index];
+        struct journal_page_header *page_list_header = (struct journal_page_header *) ((uint8_t *) j2_header + metric->page_offset);
+        samples += calculate_metric_samples(journal_start_time_s, page_list_header);
+    }
+
+    return samples;
 }
 
 // Checks that the extent list checksum is valid
@@ -1016,6 +1097,15 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
         }
     }
 
+    struct journal_v2_metadata *j2_metadata = (void *) data_start + sizeof(struct journal_v2_header);
+    uint64_t samples = 0;
+    if (j2_metadata->magic == JOURVAL_V2_METAMAGIC)
+        samples = j2_metadata->samples;
+    else {
+        samples = calculate_journal_samples((struct journal_v2_header *)data_start);
+        update_journal_v2_samples(journalfile->datafile, samples);
+    }
+
     struct journal_metric_list *metric = (struct journal_metric_list *) (data_start + j2_header->metric_offset);
     time_t header_start_time_s  = (time_t) (j2_header->start_time_ut / USEC_PER_SEC);
     time_t global_first_time_s = header_start_time_s;
@@ -1033,10 +1123,11 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     journalfile_v2_data_release(journalfile);
     usec_t ended_ut = now_monotonic_usec();
 
-    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, samples: %0.2f, %0.2f ms"
         , ctx->config.tier, journalfile->datafile->fileno
         , (double)data_size / 1024 / 1024
         , (double)entries / 1000
+        , (double)samples / 1000
         , ((double)(ended_ut - started_ut) / USEC_PER_MS)
         );
 
@@ -1063,6 +1154,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     journalfile_v2_generate_path(datafile, path_v2, sizeof(path_v2));
     fd = open(path_v2, O_RDONLY | O_CLOEXEC);
+
     if (fd < 0) {
         if (errno == ENOENT)
             return 1;
@@ -1123,13 +1215,24 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
         return 1;
     }
 
+    uint64_t samples = 0;
+    struct journal_v2_metadata *j2_metadata = (void *) data_start + sizeof(struct journal_v2_header);
+    if (j2_metadata->magic) {
+        nd_log_daemon(NDLP_INFO, "DBENGINE: journal v2 '%s' reports %zu samples", path_v2, j2_metadata->samples);
+        samples = j2_metadata->samples;
+    } else {
+        samples = calculate_journal_samples((struct journal_v2_header *)data_start);
+        (void)update_journal_v2_samples(datafile, samples);
+    }
+
     usec_t finished_ut = now_monotonic_usec();
 
-    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 '%s' loaded, size: %0.2f MiB, metrics: %0.2f k, "
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 '%s' loaded, size: %0.2f MiB, metrics: %0.2f k, samples: %0.2f k, "
          "mmap: %0.2f ms, validate: %0.2f ms"
          , path_v2
          , (double)journal_v2_file_size / 1024 / 1024
          , (double)entries / 1000
+         , (double)samples / 1000
          , ((double)(validation_start_ut - mmap_start_ut) / USEC_PER_MS)
          , ((double)(finished_ut - validation_start_ut) / USEC_PER_MS)
          );
@@ -1138,7 +1241,7 @@ int journalfile_v2_load(struct rrdengine_instance *ctx, struct rrdengine_journal
 
     if (!db_engine_journal_check)
         journalfile->v2.flags |= JOURNALFILE_FLAG_METRIC_CRC_CHECK;
-    journalfile_v2_data_set(journalfile, fd, data_start, journal_v2_file_size);
+    journalfile_v2_data_set(ctx, journalfile, fd, data_start, journal_v2_file_size);
 
     ctx_current_disk_space_increase(ctx, journal_v2_file_size);
 
@@ -1254,8 +1357,12 @@ void *journalfile_v2_write_data_page(struct journal_v2_header *j2_header, void *
 }
 
 // Must be recorded in metric_info->entries
-static void *journalfile_v2_write_descriptors(struct journal_v2_header *j2_header, void *data, struct jv2_metrics_info *metric_info,
-        struct journal_metric_list *current_metric)
+static void *journalfile_v2_write_descriptors(
+    struct journal_v2_header *j2_header,
+    void *data,
+    struct jv2_metrics_info *metric_info,
+    struct journal_metric_list *current_metric,
+    size_t *samples)
 {
     Pvoid_t *PValue;
 
@@ -1268,14 +1375,19 @@ static void *journalfile_v2_write_descriptors(struct journal_v2_header *j2_heade
     bool first = true;
     struct jv2_page_info *page_info;
     uint32_t update_every_s = 0;
+    size_t local_samples = 0;
     while ((PValue = JudyLFirstThenNext(JudyL_array, &index_time, &first))) {
         page_info = *PValue;
         // Write one descriptor and return the next data page location
         data_page = journalfile_v2_write_data_page(j2_header, (void *) data_page, page_info);
+        //old_samples = (metric->latest_time_s_clean - metric->first_time_s) / metric->latest_update_every_s;
+        if (likely(page_info->update_every_s))
+            local_samples += ((page_info->end_time_s - page_info->start_time_s) / page_info->update_every_s);
         update_every_s = page_info->update_every_s;
         if (NULL == data_page)
             break;
     }
+    (*samples) += local_samples;
     current_metric->update_every_s = update_every_s;
     return data_page;
 }
@@ -1298,6 +1410,7 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
     time_t min_time_s = LONG_MAX;
     time_t max_time_s = 0;
     struct jv2_metrics_info *metric_info;
+    size_t samples = 0;
 
     journalfile_v2_generate_path(datafile, path, sizeof(path));
 
@@ -1407,6 +1520,8 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
 
     uint32_t resize_file_to = total_file_size;
 
+    struct journal_v2_metadata *j2_metadata = (void *) data_start + sizeof(struct journal_v2_header);
+
     for (Index = 0; Index < number_of_metrics; Index++) {
         metric_info = uuid_list[Index].metric_info;
 
@@ -1431,7 +1546,8 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
                                                                   uuid_offset);
 
         // Start writing descr @ time
-        void *page_trailer = journalfile_v2_write_descriptors(&j2_header, metric_page, metric_info, current_metric);
+        void *page_trailer =
+            journalfile_v2_write_descriptors(&j2_header, metric_page, metric_info, current_metric, &samples);
         if (unlikely(!page_trailer))
             break;
 
@@ -1450,6 +1566,9 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
     }
 
     if (data == data_start + metric_offset_trailer) {
+
+        nd_log_daemon(NDLP_INFO, "DBENGINE: journal file '%s' created with samples = %" PRIu64 ").", path, samples);
+
         internal_error(true, "DBENGINE: WRITE METRICS AND PAGES  %llu", (now_monotonic_usec() - start_loading) / USEC_PER_MS);
 
         // Calculate CRC for metrics
@@ -1468,14 +1587,16 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
         crc32set(journal_v2_trailer->checksum, crc);
 
         // Write header to the file
+        j2_metadata->magic = JOURVAL_V2_METAMAGIC;
+        j2_metadata->samples = samples;
         memcpy(data_start, &j2_header, sizeof(j2_header));
+        sql_set_journal_sample_count(ctx->config.tier, path, samples);
 
         internal_error(true, "DBENGINE: FILE COMPLETED --------> %llu", (now_monotonic_usec() - start_loading) / USEC_PER_MS);
 
         netdata_log_info("DBENGINE: migrated journal file '%s', file size %zu", path, total_file_size);
 
-        // msync(data_start, total_file_size, MS_SYNC);
-        journalfile_v2_data_set(journalfile, fd_v2, data_start, total_file_size);
+        journalfile_v2_data_set(ctx, journalfile, fd_v2, data_start, total_file_size);
 
         internal_error(true, "DBENGINE: ACTIVATING NEW INDEX JNL %llu", (now_monotonic_usec() - start_loading) / USEC_PER_MS);
         ctx_current_disk_space_increase(ctx, total_file_size);

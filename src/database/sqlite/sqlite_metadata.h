@@ -69,6 +69,8 @@ usec_t get_agent_event_time_median(event_log_type_t event_id);
 void metadata_queue_ae_save(RRDHOST *host, ALARM_ENTRY *ae);
 void metadata_queue_ae_deletion(ALARM_ENTRY *ae);
 void commit_alert_transitions(RRDHOST *host);
+void sql_set_journal_sample_count(int tier, const char *journal, uint64_t samples);
+void sql_delete_journal_samples(int tier, const char *journal);
 
 void metadata_sync_shutdown_background(void);
 void metadata_sync_shutdown_background_wait(void);

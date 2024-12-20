@@ -826,6 +826,10 @@ static struct extent_io_descriptor *datafile_extent_build(struct rrdengine_insta
     header->number_of_pages = count;
     pos += sizeof(*header);
 
+    // Calculate samples that we are already counting in the ctx
+    // When this journalfile is converted to v2, we will need to remove and readd
+    uint64_t remove_samples = 0;
+
     for (i = 0 ; i < count ; ++i) {
         descr = xt_io_descr->descr_array[i];
         header->descr[i].type = descr->type;
@@ -846,6 +850,13 @@ static struct extent_io_descriptor *datafile_extent_build(struct rrdengine_insta
                 fatal("Unknown page type: %uc", descr->type);
         }
 
+        time_t start_time_s = descr->start_time_ut / USEC_PER_SEC;
+        time_t end_time_s = descr->end_time_ut / USEC_PER_SEC;
+        uint32_t update_every_s = descr->update_every_s;
+        if (end_time_s && start_time_s && end_time_s > start_time_s && update_every_s) {
+            uint64_t add_samples = (end_time_s - start_time_s) / update_every_s;
+            remove_samples += add_samples;
+        }
         pos += sizeof(header->descr[i]);
     }
 
@@ -891,6 +902,7 @@ static struct extent_io_descriptor *datafile_extent_build(struct rrdengine_insta
     xt_io_descr->datafile = datafile;
     xt_io_descr->pos = datafile->pos;
     datafile->pos += real_io_size;
+    __atomic_add_fetch(&datafile->journalfile->v2.samples, remove_samples, __ATOMIC_RELAXED);
     spinlock_unlock(&datafile->writers.spinlock);
 
     xt_io_descr->bytes = size_bytes;
@@ -1128,6 +1140,16 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
         return;
     }
 
+    struct journal_v2_metadata *j2_metadata = (void *) j2_header + sizeof(struct journal_v2_header);
+    uint64_t remove_samples = 0;
+
+    if (j2_metadata->magic == JOURVAL_V2_METAMAGIC)
+        remove_samples = j2_metadata->samples;
+    else
+        remove_samples = calculate_journal_samples(j2_header);
+
+    __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
+
     __atomic_add_fetch(&rrdeng_cache_efficiency_stats.metrics_retention_started, 1, __ATOMIC_RELAXED);
 
     struct journal_metric_list *uuid_list = (struct journal_metric_list *)((uint8_t *) j2_header + j2_header->metric_offset);
@@ -1172,17 +1194,6 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
     for (size_t index = 0; index < added; ++index) {
         uuid_first_t_entry = &uuid_first_entry_list[index];
         if (likely(uuid_first_t_entry->first_time_s != LONG_MAX)) {
-
-            time_t old_first_time_s = mrg_metric_get_first_time_s(main_mrg, uuid_first_t_entry->metric);
-
-            bool changed = mrg_metric_set_first_time_s_if_bigger(main_mrg, uuid_first_t_entry->metric, uuid_first_t_entry->first_time_s);
-            if (changed) {
-                uint32_t update_every_s = mrg_metric_get_update_every_s(main_mrg, uuid_first_t_entry->metric);
-                if (update_every_s && old_first_time_s && uuid_first_t_entry->first_time_s > old_first_time_s) {
-                    uint64_t remove_samples = (uuid_first_t_entry->first_time_s - old_first_time_s) / update_every_s;
-                    __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
-                }
-            }
             mrg_metric_release(main_mrg, uuid_first_t_entry->metric);
         }
         else {
@@ -1191,14 +1202,6 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
             // there is no retention for this metric
             bool has_retention = mrg_metric_zero_disk_retention(main_mrg, uuid_first_t_entry->metric);
             if (!has_retention) {
-                time_t first_time_s = mrg_metric_get_first_time_s(main_mrg, uuid_first_t_entry->metric);
-                time_t last_time_s = mrg_metric_get_latest_time_s(main_mrg, uuid_first_t_entry->metric);
-                time_t update_every_s = mrg_metric_get_update_every_s(main_mrg, uuid_first_t_entry->metric);
-                if (update_every_s && first_time_s && last_time_s) {
-                    uint64_t remove_samples = (first_time_s - last_time_s) / update_every_s;
-                    __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
-                }
-
                 bool deleted = mrg_metric_release_and_delete(main_mrg, uuid_first_t_entry->metric);
                 if(deleted)
                     deleted_metrics++;

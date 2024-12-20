@@ -93,6 +93,8 @@ const char *database_config[] = {
     "CREATE TABLE IF NOT EXISTS aclk_queue (sequence_id INTEGER PRIMARY KEY, host_id blob, health_log_id INT, "
     "unique_id INT, date_created INT,  UNIQUE(host_id, health_log_id))",
 
+    "CREATE TABLE IF NOT EXISTS journal_samples (id INTEGER PRIMARY KEY, tier INT, journal TEXT, samples INT, UNIQUE(tier, journal))",
+
     NULL
 };
 
@@ -245,6 +247,60 @@ struct thread_unittest {
     unsigned processed;
     unsigned *done;
 };
+
+#define SQL_DELETE_JOURNAL_SAMPLES "DELETE FROM journal_samples WHERE tier = @tier AND journal = @journal"
+
+void sql_delete_journal_samples(int tier, const char *journal)
+{
+    sqlite3_stmt *res = NULL;
+
+    if (!journal)
+        return;
+
+    if (!PREPARE_STATEMENT(db_meta, SQL_DELETE_JOURNAL_SAMPLES, &res))
+        return;
+
+    int param = 0;
+    SQLITE_BIND_FAIL(done, sqlite3_bind_int(res, ++param, tier));
+    SQLITE_BIND_FAIL(done, sqlite3_bind_text(res, ++param, journal, -1, SQLITE_STATIC));
+
+    param = 0;
+    int rc = sqlite3_step_monitored(res);
+    if (rc != SQLITE_DONE)
+        error_report("Failed to store samples for \"%s\", rc = %d", journal, rc);
+done:
+    REPORT_BIND_FAIL(res, param);
+    SQLITE_FINALIZE(res);
+
+}
+
+#define SQL_STORE_JOURNAL_SAMPLES                                                                                      \
+    "INSERT INTO journal_samples (tier, journal, samples) VALUES (@tier, @journal, @samples) "                         \
+    "ON CONFLICT(tier, journal) DO UPDATE SET samples = excluded.samples"
+
+void sql_set_journal_sample_count(int tier, const char *journal, uint64_t samples)
+{
+    sqlite3_stmt *res = NULL;
+
+    if (!journal || !samples)
+        return;
+
+    if (!PREPARE_STATEMENT(db_meta, SQL_STORE_JOURNAL_SAMPLES, &res))
+        return;
+
+    int param = 0;
+    SQLITE_BIND_FAIL(done, sqlite3_bind_int(res, ++param, tier));
+    SQLITE_BIND_FAIL(done, sqlite3_bind_text(res, ++param, journal, -1, SQLITE_STATIC));
+    SQLITE_BIND_FAIL(done, sqlite3_bind_int64(res, ++param, samples));
+
+    param = 0;
+    int rc = sqlite3_step_monitored(res);
+    if (rc != SQLITE_DONE)
+        error_report("Failed to store samples for \"%s\", rc = %d", journal, rc);
+done:
+    REPORT_BIND_FAIL(res, param);
+    SQLITE_FINALIZE(res);
+}
 
 int sql_metadata_cache_stats(int op)
 {

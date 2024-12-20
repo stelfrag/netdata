@@ -40,6 +40,7 @@ struct rrdengine_journalfile {
         time_t last_time_s;
         time_t not_needed_since_s;
         uint32_t size_of_directory;
+        uint64_t samples;               // if found during v2 build, subtract from ctx (+ readd)
     } v2;
 
     struct {
@@ -65,6 +66,7 @@ static inline uint64_t journalfile_current_size(struct rrdengine_journalfile *jo
 // Journal v2 structures
 
 #define JOURVAL_V2_MAGIC           (0x01230317)
+#define JOURVAL_V2_METAMAGIC       (0x12241520)
 #define JOURVAL_V2_REBUILD_MAGIC   (0x00230317)
 #define JOURVAL_V2_SKIP_MAGIC      (0x02230317)
 
@@ -136,6 +138,11 @@ struct journal_v2_header {
 
 #define JOURNAL_V2_HEADER_PADDING_SZ (RRDENG_BLOCK_SIZE - (sizeof(struct journal_v2_header)))
 
+struct journal_v2_metadata {
+    uint32_t magic;                             // Metadata version
+    uint64_t samples;                            // Samples in this datafile
+};
+
 struct wal;
 
 void journalfile_v1_generate_path(struct rrdengine_datafile *datafile, char *str, size_t maxlen);
@@ -157,10 +164,16 @@ void journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
 
 bool journalfile_v2_data_available(struct rrdengine_journalfile *journalfile);
 size_t journalfile_v2_data_size_get(struct rrdengine_journalfile *journalfile);
-void journalfile_v2_data_set(struct rrdengine_journalfile *journalfile, int fd, void *journal_data, uint32_t journal_data_size);
+void journalfile_v2_data_set(
+    struct rrdengine_instance *ctx,
+    struct rrdengine_journalfile *journalfile,
+    int fd,
+    void *journal_data,
+    uint32_t journal_data_size);
 struct journal_v2_header *journalfile_v2_data_acquire(struct rrdengine_journalfile *journalfile, size_t *data_size, time_t wanted_first_time_s, time_t wanted_last_time_s);
 void journalfile_v2_data_release(struct rrdengine_journalfile *journalfile);
 void journalfile_v2_data_unmount_cleanup(time_t now_s);
+int64_t calculate_journal_samples(struct journal_v2_header *j2_header);
 
 typedef struct {
     bool init;
