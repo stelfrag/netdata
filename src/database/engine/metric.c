@@ -4,6 +4,8 @@
 #include "libnetdata/locks/locks.h"
 #include "rrddiskprotocol.h"
 
+extern bool global_load;
+
 typedef int32_t REFCOUNT;
 #define REFCOUNT_DICONNECTED (-100)
 
@@ -52,6 +54,11 @@ struct mrg {
 
         RW_SPINLOCK rw_spinlock;
         Pvoid_t uuid_judy;          // JudyHS: each UUID has a JudyL of sections (tiers)
+
+        struct {
+            Pvoid_t JudyL;
+            SPINLOCK spinlock;
+        } active_mrg;
 
         struct mrg_statistics stats;
     } index[];
@@ -151,6 +158,189 @@ static void metric_log(MRG *mrg __maybe_unused, METRIC *metric, const char *msg)
     );
 }
 
+void add_active_mrg(METRIC *metric)
+{
+    size_t partition = metric->partition;
+    spinlock_lock(&main_mrg->index[partition].active_mrg.spinlock);
+    Pvoid_t *Pvalue = JudyLIns(&main_mrg->index[partition].active_mrg.JudyL, (Word_t) metric, PJE0);
+    (void) Pvalue;
+    spinlock_unlock(&main_mrg->index[partition].active_mrg.spinlock);
+}
+
+void del_active_mrg(METRIC *metric)
+{
+    size_t partition = metric->partition;
+    spinlock_lock(&main_mrg->index[partition].active_mrg.spinlock);
+    (void)JudyLDel(&main_mrg->index[partition].active_mrg.JudyL, (Word_t) metric, PJE0);
+    spinlock_unlock(&main_mrg->index[partition].active_mrg.spinlock);
+}
+
+struct metric_checkpoint_header {
+    uint32_t magic;
+    uint32_t metric_count;              // Count of entries
+    uint64_t samples_count;             // Count of samples
+};
+
+struct metric_checkpoint_data {
+    nd_uuid_t uuid;
+    time_t start_time_s;
+    uint32_t end_time_s;
+    union {
+        struct {
+            uint32_t update_every_s:24;
+            uint32_t tier:8;
+        };
+    } data;
+};
+
+void commit_active_mrg(struct rrdengine_instance *target_ctx)
+{
+    int target_tier = target_ctx->config.tier;
+
+    METRIC *metric;
+
+    uint32_t entries = 0;
+    for(size_t idx = 0; idx < main_mrg->partitions; idx++) {
+        spinlock_lock(&main_mrg->index[idx].active_mrg.spinlock);
+
+        bool first = true;
+        Pvoid_t *Pvalue;
+        Word_t Index = 0;
+        while ((Pvalue = JudyLFirstThenNext(main_mrg->index[idx].active_mrg.JudyL, &Index, &first))) {
+            metric = (METRIC *) Index;
+            int tier = ((struct rrdengine_instance *) metric->section)->config.tier;
+            if (tier != target_tier)
+                continue;
+            entries++;
+        }
+
+        //entries += JudyLCount(main_mrg->index[idx].active_mrg.JudyL, 0, -1, PJE0);
+
+        spinlock_unlock(&main_mrg->index[idx].active_mrg.spinlock);
+    }
+
+    netdata_log_info("DEBUG: Committing %u entries for tier %d", entries, target_tier);
+
+    char path[FILENAME_MAX + 1];
+    (void) snprintfz(path, sizeof(path) -1, "%s/metric_checkpoint_%d", netdata_configured_cache_dir, target_tier);
+
+    size_t file_size = sizeof(struct metric_checkpoint_header) + (entries * sizeof(struct metric_checkpoint_data));
+
+    int fd;
+    uint8_t *data_start = netdata_mmap(path, file_size, MAP_SHARED, 0, false, true, &fd);
+
+    // Write header
+    struct metric_checkpoint_header *chk_header = (struct metric_checkpoint_header *) data_start;
+
+    chk_header->magic = JOURVAL_V2_MAGIC;
+    chk_header->metric_count = entries;
+    chk_header->samples_count = target_ctx->atomic.samples;
+
+    struct metric_checkpoint_data *data = (struct metric_checkpoint_data *) data_start + sizeof(struct metric_checkpoint_header);
+
+    for(size_t idx = 0; idx < main_mrg->partitions; idx++) {
+        spinlock_lock(&main_mrg->index[idx].active_mrg.spinlock);
+        bool first = true;
+        Pvoid_t *Pvalue;
+        Word_t Index = 0;
+        while ((Pvalue = JudyLFirstThenNext(main_mrg->index[idx].active_mrg.JudyL, &Index, &first))) {
+            metric = (METRIC *) Index;
+            int tier = ((struct rrdengine_instance *) metric->section)->config.tier;
+
+            if (target_tier != tier)
+                continue;
+
+            struct metric_checkpoint_data *metric_data = data;
+            uuid_copy(metric_data->uuid,  metric->uuid);
+            time_t end_time_s = MAX(metric->latest_time_s_clean, metric->latest_time_s_hot);
+            metric_data->start_time_s = metric->first_time_s;
+            metric_data->end_time_s = end_time_s ? end_time_s - metric->first_time_s : 0;
+            metric_data->data.update_every_s = metric->latest_update_every_s;
+            metric_data->data.tier = tier;
+            data++;
+        }
+        //(void) JudyLFreeArray(&main_mrg->index[idx].active_mrg.JudyL, PJE0);
+        spinlock_unlock(&main_mrg->index[idx].active_mrg.spinlock);
+    }
+    netdata_log_info("DEBUG: Committing %u entries for tier %d (%zu samples)", entries, target_tier, chk_header->samples_count);
+    netdata_munmap(data_start, file_size);
+    close(fd);
+}
+
+void restore_mrg_state(struct rrdengine_instance *target_ctx)
+{
+    int target_tier = target_ctx->config.tier;
+
+    char path[FILENAME_MAX + 1];
+    (void) snprintfz(path, sizeof(path) -1, "%s/metric_checkpoint_%d", netdata_configured_cache_dir, target_tier);
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno == ENOENT)
+            return;
+    }
+
+    struct stat statbuf;
+    int ret = fstat(fd, &statbuf);
+    if (ret) {
+        netdata_log_error("DBENGINE: failed to get file information for '%s'", path);
+        close(fd);
+        return;
+    }
+
+    size_t total_checkpoint_size = (size_t)statbuf.st_size;
+
+    if (total_checkpoint_size < sizeof(struct metric_checkpoint_header)) {
+        error_report("Invalid file %s. Not the expected size", path);
+        close(fd);
+        return;
+    }
+
+    uint8_t *data_start = mmap(NULL, total_checkpoint_size, PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+
+    if (data_start == MAP_FAILED)
+        return;
+
+    struct metric_checkpoint_header *chk_header = (struct metric_checkpoint_header *) data_start;
+
+    if (chk_header->magic != JOURVAL_V2_MAGIC)
+        return;
+
+    uint32_t entries =  chk_header->metric_count;
+    uint64_t samples =  chk_header->samples_count;
+    uint32_t restored = 0;
+
+    netdata_log_info("DEBUG: Scanning %u metrics for tier %d", entries, target_tier);
+
+    struct metric_checkpoint_data *metricRetentionData =
+        (struct metric_checkpoint_data *)data_start + sizeof(struct metric_checkpoint_header);
+
+    time_t now_s = max_acceptable_collected_time();
+    for (uint32_t i = 0; i < entries; i++) {
+        uint8_t tier = metricRetentionData->data.tier;
+
+        if (tier != target_tier)
+            continue;
+
+        time_t start_time_s = metricRetentionData->start_time_s;
+        time_t end_time_s =
+            metricRetentionData->end_time_s ? metricRetentionData->start_time_s + metricRetentionData->end_time_s : 0;
+        uint32_t update_every_s = metricRetentionData->data.update_every_s;
+
+        restored++;
+        mrg_update_metric_retention_and_granularity_by_uuid(
+            main_mrg, (Word_t)target_ctx, &metricRetentionData->uuid, start_time_s, end_time_s, update_every_s, now_s);
+
+        metricRetentionData++;
+    }
+    //__atomic_store_n(&target_ctx->atomic.samples, samples, __ATOMIC_RELAXED);
+    munmap(data_start, total_checkpoint_size);
+    netdata_log_info("DEBUG: Tier %d : restored %u/%u metrics and %zu samples", target_tier, restored, entries, samples);
+    global_load = true;
+    (void) unlink(path);
+}
+
 static inline bool acquired_metric_has_retention(MRG *mrg, METRIC *metric) {
     time_t first, last;
     mrg_metric_get_retention(mrg, metric, &first, &last, NULL);
@@ -202,6 +392,9 @@ static inline void acquired_for_deletion_metric_delete(MRG *mrg, METRIC *metric)
     MRG_STATS_DELETED_METRIC(mrg, partition);
 
     mrg_index_write_unlock(mrg, partition);
+
+    del_active_mrg(metric);
+
 
     aral_freez(mrg->index[partition].aral, metric);
 }
@@ -333,6 +526,8 @@ static inline METRIC *metric_add_and_acquire(MRG *mrg, MRG_ENTRY *entry, bool *r
     if(ret)
         *ret = true;
 
+    add_active_mrg(metric);
+
     return metric;
 }
 
@@ -382,6 +577,9 @@ inline MRG *mrg_create(ssize_t partitions) {
 
     for(size_t i = 0; i < mrg->partitions ; i++) {
         rw_spinlock_init(&mrg->index[i].rw_spinlock);
+
+        spinlock_init(&mrg->index[i].active_mrg.spinlock);
+        mrg->index[i].active_mrg.JudyL = NULL;
 
         char buf[ARAL_MAX_NAME + 1];
         snprintfz(buf, ARAL_MAX_NAME, "mrg[%zu]", i);

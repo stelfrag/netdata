@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "rrdengine.h"
 
+bool global_load = false;
+
 static void update_journal_v2_samples(struct rrdengine_datafile *datafile, uint64_t samples)
 {
     if (!datafile)
@@ -1106,18 +1108,22 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
         update_journal_v2_samples(journalfile->datafile, samples);
     }
 
-    struct journal_metric_list *metric = (struct journal_metric_list *) (data_start + j2_header->metric_offset);
     time_t header_start_time_s  = (time_t) (j2_header->start_time_ut / USEC_PER_SEC);
     time_t global_first_time_s = header_start_time_s;
-    time_t now_s = max_acceptable_collected_time();
-    for (size_t i=0; i < entries; i++) {
-        time_t start_time_s = header_start_time_s + metric->delta_start_s;
-        time_t end_time_s = header_start_time_s + metric->delta_end_s;
 
-        mrg_update_metric_retention_and_granularity_by_uuid(
+    if (false == global_load) {
+        struct journal_metric_list *metric = (struct journal_metric_list *) (data_start + j2_header->metric_offset);
+        time_t now_s = max_acceptable_collected_time();
+
+        for (size_t i = 0; i < entries; i++) {
+            time_t start_time_s = header_start_time_s + metric->delta_start_s;
+            time_t end_time_s = header_start_time_s + metric->delta_end_s;
+
+            mrg_update_metric_retention_and_granularity_by_uuid(
                 main_mrg, (Word_t)ctx, &metric->uuid, start_time_s, end_time_s, metric->update_every_s, now_s);
 
-        metric++;
+            metric++;
+        }
     }
 
     journalfile_v2_data_release(journalfile);

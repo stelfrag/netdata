@@ -243,8 +243,10 @@ void netdata_cleanup_and_exit(int ret, const char *action, const char *action_re
             // flush anything remaining again - just in case
             rrdeng_flush_everything_and_wait(true, false);
 
-            for (size_t tier = 0; tier < nd_profile.storage_tiers; tier++)
+            for (size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
                 nd_thread_join(th[tier]);
+                commit_active_mrg(multidb_ctx[tier]);
+            }
 
             rrdeng_enq_cmd(NULL, RRDENG_OPCODE_SHUTDOWN_EVLOOP, NULL, NULL, STORAGE_PRIORITY_INTERNAL_DBENGINE, NULL, NULL);
             watcher_step_complete(WATCHER_STEP_ID_STOP_DBENGINE_TIERS);
