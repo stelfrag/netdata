@@ -819,7 +819,7 @@ void daemon_status_file_check_crash(void) {
     bool post_crash_report = false;
     bool disable_crash_report = false;
     bool dump_json = true;
-    const char *msg, *cause;
+    const char *msg = "", *cause = "";
     switch(last_session_status.status) {
         default:
         case DAEMON_STATUS_NONE:
@@ -1017,12 +1017,13 @@ void daemon_status_file_check_crash(void) {
 
         daemon_status_file_startup_step("startup(post status file)");
 
-        struct post_status_file_thread_data *d = calloc(1, sizeof(*d));
-        d->cause = cause;
-        d->msg = msg;
-        d->status = &last_session_status;
-        d->priority = pri.post;
-        post_status_file(d);
+        struct post_status_file_thread_data d = {
+            .cause = cause,
+            .msg = msg,
+            .status = &last_session_status,
+            .priority = pri.post,
+        };
+        post_status_file(&d);
 
         // MacOS crashes when starting under launchctl, when we create a thread to post the status file,
         // so we post the status file synchronously, with a timeout of 10 seconds.
@@ -1116,7 +1117,8 @@ void daemon_status_file_deadly_signal_received(EXIT_REASON reason) {
     // save what we know already
     daemon_status_file_save(static_save_buffer, &session_status, false);
 
-    if(!session_status.fatal.stack_trace[0]) {
+    // we cannot get a stack trace on SIGABRT - it may deadlock forever
+    if(reason != EXIT_REASON_SIGABRT && !session_status.fatal.stack_trace[0]) {
         buffer_flush(static_save_buffer);
         capture_stack_trace(static_save_buffer);
         strncpyz(session_status.fatal.stack_trace, buffer_tostring(static_save_buffer), sizeof(session_status.fatal.stack_trace) - 1);
