@@ -1325,7 +1325,7 @@ static void populate_v2_statistics(struct rrdengine_datafile *datafile, RRDENG_S
 
             time_t update_every_s;
 
-            size_t points = descr->page_length / CTX_POINT_SIZE_BYTES(datafile_ctx(datafile));
+            size_t points = 0;
 
             time_t start_time_s = journal_start_time_s + descr->delta_start_s;
             time_t end_time_s = journal_start_time_s + descr->delta_end_s;
@@ -1339,14 +1339,12 @@ static void populate_v2_statistics(struct rrdengine_datafile *datafile, RRDENG_S
 
             time_t duration_s = (time_t)((end_time_s - start_time_s + update_every_s));
 
-            stats->pages_uncompressed_bytes += descr->page_length;
             stats->pages_duration_secs += duration_s;
             stats->points += points;
 
-            stats->page_types[descr->type].pages++;
-            stats->page_types[descr->type].pages_uncompressed_bytes += descr->page_length;
-            stats->page_types[descr->type].pages_duration_secs += duration_s;
-            stats->page_types[descr->type].points += points;
+            stats->page_types[0].pages++;
+            stats->page_types[0].pages_duration_secs += duration_s;
+            stats->page_types[0].points += points;
 
             if(!stats->first_time_s || (start_time_s - update_every_s) < stats->first_time_s)
                 stats->first_time_s = (start_time_s - update_every_s);

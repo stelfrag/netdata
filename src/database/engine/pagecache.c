@@ -297,9 +297,8 @@ static ALWAYS_INLINE_HOT size_t get_page_list_from_pgc(PGC *cache, METRIC *metri
                     struct extent_io_data *xio = (struct extent_io_data *) pgc_page_custom_data(cache, page);
                     pd->datafile.ptr = pgc_page_data(page);
                     pd->datafile.file = xio->file;
-                    pd->datafile.extent.pos = xio->pos;
-                    pd->datafile.extent.bytes = xio->bytes;
-                    pd->datafile.fileno = pd->datafile.ptr->fileno;
+                    pd->datafile.pos = xio->pos;
+                    pd->datafile.bytes = xio->bytes;
                     pd->status |= PDC_PAGE_DATAFILE_ACQUIRED | PDC_PAGE_DISK_PENDING;
                 }
                 else {
@@ -526,13 +525,6 @@ static NOT_INLINE_HOT size_t get_page_list_from_journal_v2(struct rrdengine_inst
             struct journal_metric_list *uuid_list =
                 (struct journal_metric_list *)((uint8_t *)j2_header + j2_header->metric_offset);
 
-            if (((uintptr_t)uuid_list % alignof(struct journal_metric_list)) != 0) {
-                nd_log_daemon(
-                    NDLP_WARNING,
-                    "WARNING: uuid_list is NOT properly aligned (%zu-byte alignment required)\n",
-                    alignof(struct journal_metric_list));
-            }
-
             size_t metric_offset = (uint8_t *)uuid_list - (uint8_t *)j2_header;
             if (metric_offset >= journal_v2_file_size) {
                 nd_log_limit_static_thread_var(erl, 60, 0);
@@ -595,7 +587,7 @@ static NOT_INLINE_HOT size_t get_page_list_from_journal_v2(struct rrdengine_inst
                 }
 
                 uint32_t page_update_every_s = page_entry_in_journal->update_every_s;
-                size_t page_length = page_entry_in_journal->page_length;
+//                size_t page_length = page_entry_in_journal->page_length;
 
                 if (datafile_acquire(datafile, DATAFILE_ACQUIRE_OPEN_CACHE)) {
                     //for open cache item
@@ -604,9 +596,9 @@ static NOT_INLINE_HOT size_t get_page_list_from_journal_v2(struct rrdengine_inst
                     struct extent_io_data ei = {0};
                     ei.pos = extent_list[page_entry_in_journal->extent_index].datafile_offset;
                     ei.bytes = extent_list[page_entry_in_journal->extent_index].datafile_size;
-                    ei.page_length = page_length;
+//                    ei.page_length = page_length;
                     ei.file = datafile->file;
-                    ei.fileno = datafile->fileno;
+//                    ei.fileno = datafile->fileno;
 
                     PGC_ENTRY e = {0};
                     e.hot = false;
@@ -665,10 +657,10 @@ void add_page_details_from_journal_v2(PGC_PAGE *page, void *JudyL_pptr) {
     struct page_details *pd = page_details_get();
     *PValue = pd;
 
-    pd->datafile.extent.pos = ei->pos;
-    pd->datafile.extent.bytes = ei->bytes;
+    pd->datafile.pos = ei->pos;
+    pd->datafile.bytes = ei->bytes;
     pd->datafile.file = ei->file;
-    pd->datafile.fileno = ei->fileno;
+//    pd->datafile.fileno = ei->fileno;
     pd->first_time_s = pgc_page_start_time_s(page);
     pd->last_time_s = pgc_page_end_time_s(page);
     pd->datafile.ptr = datafile;
@@ -1062,7 +1054,7 @@ void pgc_open_add_hot_page(Word_t section, Word_t metric_id, time_t start_time_s
             .fileno = datafile->fileno,
             .pos = extent_offset,
             .bytes = extent_size,
-            .page_length = page_length
+//            .page_length = page_length
     };
 
     PGC_ENTRY page_entry = {

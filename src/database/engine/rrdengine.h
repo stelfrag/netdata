@@ -126,12 +126,8 @@ struct page_details {
     struct {
         struct rrdengine_datafile *ptr;
         uv_file file;
-        unsigned fileno;
-
-        struct {
-            uint64_t pos;
-            uint32_t bytes;
-        } extent;
+        uint32_t bytes;
+        uint64_t pos;
     } datafile;
 
     struct pgc_page *page;
@@ -288,11 +284,11 @@ enum rrdeng_opcode {
 #define RRDENG_RETENTION_TIMER_CB          (RRDENG_TIMER_CB + 4)
 
 struct extent_io_data {
+    uint64_t pos;
     unsigned fileno;
     uv_file file;
-    uint64_t pos;
     unsigned bytes;
-    uint16_t page_length;
+//uint16_t page_length;
 };
 
 struct extent_io_descriptor {

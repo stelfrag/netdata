@@ -87,7 +87,7 @@ struct aral_statistics *mrg_aral_stats(void);
 void mrg_update_metric_retention_and_granularity_by_uuid(
     MRG *mrg,
     Word_t section,
-    nd_uuid_t(*uuid),
+    nd_uuid_t *uuid,
     time_t first_time_s,
     time_t last_time_s,
     uint32_t update_every_s,

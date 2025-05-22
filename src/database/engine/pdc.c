@@ -4,16 +4,14 @@
 #include "dbengine-compression.h"
 
 struct extent_page_details_list {
-    uv_file file;
     uint64_t extent_offset;
     uint32_t extent_size;
-    unsigned number_of_pages_in_JudyL;
+    bool head_to_datafile_extent_queries_pending_for_extent;
     Pvoid_t page_details_by_metric_id_JudyL;
     struct page_details_control *pdc;
     struct rrdengine_datafile *datafile;
 
     struct rrdeng_cmd *cmd;
-    bool head_to_datafile_extent_queries_pending_for_extent;
 
     struct {
         struct extent_page_details_list *prev;
@@ -22,8 +20,8 @@ struct extent_page_details_list {
 };
 
 typedef struct datafile_extent_offset_list {
-    uv_file file;
-    unsigned fileno;
+//    uv_file file;
+//    unsigned fileno;
     Pvoid_t extent_pd_list_by_extent_offset_JudyL;
 } DEOL;
 
@@ -599,29 +597,29 @@ ALWAYS_INLINE_HOT void pdc_to_epdl_router(struct rrdengine_instance *ctx, PDC *p
             internal_fatal(pd->page,
                            "DBENGINE: page details has a page linked to it, but it is marked for loading");
 
-            PValue1 = PDCJudyLIns(&JudyL_datafile_list, pd->datafile.fileno, PJE0);
+            PValue1 = PDCJudyLIns(&JudyL_datafile_list, (Word_t) pd->datafile.ptr->fileno, PJE0);
             if (PValue1 && !*PValue1) {
                 *PValue1 = deol = deol_get();
                 deol->extent_pd_list_by_extent_offset_JudyL = NULL;
-                deol->fileno = pd->datafile.fileno;
+//                deol->fileno = pd->datafile.fileno;
             }
             else
                 deol = *PValue1;
 
-            PValue2 = PDCJudyLIns(&deol->extent_pd_list_by_extent_offset_JudyL, pd->datafile.extent.pos, PJE0);
+            PValue2 = PDCJudyLIns(&deol->extent_pd_list_by_extent_offset_JudyL, pd->datafile.pos, PJE0);
             if (PValue2 && !*PValue2) {
                 *PValue2 = epdl = epdl_get();
                 epdl->page_details_by_metric_id_JudyL = NULL;
-                epdl->number_of_pages_in_JudyL = 0;
-                epdl->file = pd->datafile.file;
-                epdl->extent_offset = pd->datafile.extent.pos;
-                epdl->extent_size = pd->datafile.extent.bytes;
+//                epdl->number_of_pages_in_JudyL = 0;
+//                epdl->file = pd->datafile.file;
+                epdl->extent_offset = pd->datafile.pos;
+                epdl->extent_size = pd->datafile.bytes;
                 epdl->datafile = pd->datafile.ptr;
             }
             else
                 epdl = *PValue2;
 
-            epdl->number_of_pages_in_JudyL++;
+//            epdl->number_of_pages_in_JudyL++;
 
             Pvoid_t *pd_by_first_time_s_judyL = PDCJudyLIns(&epdl->page_details_by_metric_id_JudyL, pd->metric_id, PJE0);
             Pvoid_t *pd_pptr = PDCJudyLIns(pd_by_first_time_s_judyL, pd->first_time_s, PJE0);
@@ -1351,7 +1349,7 @@ NOT_INLINE_HOT void epdl_find_extent_and_populate_pages(struct rrdengine_instanc
         if(worker)
             worker_is_busy(UV_EVENT_DBENGINE_EXTENT_MMAP);
 
-        void *extent_data = datafile_extent_read(ctx, epdl->file, epdl->extent_offset, epdl->extent_size);
+        void *extent_data = datafile_extent_read(ctx, epdl->datafile->file, epdl->extent_offset, epdl->extent_size);
         if(extent_data != NULL) {
 
             void *tmp = dbengine_extent_alloc(epdl->extent_size);

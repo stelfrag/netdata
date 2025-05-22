@@ -679,6 +679,7 @@ static void journalfile_restore_extent_metadata(struct rrdengine_instance *ctx, 
         }
 
         bool update_metric_time = true;
+        uint64_t samples = 0;
         if (!metric) {
             MRG_ENTRY entry = {
                     .uuid = temp_id,
@@ -692,16 +693,17 @@ static void journalfile_restore_extent_metadata(struct rrdengine_instance *ctx, 
             metric = mrg_metric_add_and_acquire(main_mrg, entry, &added);
             if(added)
                 update_metric_time = false;
-
-            if (vd.update_every_s) {
-                uint64_t samples = (vd.end_time_s - vd.start_time_s) / vd.update_every_s;
-                __atomic_add_fetch(&ctx->atomic.samples, samples, __ATOMIC_RELAXED);
-            }
         }
         Word_t metric_id = mrg_metric_id(main_mrg, metric);
 
+        if (vd.update_every_s)
+            samples = (vd.end_time_s - vd.start_time_s) / vd.update_every_s;
+
         if (update_metric_time)
             mrg_metric_expand_retention(main_mrg, metric, vd.start_time_s, vd.end_time_s, vd.update_every_s);
+
+        __atomic_add_fetch(&journalfile->v2.samples, samples, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&ctx->atomic.samples, samples, __ATOMIC_RELAXED);
 
         pgc_open_add_hot_page(
                 (Word_t)ctx, metric_id, vd.start_time_s, vd.end_time_s, vd.update_every_s,
@@ -920,56 +922,6 @@ static int journalfile_v2_validate(void *data_start, size_t journal_v2_file_size
 
     rc = journalfile_check_v2_metric_list(data_start, journal_v2_file_size);
     if (rc) return 1;
-
-    // Verify complete UUID chain
-
-    struct journal_metric_list *metric = (void *) (data_start + j2_header->metric_offset);
-
-    unsigned verified = 0;
-    unsigned entries;
-    unsigned total_pages = 0;
-
-    netdata_log_info("DBENGINE: checking %u metrics that exist in the journal", j2_header->metric_count);
-    for (entries = 0; entries < j2_header->metric_count; entries++) {
-
-        char uuid_str[UUID_STR_LEN];
-        uuid_unparse_lower(metric->uuid, uuid_str);
-        struct journal_page_header *metric_list_header = (void *) (data_start + metric->page_offset);
-        struct journal_page_header local_metric_list_header = *metric_list_header;
-
-        local_metric_list_header.crc = JOURVAL_V2_MAGIC;
-
-        crc = crc32(0L, Z_NULL, 0);
-        crc = crc32(crc, (void *) &local_metric_list_header, sizeof(local_metric_list_header));
-        rc = crc32cmp(metric_list_header->checksum, crc);
-
-        if (!rc) {
-            struct journal_v2_block_trailer *journal_trailer =
-                (void *) data_start + metric->page_offset + sizeof(struct journal_page_header) + (metric_list_header->entries * sizeof(struct journal_page_list));
-
-            crc = crc32(0L, Z_NULL, 0);
-            crc = crc32(crc, (uint8_t *) metric_list_header + sizeof(struct journal_page_header), metric_list_header->entries * sizeof(struct journal_page_list));
-            rc = crc32cmp(journal_trailer->checksum, crc);
-            internal_error(rc, "DBENGINE: index %u : %s entries %u at offset %u verified, DATA CRC computed %lu, stored %u", entries, uuid_str, metric->entries, metric->page_offset,
-                           crc, metric_list_header->crc);
-            if (!rc) {
-                total_pages += metric_list_header->entries;
-                verified++;
-            }
-        }
-
-        metric++;
-        if ((uint32_t)((uint8_t *) metric - (uint8_t *) data_start) > (uint32_t) journal_v2_file_size) {
-            netdata_log_info("DBENGINE: verification failed EOF reached -- total entries %u, verified %u", entries, verified);
-            return 1;
-        }
-    }
-
-    if (entries != verified) {
-        netdata_log_info("DBENGINE: verification failed -- total entries %u, verified %u", entries, verified);
-        return 1;
-    }
-    netdata_log_info("DBENGINE: verification succeeded -- total entries %u, verified %u (%u total pages)", entries, verified, total_pages);
 
     return 0;
 }
@@ -1220,28 +1172,10 @@ void *journalfile_v2_write_metric_page(struct journal_v2_header *j2_header, void
 void *journalfile_v2_write_data_page_header(struct journal_v2_header *j2_header __maybe_unused, void *data, struct jv2_metrics_info *metric_info, uint32_t uuid_offset)
 {
     struct journal_page_header *data_page_header = (void *) data;
-    uLong crc;
 
-    uuid_copy(data_page_header->uuid, *metric_info->uuid);
-    data_page_header->entries = metric_info->number_of_pages;
     data_page_header->uuid_offset = uuid_offset;        // data header OFFSET poings to METRIC in the directory
-    data_page_header->crc = JOURVAL_V2_MAGIC;
-    crc = crc32(0L, Z_NULL, 0);
-    crc = crc32(crc, (void *) data_page_header, sizeof(*data_page_header));
-    crc32set(data_page_header->checksum, crc);
+    data_page_header->entries = metric_info->number_of_pages;
     return ++data_page_header;
-}
-
-void *journalfile_v2_write_data_page_trailer(struct journal_v2_header *j2_header __maybe_unused, void *data, void *page_header)
-{
-    struct journal_page_header *data_page_header = (void *) page_header;
-    struct journal_v2_block_trailer *journal_trailer = (void *) data;
-    uLong crc;
-
-    crc = crc32(0L, Z_NULL, 0);
-    crc = crc32(crc, (uint8_t *) page_header + sizeof(struct journal_page_header), data_page_header->entries * sizeof(struct journal_page_list));
-    crc32set(journal_trailer->checksum, crc);
-    return ++journal_trailer;
 }
 
 void *journalfile_v2_write_data_page(struct journal_v2_header *j2_header, void *data, struct jv2_page_info *page_info)
@@ -1251,16 +1185,11 @@ void *journalfile_v2_write_data_page(struct journal_v2_header *j2_header, void *
     if (journalfile_verify_space(j2_header, data, sizeof(*data_page)))
         return NULL;
 
-    struct extent_io_data *ei = page_info->custom_data;
-
     data_page->delta_start_s = (uint32_t) (page_info->start_time_s - (time_t) (j2_header->start_time_ut) / USEC_PER_SEC);
     data_page->delta_end_s = (uint32_t) (page_info->end_time_s - (time_t) (j2_header->start_time_ut) / USEC_PER_SEC);
     data_page->extent_index = page_info->extent_index;
 
     data_page->update_every_s = page_info->update_every_s;
-    data_page->page_length = (uint16_t) (ei ? ei->page_length : page_info->page_length);
-    data_page->type = 0;
-
     return ++data_page;
 }
 
@@ -1455,29 +1384,27 @@ bool journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
             // Next we will write
             //   Header
             //   Detailed entries (descr @ time)
-            //   Trailer (checksum)
 
             // Keep the page_list_header, to be used for migration when where agent is running
             metric_info->page_list_header = pages_offset;
+
             // Write page header
+            struct journal_page_header *data_header = (void *) ((uint8_t *) data_start + pages_offset);
             void *metric_page =
-                journalfile_v2_write_data_page_header(&j2_header, data_start + pages_offset, metric_info, uuid_offset);
+                journalfile_v2_write_data_page_header(&j2_header, data_header, metric_info, uuid_offset);
 
             // Start writing descr @ time
-            void *page_trailer = journalfile_v2_write_descriptors(&j2_header, metric_page, metric_info, current_metric, &metric_samples);
-            if (unlikely(!page_trailer))
+            uint8_t *next_page_address = journalfile_v2_write_descriptors(&j2_header, metric_page, metric_info, current_metric, &metric_samples);
+            if (unlikely(!next_page_address))
                 break;
+
             current_metric->samples = metric_samples;
             journalfile_samples += metric_samples;
-
-            // Trailer (checksum)
-            uint8_t *next_page_address =
-                journalfile_v2_write_data_page_trailer(&j2_header, page_trailer, data_start + pages_offset);
 
             // Calculate start of the pages start for next descriptor
             pages_offset +=
                 (metric_info->number_of_pages * (sizeof(struct journal_page_list)) +
-                 sizeof(struct journal_page_header) + sizeof(struct journal_v2_block_trailer));
+                 sizeof(struct journal_page_header));
             // Verify we are at the right location
             if (pages_offset != (uint32_t)(next_page_address - data_start)) {
                 // make sure checks fail so that we abort

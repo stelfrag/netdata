@@ -61,7 +61,7 @@ static inline uint64_t journalfile_current_size(struct rrdengine_journalfile *jo
 
 // Journal v2 structures
 
-#define JOURVAL_V2_MAGIC           (0x01230317)
+#define JOURVAL_V2_MAGIC           (0x05270514)
 #define JOURVAL_V2_REBUILD_MAGIC   (0x00230317)
 #define JOURVAL_V2_SKIP_MAGIC      (0x02230317)
 
@@ -70,7 +70,7 @@ struct journal_v2_block_trailer {
         uint8_t checksum[CHECKSUM_SZ]; /* CRC32 */
         uint32_t crc;
     };
-    uint32_t unused; /* Size of the trailer */
+    uint32_t unused;
 };
 
 /*
@@ -208,23 +208,10 @@ struct journal_metric_list {
     uint32_t samples;
 };
 
-// Page section item header (32 bytes)
+// Page section item header (8 bytes)
 struct journal_page_header {
-    // CRC32 of the header
-    union {
-        uint8_t checksum[CHECKSUM_SZ];
-        uint32_t crc;
-    };
-
-    // Offset to corresponding metric in metric list
     uint32_t uuid_offset;
-
-    // Number of page items that follow
     uint32_t entries;
-
-    // UUID of the metric
-    nd_uuid_t uuid;
-    uint32_t samples;
 };
 
 // Page section item (24 bytes)
@@ -242,13 +229,13 @@ struct journal_page_list {
     uint32_t update_every_s;
 
     // Length of the page
-    uint16_t page_length;
+//    uint16_t page_length;
 
     // Page type identifier
-    uint8_t type;
-    uint8_t flags1;
-    uint8_t flags2;
-    uint8_t flags3;
+//    uint8_t type;
+//    uint8_t flags1;
+//    uint8_t flags2;
+//    uint8_t flags3;
 };
 
 struct wal;
