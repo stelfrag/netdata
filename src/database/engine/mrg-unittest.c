@@ -37,13 +37,7 @@ static void *mrg_stress(void *ptr) {
             time_t after = __atomic_sub_fetch(&e->after, 1, __ATOMIC_RELAXED);
             time_t before = __atomic_add_fetch(&e->before, 1, __ATOMIC_RELAXED);
 
-            mrg_update_metric_retention_and_granularity_by_uuid(
-                mrg, 0x01,
-                &e->uuid,
-                after,
-                before,
-                1,
-                before);
+            mrg_update_metric_retention_and_granularity_by_uuid(mrg, 0x01, &e->uuid, after, before, 1, before);
 
             __atomic_add_fetch(&t->updates, 1, __ATOMIC_RELAXED);
         }
@@ -156,13 +150,7 @@ int mrg_unittest(void) {
     for(size_t i = 0; i < entries ;i++) {
         struct mrg_stress_entry *e = &t.array[i];
         for(size_t tier = 1; tier <= tiers ;tier++) {
-            mrg_update_metric_retention_and_granularity_by_uuid(
-                mrg, tier,
-                &e->uuid,
-                e->after,
-                e->before,
-                1,
-                e->before);
+            mrg_update_metric_retention_and_granularity_by_uuid(mrg, tier, &e->uuid, e->after, e->before, 1, e->before);
         }
     }
     netdata_log_info("stress test ready to run...");

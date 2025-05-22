@@ -998,6 +998,7 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     time_t global_first_time_s;
     bool failed = false;
     uint32_t entries;
+    uint64_t detailed_samples = 0;
     PROTECTED_ACCESS_SETUP(data_start, journalfile->mmap.size, path_v2, "mrg-load");
     if(no_signal_received) {
         entries = j2_header->metric_count;
@@ -1008,6 +1009,8 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
         for (size_t i=0; i < entries; i++) {
             time_t start_time_s = header_start_time_s + metric->delta_start_s;
             time_t end_time_s = header_start_time_s + metric->delta_end_s;
+            uint32_t metric_samples = metric->samples;
+            detailed_samples += metric_samples;
 
             mrg_update_metric_retention_and_granularity_by_uuid(
                 main_mrg, (Word_t)ctx, &metric->uuid, start_time_s, end_time_s, metric->update_every_s, now_s);
@@ -1017,19 +1020,26 @@ void journalfile_v2_populate_retention_to_mrg(struct rrdengine_instance *ctx, st
     } else
         failed = true;
 
+    uint64_t samples =  j2_header->samples;
     journalfile_v2_data_release(journalfile);
 
     if (unlikely(failed))
         return;
 
+    journalfile->v2.samples = samples;
+
     usec_t ended_ut = now_monotonic_usec();
 
-    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms"
+    nd_log_daemon(NDLP_DEBUG, "DBENGINE: journal v2 of tier %d, datafile %u populated, size: %0.2f MiB, metrics: %0.2f k, %0.2f ms, samples: %"PRIu64", detailed samples: %"PRIu64
         , ctx->config.tier, journalfile->datafile->fileno
         , (double)data_size / 1024 / 1024
         , (double)entries / 1000
-        , ((double)(ended_ut - started_ut) / USEC_PER_MS)
+        , ((double)(ended_ut - started_ut) / USEC_PER_MS),
+        samples, detailed_samples
         );
+
+    // Update CTX samples
+    __atomic_add_fetch(&ctx->atomic.samples, samples, __ATOMIC_RELAXED);
 
     time_t old = __atomic_load_n(&ctx->atomic.first_time_s, __ATOMIC_RELAXED);;
     do {
@@ -1256,7 +1266,7 @@ void *journalfile_v2_write_data_page(struct journal_v2_header *j2_header, void *
 
 // Must be recorded in metric_info->entries
 static void *journalfile_v2_write_descriptors(struct journal_v2_header *j2_header, void *data, struct jv2_metrics_info *metric_info,
-        struct journal_metric_list *current_metric)
+        struct journal_metric_list *current_metric, size_t *samples)
 {
     Pvoid_t *PValue;
 
@@ -1269,14 +1279,18 @@ static void *journalfile_v2_write_descriptors(struct journal_v2_header *j2_heade
     bool first = true;
     struct jv2_page_info *page_info;
     uint32_t update_every_s = 0;
+    size_t local_samples = 0;
     while ((PValue = JudyLFirstThenNext(JudyL_array, &index_time, &first))) {
         page_info = *PValue;
         // Write one descriptor and return the next data page location
         data_page = journalfile_v2_write_data_page(j2_header, (void *) data_page, page_info);
         update_every_s = page_info->update_every_s;
+        if (likely(update_every_s))
+            local_samples += ((page_info->end_time_s - page_info->start_time_s) / update_every_s);
         if (NULL == data_page)
             break;
     }
+    (*samples) += local_samples;
     current_metric->update_every_s = update_every_s;
     return data_page;
 }
@@ -1299,6 +1313,7 @@ bool journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
     time_t min_time_s = LONG_MAX;
     time_t max_time_s = 0;
     struct jv2_metrics_info *metric_info;
+    uint64_t journalfile_samples = 0;
 
     journalfile_v2_generate_path(datafile, path, sizeof(path));
 
@@ -1425,6 +1440,7 @@ bool journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
             true, "DBENGINE: traverse and qsort  UUID %llu", (now_monotonic_usec() - start_loading) / USEC_PER_MS);
 
         for (Index = 0; Index < number_of_metrics; Index++) {
+            size_t metric_samples = 0;
             metric_info = uuid_list[Index].metric_info;
 
             // Calculate current UUID offset from start of file. We will store this in the data page header
@@ -1448,9 +1464,11 @@ bool journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
                 journalfile_v2_write_data_page_header(&j2_header, data_start + pages_offset, metric_info, uuid_offset);
 
             // Start writing descr @ time
-            void *page_trailer = journalfile_v2_write_descriptors(&j2_header, metric_page, metric_info, current_metric);
+            void *page_trailer = journalfile_v2_write_descriptors(&j2_header, metric_page, metric_info, current_metric, &metric_samples);
             if (unlikely(!page_trailer))
                 break;
+            current_metric->samples = metric_samples;
+            journalfile_samples += metric_samples;
 
             // Trailer (checksum)
             uint8_t *next_page_address =
@@ -1467,6 +1485,7 @@ bool journalfile_migrate_to_v2_callback(Word_t section, unsigned datafile_fileno
                 break;
             }
         }
+        j2_header.samples = journalfile_samples;
 
         if (data == data_start + metric_offset_trailer) {
             internal_error(

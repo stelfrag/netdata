@@ -525,6 +525,14 @@ static NOT_INLINE_HOT size_t get_page_list_from_journal_v2(struct rrdengine_inst
             size_t journal_metric_count = (size_t)j2_header->metric_count;
             struct journal_metric_list *uuid_list =
                 (struct journal_metric_list *)((uint8_t *)j2_header + j2_header->metric_offset);
+
+            if (((uintptr_t)uuid_list % alignof(struct journal_metric_list)) != 0) {
+                nd_log_daemon(
+                    NDLP_WARNING,
+                    "WARNING: uuid_list is NOT properly aligned (%zu-byte alignment required)\n",
+                    alignof(struct journal_metric_list));
+            }
+
             size_t metric_offset = (uint8_t *)uuid_list - (uint8_t *)j2_header;
             if (metric_offset >= journal_v2_file_size) {
                 nd_log_limit_static_thread_var(erl, 60, 0);

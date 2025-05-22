@@ -1188,13 +1188,13 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
             time_t old_first_time_s = mrg_metric_get_first_time_s(main_mrg, uuid_first_t_entry->metric);
 
             bool changed = mrg_metric_set_first_time_s_if_bigger(main_mrg, uuid_first_t_entry->metric, uuid_first_t_entry->first_time_s);
-            if (changed) {
-                uint32_t update_every_s = mrg_metric_get_update_every_s(main_mrg, uuid_first_t_entry->metric);
-                if (update_every_s && old_first_time_s && uuid_first_t_entry->first_time_s > old_first_time_s) {
-                    uint64_t remove_samples = (uuid_first_t_entry->first_time_s - old_first_time_s) / update_every_s;
-                    __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
-                }
-            }
+//            if (changed) {
+//                uint32_t update_every_s = mrg_metric_get_update_every_s(main_mrg, uuid_first_t_entry->metric);
+//                if (update_every_s && old_first_time_s && uuid_first_t_entry->first_time_s > old_first_time_s) {
+//                    uint64_t remove_samples = (uuid_first_t_entry->first_time_s - old_first_time_s) / update_every_s;
+//                    __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
+//                }
+//            }
             mrg_metric_release(main_mrg, uuid_first_t_entry->metric);
         }
         else {
@@ -1206,10 +1206,10 @@ static void update_metrics_first_time_s(struct rrdengine_instance *ctx, struct r
                 time_t first_time_s = mrg_metric_get_first_time_s(main_mrg, uuid_first_t_entry->metric);
                 time_t last_time_s = mrg_metric_get_latest_time_s(main_mrg, uuid_first_t_entry->metric);
                 time_t update_every_s = mrg_metric_get_update_every_s(main_mrg, uuid_first_t_entry->metric);
-                if (update_every_s && first_time_s && last_time_s) {
-                    uint64_t remove_samples = (first_time_s - last_time_s) / update_every_s;
-                    __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
-                }
+//                if (update_every_s && first_time_s && last_time_s) {
+//                    uint64_t remove_samples = (first_time_s - last_time_s) / update_every_s;
+//                    __atomic_sub_fetch(&ctx->atomic.samples, remove_samples, __ATOMIC_RELAXED);
+//                }
 
                 bool deleted = mrg_metric_release_and_delete(main_mrg, uuid_first_t_entry->metric);
                 if(deleted)
@@ -1285,6 +1285,7 @@ void datafile_delete(
 
     struct rrdengine_journalfile *journal_file;
     size_t deleted_bytes, journal_file_bytes, datafile_bytes;
+    uint64_t deleted_samples;
     int ret;
     char path[RRDENG_PATH_MAX];
 
@@ -1293,6 +1294,7 @@ void datafile_delete(
     uv_rwlock_wrunlock(&ctx->datafiles.rwlock);
 
     journal_file = datafile->journalfile;
+    deleted_samples = journal_file->v2.samples;
     datafile_bytes = datafile->pos;
     journal_file_bytes = journalfile_current_size(journal_file);
     deleted_bytes = journalfile_v2_data_size_get(journal_file);

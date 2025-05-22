@@ -14,8 +14,6 @@ struct rrdengine_journalfile;
 #define WALFILE_EXTENSION ".njf"
 #define WALFILE_EXTENSION_V2 ".njfv2"
 
-#define is_descr_journal_v2(descr) ((descr)->extent_entry != NULL)
-
 typedef enum __attribute__ ((__packed__)) {
     JOURNALFILE_FLAG_IS_AVAILABLE          = (1 << 0),
     JOURNALFILE_FLAG_IS_MOUNTED            = (1 << 1),
@@ -37,6 +35,7 @@ struct rrdengine_journalfile {
         time_t first_time_s;
         time_t last_time_s;
         time_t not_needed_since_s;
+        uint64_t samples;
         uint32_t size_of_directory;
     } v2;
 
@@ -71,6 +70,7 @@ struct journal_v2_block_trailer {
         uint8_t checksum[CHECKSUM_SZ]; /* CRC32 */
         uint32_t crc;
     };
+    uint32_t unused; /* Size of the trailer */
 };
 
 /*
@@ -160,6 +160,7 @@ struct journal_v2_header {
     uint32_t journal_v1_file_size;
     // Total file size
     uint32_t journal_v2_file_size;
+    uint64_t samples;
 
     // Pointer used only when writing to build up the memory-mapped file.
     void *data;
@@ -181,11 +182,10 @@ struct journal_extent_list {
 
     // Number of pages in the extent (not all are necesssarily valid)
     uint8_t  pages;
-
-    // --- implicit padding of 1-byte because the struct is not packed ---
+    uint8_t  flags1;
 };
 
-// Metric section item (36 bytes)
+// Metric section item (40 bytes)
 struct journal_metric_list {
     // Unique identifier of the metric
     nd_uuid_t uuid;
@@ -205,9 +205,10 @@ struct journal_metric_list {
 
     // Last update every for this metric in this journal (last page collected)
     uint32_t update_every_s;
+    uint32_t samples;
 };
 
-// Page section item header (28 bytes)
+// Page section item header (32 bytes)
 struct journal_page_header {
     // CRC32 of the header
     union {
@@ -223,9 +224,10 @@ struct journal_page_header {
 
     // UUID of the metric
     nd_uuid_t uuid;
+    uint32_t samples;
 };
 
-// Page section item (20 bytes)
+// Page section item (24 bytes)
 struct journal_page_list {
     // Start time relative to journal start
     uint32_t delta_start_s;
@@ -244,8 +246,9 @@ struct journal_page_list {
 
     // Page type identifier
     uint8_t type;
-
-    // --- implicit padding of 1-byte because the struct is not packed ---
+    uint8_t flags1;
+    uint8_t flags2;
+    uint8_t flags3;
 };
 
 struct wal;

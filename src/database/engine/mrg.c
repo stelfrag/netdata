@@ -428,26 +428,35 @@ inline void mrg_update_metric_retention_and_granularity_by_uuid(
 
     struct rrdengine_instance *ctx = (struct rrdengine_instance *) section;
     if (likely(!added)) {
-        uint64_t old_samples = 0;
-
-        if (update_every_s && metric->latest_update_every_s && metric->latest_time_s_clean)
-            old_samples = (metric->latest_time_s_clean - metric->first_time_s) / metric->latest_update_every_s;
+//        uint64_t old_samples = 0;
+//
+//        if (update_every_s && metric->latest_update_every_s && metric->latest_time_s_clean)
+//            old_samples = (metric->latest_time_s_clean - metric->first_time_s) / metric->latest_update_every_s;
 
         mrg_metric_expand_retention(mrg, metric, first_time_s, last_time_s, update_every_s);
 
-        uint64_t new_samples = 0;
-        if (update_every_s && metric->latest_update_every_s && metric->latest_time_s_clean)
-            new_samples = (metric->latest_time_s_clean - metric->first_time_s) / metric->latest_update_every_s;
+//        uint64_t new_samples = 0;
+//        if (update_every_s && metric->latest_update_every_s && metric->latest_time_s_clean)
+//            new_samples = (metric->latest_time_s_clean - metric->first_time_s) / metric->latest_update_every_s;
+//
+//        __atomic_add_fetch(&ctx->atomic.samples, new_samples - old_samples, __ATOMIC_RELAXED);
+//         report samples given vs computed
+//        if (j2_metric_samples && j2_metric_samples != new_samples) {
+//            nd_log_daemon(NDLP_WARNING,
+//                         "DBENGINE JV2: wrong samples calculated (DISK %"PRIu32" - CALCULATED %"PRIu32"), "
+//                         "CORRECT samples to %"PRIu64,
+//                j2_metric_samples, new_samples,
+//                j2_metric_samples);
+//        }
 
-        __atomic_add_fetch(&ctx->atomic.samples, new_samples - old_samples, __ATOMIC_RELAXED);
     }
-    else {
-        // Newly added
-        if (update_every_s) {
-            uint64_t samples = (last_time_s - first_time_s) / update_every_s;
-            __atomic_add_fetch(&ctx->atomic.samples, samples, __ATOMIC_RELAXED);
-        }
-    }
+//    else {
+//        // Newly added
+//        if (update_every_s) {
+//            uint64_t samples = (last_time_s - first_time_s) / update_every_s;
+//            __atomic_add_fetch(&ctx->atomic.samples, samples, __ATOMIC_RELAXED);
+//        }
+//    }
 
     mrg_metric_release(mrg, metric);
 }
