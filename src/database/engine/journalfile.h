@@ -130,40 +130,20 @@ struct journal_v2_header {
     uint32_t magic;
 
     // --- implicit padding of 4-bytes because the struct is not packed ---
-
-    // Mininimum start time in microseconds
-    usec_t start_time_ut;
-    // Maximum end time in microseconds
-    usec_t end_time_ut;
-
-    // Number of extents
-    uint32_t extent_count;
-    // Offset to extents section
-    uint32_t extent_offset;
-
-    // Number of metrics
-    uint32_t metric_count;
-    // Offset to metrics section
-    uint32_t metric_offset;
-
-    // Total count of pages
-    uint32_t page_count;
-    // Offset to page data section
-    uint32_t page_offset;
-
-    // Offset to extents section CRC
-    uint32_t extent_trailer_offset;
-    // Offset to metrics section CRC
-    uint32_t metric_trailer_offset;
-
-    // Size of original journal file
-    uint32_t journal_v1_file_size;
-    // Total file size
-    uint32_t journal_v2_file_size;
-    uint64_t samples;
-
-    // Pointer used only when writing to build up the memory-mapped file.
-    void *data;
+    usec_t start_time_ut;            // Mininimum start time in microseconds
+    usec_t end_time_ut;              // Maximum end time in microseconds
+    uint32_t extent_count;           // Number of extents
+    uint32_t extent_offset;          // Offset to extents section
+    uint32_t metric_count;           // Number of metrics
+    uint32_t metric_offset;          // Offset to metrics section
+    uint32_t page_count;             // Total count of pages
+    uint32_t page_offset;            // Offset to page data section
+    uint32_t extent_trailer_offset;  // Offset to extents section CRC
+    uint32_t metric_trailer_offset;  // Offset to metrics section CRC
+    uint32_t journal_v1_file_size;   // Size of original journal file
+    uint32_t journal_v2_file_size;   // Total file size
+    uint64_t samples;                // Number of samples in the journal
+    void *data;                      // Pointer used only when writing to build up the memory-mapped file.
 };
 
 // Reserve the first 4 KiB for the journal v2 header
@@ -187,25 +167,13 @@ struct journal_extent_list {
 
 // Metric section item (40 bytes)
 struct journal_metric_list {
-    // Unique identifier of the metric
-    nd_uuid_t uuid;
-
-    // Number of pages for this metric
-    uint32_t entries;
-
-    // Offset to the page data section
-    //   Points to: journal_page_header + (entries * journal_page_list)
-    uint32_t page_offset;
-
-    // Start time relative to journal start
-    uint32_t delta_start_s;
-
-    // End time relative to journal start
-    uint32_t delta_end_s;
-
-    // Last update every for this metric in this journal (last page collected)
-    uint32_t update_every_s;
-    uint32_t samples;
+    nd_uuid_t uuid;            // Unique identifier of the metric
+    uint32_t entries;          // Number of pages for this metric
+    uint32_t page_offset;      // Offset to the page data section : Points to: journal_page_header + (entries * journal_page_list)
+    uint32_t delta_start_s;    // Start time relative to journal start
+    uint32_t delta_end_s;      // End time relative to journal start
+    uint32_t update_every_s;   // Last update every for this metric in this journal (last page collected)
+    uint32_t samples;          // Metric samples in this journal for this metric
 };
 
 // Page section item header (8 bytes)
@@ -214,28 +182,12 @@ struct journal_page_header {
     uint32_t entries;
 };
 
-// Page section item (24 bytes)
+// Page section item (16 bytes)
 struct journal_page_list {
-    // Start time relative to journal start
-    uint32_t delta_start_s;
-
-    // End time relative to journal start
-    uint32_t delta_end_s;
-
-    // Offset into extent section
-    uint32_t extent_index;
-
-    // Update frequency
-    uint32_t update_every_s;
-
-    // Length of the page
-//    uint16_t page_length;
-
-    // Page type identifier
-//    uint8_t type;
-//    uint8_t flags1;
-//    uint8_t flags2;
-//    uint8_t flags3;
+    uint32_t delta_start_s;   // Start time relative to journal start
+    uint32_t delta_end_s;     // End time relative to journal start
+    uint32_t extent_index;    // Offset into extent section
+    uint32_t update_every_s;  // Update frequency
 };
 
 struct wal;
