@@ -62,6 +62,7 @@ static inline uint64_t journalfile_current_size(struct rrdengine_journalfile *jo
 // Journal v2 structures
 
 #define JOURVAL_V2_MAGIC           (0x05270514)
+#define JOURVAL_V2_MAGIC_NEW       (0x05270515) // New magic for V2 files created by direct migration
 #define JOURVAL_V2_REBUILD_MAGIC   (0x00230317)
 #define JOURVAL_V2_SKIP_MAGIC      (0x02230317)
 
