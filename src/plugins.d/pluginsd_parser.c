@@ -328,6 +328,7 @@ static inline PARSER_RC pluginsd_host(char **words, size_t num_words, PARSER *pa
         *Pvalue = (uint32_t) (now_realtime_sec() - VNODE_BASE_EPOCH);
         // Check if we need to enable
         if (!rrdhost_option_check(host, RRDHOST_OPTION_VIRTUAL_HOST)) {
+            nd_log_daemon(NDLP_INFO, "VNODE: Enabling virtual host \"%s\" since i received \"HOST %s\"", rrdhost_hostname(host), guid);
             rrdhost_option_set(host, RRDHOST_OPTION_VIRTUAL_HOST);
             rrdhost_flag_set(host, RRDHOST_FLAG_COLLECTOR_ONLINE);
             nd_log_daemon(NDLP_INFO, "VNODE: Re-enabling virtual host \"%s\"", rrdhost_hostname(host));
