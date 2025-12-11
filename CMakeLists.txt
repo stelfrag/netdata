@@ -1639,6 +1639,8 @@ if(ENABLE_DBENGINE)
             src/database/engine/mrg-internals.h
             src/database/engine/mrg-unittest.c
             src/database/engine/mrg-load.c
+            src/database/engine/njfm.c
+            src/database/engine/njfm.h
             src/database/engine/pdc.c
             src/database/engine/pdc.h
             src/database/engine/dbengine-unittest.c

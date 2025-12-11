@@ -3,6 +3,7 @@
 #include "database/engine/rrddiskprotocol.h"
 #include "rrdengine.h"
 #include "dbengine-compression.h"
+#include "njfm.h"
 
 /* Default global database instance */
 struct rrdengine_instance multidb_ctx_storage_tier0 = { 0 };
@@ -1110,6 +1111,32 @@ static void rrdeng_populate_mrg(struct rrdengine_instance *ctx)
 {
     size_t datafiles = datafile_count(ctx, false);
 
+    // First, try to load .njfm files to speed up MRG population
+    // This will mark covered datafiles as already populated
+    njfm_delete_invalid_files(ctx);
+
+    NJFM_FILE *njfm_files = NULL;
+    size_t njfm_count = njfm_scan_files(ctx, &njfm_files);
+
+    if (njfm_count > 0) {
+        nd_log_daemon(NDLP_INFO, "DBENGINE: found %zu njfm file(s) for tier %d, loading...",
+                      njfm_count, ctx->config.tier);
+
+        for (size_t i = 0; i < njfm_count; i++) {
+            uint32_t min_fn, max_fn;
+            if (njfm_file_is_valid(ctx, njfm_files[i].path, &min_fn, &max_fn)) {
+                ssize_t loaded = njfm_load_and_populate_mrg(ctx, njfm_files[i].path);
+                if (loaded >= 0) {
+                    njfm_mark_datafiles_populated(ctx, min_fn, max_fn);
+                    nd_log_daemon(NDLP_INFO, "DBENGINE: njfm file covered datafiles %u-%u, %zd metrics loaded",
+                                  min_fn, max_fn, loaded);
+                }
+            }
+        }
+
+        njfm_free_files(njfm_files, njfm_count);
+    }
+
     ssize_t cpus = (ssize_t)netdata_conf_cpus();
     if(cpus < 1)
         cpus = 1;
@@ -1238,6 +1265,12 @@ int rrdeng_exit(struct rrdengine_instance *ctx) {
     }
 
     pgc_flush_all_hot_and_dirty_pages(main_cache, (Word_t)ctx);
+
+    // Build njfm file on shutdown to speed up next startup
+    // Use skip_if_slow=true to avoid delaying shutdown too much
+    if (!unittest_running) {
+        njfm_build_for_tier(ctx, true);
+    }
 
     struct completion completion = {};
     completion_init(&completion);

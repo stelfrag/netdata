@@ -3,6 +3,7 @@
 #include "rrdengine.h"
 #include "pdc.h"
 #include "dbengine-compression.h"
+#include "njfm.h"
 
 struct rrdeng_global_stats global_stats = { 0 };
 
@@ -2005,6 +2006,9 @@ static void after_do_extent_cache_evict(struct rrdengine_instance *ctx __maybe_u
 
 static void after_journal_v2_indexing(struct rrdengine_instance *ctx __maybe_unused, void *data __maybe_unused, struct completion *completion __maybe_unused, uv_work_t* req __maybe_unused, int status __maybe_unused) {
     __atomic_store_n(&ctx->atomic.migration_to_v2_running, false, __ATOMIC_RELAXED);
+
+    // Check if we should build an NJFM chunk after jv2 creation
+    njfm_on_journal_v2_creation(ctx);
 
     check_and_schedule_db_rotation(ctx);
 }
