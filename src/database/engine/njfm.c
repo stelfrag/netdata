@@ -597,23 +597,22 @@ cleanup:
 
 // ----------------------------------------------------------------------------
 // Periodic/Incremental Building
+//
+// Chunks are aligned to NJFM_CHUNK_SIZE boundaries: 1-20, 21-40, 41-60, etc.
+// This makes it easy to determine which chunk a fileno belongs to and
+// ensures non-overlapping coverage.
 
-// Helper: find the highest max_fileno covered by existing .njfm files
-static uint32_t njfm_get_max_covered_fileno(struct rrdengine_instance *ctx) {
-    NJFM_FILE *files = NULL;
-    size_t count = njfm_scan_files(ctx, &files);
+// Helper: get the aligned chunk start for a given fileno
+static inline uint32_t njfm_chunk_start_for_fileno(uint32_t fileno) {
+    // Chunks: 1-20, 21-40, 41-60, etc.
+    // fileno 1-20 -> chunk 1, fileno 21-40 -> chunk 21, etc.
+    if (fileno == 0) return 1;
+    return ((fileno - 1) / NJFM_CHUNK_SIZE) * NJFM_CHUNK_SIZE + 1;
+}
 
-    uint32_t max_covered = 0;
-    for (size_t i = 0; i < count; i++) {
-        uint32_t min_fn, max_fn;
-        if (njfm_file_is_valid(ctx, files[i].path, &min_fn, &max_fn)) {
-            if (max_fn > max_covered)
-                max_covered = max_fn;
-        }
-    }
-
-    njfm_free_files(files, count);
-    return max_covered;
+// Helper: get the aligned chunk end for a given chunk start
+static inline uint32_t njfm_chunk_end_for_start(uint32_t chunk_start) {
+    return chunk_start + NJFM_CHUNK_SIZE - 1;
 }
 
 // Helper: get the current max fileno (latest datafile)
@@ -640,130 +639,53 @@ static uint32_t njfm_get_current_min_fileno(struct rrdengine_instance *ctx) {
     return PFirst ? (uint32_t)first_fileno : 0;
 }
 
-bool njfm_should_build_chunk(struct rrdengine_instance *ctx) {
-    if (!ctx || !ctx->datafiles.JudyL)
-        return false;
+// Helper: check if an njfm file exists for a given aligned chunk
+static bool njfm_chunk_file_exists(struct rrdengine_instance *ctx, uint32_t chunk_start) {
+    char path[RRDENG_PATH_MAX];
+    uint32_t chunk_end = njfm_chunk_end_for_start(chunk_start);
+    njfm_generate_path(ctx, chunk_start, chunk_end, path, sizeof(path));
 
-    uint32_t max_covered = njfm_get_max_covered_fileno(ctx);
-    uint32_t current_max = njfm_get_current_max_fileno(ctx);
-
-    if (current_max == 0)
-        return false;
-
-    // Calculate how many datafiles are not covered by .njfm files
-    uint32_t uncovered = (current_max > max_covered) ? (current_max - max_covered) : 0;
-
-    // Build a new chunk when we have NJFM_CHUNK_SIZE uncovered files
-    return uncovered >= NJFM_CHUNK_SIZE;
-}
-
-int njfm_build_next_chunk(struct rrdengine_instance *ctx) {
-    if (!ctx || !ctx->datafiles.JudyL)
-        return 0;
-
-    uint32_t max_covered = njfm_get_max_covered_fileno(ctx);
-    uint32_t current_min = njfm_get_current_min_fileno(ctx);
-    uint32_t current_max = njfm_get_current_max_fileno(ctx);
-
-    if (current_max == 0)
-        return 0;
-
-    // Determine the range for the next chunk
-    // Start from the file after max_covered (or from current_min if nothing covered)
-    uint32_t chunk_start = (max_covered > 0) ? (max_covered + 1) : current_min;
-
-    // If chunk_start is before current_min (old files were deleted), adjust
-    if (chunk_start < current_min)
-        chunk_start = current_min;
-
-    // Calculate how many files are uncovered
-    if (chunk_start > current_max)
-        return 0;  // Everything is covered
-
-    uint32_t uncovered = current_max - chunk_start + 1;
-
-    // Only build if we have at least NJFM_CHUNK_SIZE files to cover
-    // Leave the last NJFM_CHUNK_SIZE files uncovered (they're still being written to)
-    if (uncovered < NJFM_CHUNK_SIZE * 2)
-        return 0;  // Not enough files yet
-
-    // Build a chunk covering NJFM_CHUNK_SIZE files
-    uint32_t chunk_end = chunk_start + NJFM_CHUNK_SIZE - 1;
-
-    nd_log_daemon(NDLP_INFO, "NJFM: building chunk for tier %d, datafiles %u-%u",
-                  ctx->config.tier, chunk_start, chunk_end);
-
-    return njfm_build_from_journals(ctx, chunk_start, chunk_end);
+    struct stat st;
+    return (stat(path, &st) == 0);
 }
 
 void njfm_on_journal_v2_creation(struct rrdengine_instance *ctx) {
-    // Check if we should build a new chunk
-    if (njfm_should_build_chunk(ctx)) {
-        // Build in a non-blocking way - just trigger the build
-        // The actual work is done by the dbengine event loop
-        njfm_build_next_chunk(ctx);
-    }
-}
-
-// ----------------------------------------------------------------------------
-// Build for tier (shutdown)
-
-void njfm_build_for_tier(struct rrdengine_instance *ctx, bool skip_if_slow) {
     if (!ctx || !ctx->datafiles.JudyL)
         return;
 
     uint32_t current_min = njfm_get_current_min_fileno(ctx);
     uint32_t current_max = njfm_get_current_max_fileno(ctx);
 
-    if (current_max == 0 || current_min > current_max) {
-        nd_log_daemon(NDLP_DEBUG, "NJFM: no datafiles to build from for tier %d", ctx->config.tier);
+    if (current_max == 0 || current_min == 0)
         return;
-    }
 
-    // Count total datafiles
-    size_t datafile_count = (size_t)(current_max - current_min + 1);
-
-    // First, delete invalid files (might free up some coverage)
+    // First, clean up any invalid njfm files
     njfm_delete_invalid_files(ctx);
 
-    // Get max covered after cleanup
-    uint32_t max_covered = njfm_get_max_covered_fileno(ctx);
+    // Determine which chunks we can build
+    // We can build a chunk if:
+    // 1. All files in the chunk range exist (have jv2 data)
+    // 2. The chunk is complete (current_max >= chunk_end)
+    // 3. The njfm file doesn't already exist
 
-    // Calculate uncovered files
-    uint32_t chunk_start = (max_covered > 0 && max_covered >= current_min) ? (max_covered + 1) : current_min;
-    if (chunk_start < current_min)
-        chunk_start = current_min;
+    uint32_t first_chunk_start = njfm_chunk_start_for_fileno(current_min);
 
-    if (chunk_start > current_max) {
-        nd_log_daemon(NDLP_DEBUG, "NJFM: all datafiles already covered for tier %d", ctx->config.tier);
-        return;
-    }
+    // Build all complete chunks that don't have njfm files yet
+    for (uint32_t chunk_start = first_chunk_start; ; chunk_start += NJFM_CHUNK_SIZE) {
+        uint32_t chunk_end = njfm_chunk_end_for_start(chunk_start);
 
-    uint32_t uncovered = current_max - chunk_start + 1;
-
-    // If skip_if_slow and we have many uncovered files, only build chunks
-    if (skip_if_slow && uncovered > NJFM_CHUNK_SIZE * 2) {
-        nd_log_daemon(NDLP_INFO, "NJFM: building single chunk for tier %d (skip_if_slow, %u uncovered)",
-                      ctx->config.tier, uncovered);
-        // Build just one chunk
-        uint32_t chunk_end = chunk_start + NJFM_CHUNK_SIZE - 1;
+        // Stop if this chunk isn't complete yet
         if (chunk_end > current_max)
-            chunk_end = current_max;
-        njfm_build_from_journals(ctx, chunk_start, chunk_end);
-        return;
-    }
+            break;
 
-    // Build chunks to cover all uncovered files
-    nd_log_daemon(NDLP_INFO, "NJFM: building chunks for tier %d, datafiles %u-%u (%u uncovered)",
-                  ctx->config.tier, chunk_start, current_max, uncovered);
+        // Skip if njfm file already exists for this chunk
+        if (njfm_chunk_file_exists(ctx, chunk_start))
+            continue;
 
-    while (chunk_start <= current_max) {
-        uint32_t chunk_end = chunk_start + NJFM_CHUNK_SIZE - 1;
-        if (chunk_end > current_max)
-            chunk_end = current_max;
+        // Build this chunk
+        nd_log_daemon(NDLP_INFO, "NJFM: building chunk for tier %d, datafiles %u-%u",
+                      ctx->config.tier, chunk_start, chunk_end);
 
         njfm_build_from_journals(ctx, chunk_start, chunk_end);
-
-        chunk_start = chunk_end + 1;
     }
 }

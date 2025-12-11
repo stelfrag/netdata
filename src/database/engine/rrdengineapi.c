@@ -1266,12 +1266,6 @@ int rrdeng_exit(struct rrdengine_instance *ctx) {
 
     pgc_flush_all_hot_and_dirty_pages(main_cache, (Word_t)ctx);
 
-    // Build njfm file on shutdown to speed up next startup
-    // Use skip_if_slow=true to avoid delaying shutdown too much
-    if (!unittest_running) {
-        njfm_build_for_tier(ctx, true);
-    }
-
     struct completion completion = {};
     completion_init(&completion);
     rrdeng_enq_cmd(ctx, RRDENG_OPCODE_CTX_SHUTDOWN, NULL, &completion, STORAGE_PRIORITY_BEST_EFFORT, NULL, NULL);

@@ -124,11 +124,6 @@ int njfm_delete_file(struct rrdengine_instance *ctx, const char *path);
 // Delete all invalid .njfm files in the dbfiles_path
 void njfm_delete_invalid_files(struct rrdengine_instance *ctx);
 
-// Build .njfm file(s) for the current tier if beneficial
-// Called during shutdown or periodically
-// skip_if_slow: if true, skip building if it would take too long
-void njfm_build_for_tier(struct rrdengine_instance *ctx, bool skip_if_slow);
-
 // Generate the path for an .njfm file
 void njfm_generate_path(struct rrdengine_instance *ctx, uint32_t min_fileno,
                         uint32_t max_fileno, char *path, size_t path_size);
@@ -137,19 +132,10 @@ void njfm_generate_path(struct rrdengine_instance *ctx, uint32_t min_fileno,
 void njfm_free_files(NJFM_FILE *files, size_t count);
 
 // ----------------------------------------------------------------------------
-// Periodic/Incremental Building API
-
-// Check if we should build a new .njfm chunk
-// Called after a new jv2 file is created
-// Returns true if a new chunk should be built
-bool njfm_should_build_chunk(struct rrdengine_instance *ctx);
-
-// Build the next .njfm chunk if needed
-// Called periodically or after jv2 creation
-// Returns 0 on success (or if nothing to build), -1 on error
-int njfm_build_next_chunk(struct rrdengine_instance *ctx);
+// Periodic Building API
 
 // Called when a new jv2 file is finalized to trigger periodic building
+// Builds aligned chunks (1-20, 21-40, etc.) as they become complete
 void njfm_on_journal_v2_creation(struct rrdengine_instance *ctx);
 
 #endif /* NETDATA_NJFM_H */
