@@ -122,7 +122,10 @@ static ALWAYS_INLINE bool pluginsd_set_scope_chart(PARSER *parser, RRDSET *st, c
 }
 
 static inline void pluginsd_rrddim_put_to_slot(PARSER *parser, RRDSET *st, RRDDIM *rd, ssize_t slot, bool obsolete)  {
-    size_t wanted_size = st->pluginsd.size;
+    // Use atomic loads with ACQUIRE semantics to synchronize with cleanup code
+    struct pluginsd_rrddim *prd_array = __atomic_load_n(&st->pluginsd.prd_array, __ATOMIC_ACQUIRE);
+    size_t current_size = __atomic_load_n(&st->pluginsd.size, __ATOMIC_ACQUIRE);
+    size_t wanted_size = current_size;
 
     if(slot >= 1) {
         st->pluginsd.dims_with_slots = true;
@@ -133,21 +136,21 @@ static inline void pluginsd_rrddim_put_to_slot(PARSER *parser, RRDSET *st, RRDDI
         wanted_size = dictionary_entries(st->rrddim_root_index);
     }
 
-    struct pluginsd_rrddim *prd_array = st->pluginsd.prd_array;
-
-    if(wanted_size > st->pluginsd.size) {
+    if(wanted_size > current_size) {
         prd_array = reallocz(prd_array, wanted_size * sizeof(struct pluginsd_rrddim));
-        st->pluginsd.prd_array = prd_array;
 
         // initialize the empty slots
-        for(ssize_t i = (ssize_t) wanted_size - 1; i >= (ssize_t) st->pluginsd.size; i--) {
+        for(ssize_t i = (ssize_t) wanted_size - 1; i >= (ssize_t) current_size; i--) {
             prd_array[i].rda = NULL;
             prd_array[i].rd = NULL;
             prd_array[i].id = NULL;
         }
 
-        rrd_slot_memory_added((wanted_size - st->pluginsd.size) * sizeof(struct pluginsd_rrddim));
-        st->pluginsd.size = wanted_size;
+        rrd_slot_memory_added((wanted_size - current_size) * sizeof(struct pluginsd_rrddim));
+
+        // Update with RELEASE semantics so readers with ACQUIRE see consistent state
+        __atomic_store_n(&st->pluginsd.prd_array, prd_array, __ATOMIC_RELEASE);
+        __atomic_store_n(&st->pluginsd.size, wanted_size, __ATOMIC_RELEASE);
     }
 
     if(st->pluginsd.dims_with_slots && prd_array) {
@@ -171,11 +174,12 @@ static ALWAYS_INLINE RRDDIM *pluginsd_acquire_dimension(RRDHOST *host, RRDSET *s
         return NULL;
     }
 
-    // Read prd_array pointer once to avoid race with cleanup
-    struct pluginsd_rrddim *prd_array = st->pluginsd.prd_array;
-    uint32_t size = st->pluginsd.size;
+    // Use atomic loads with ACQUIRE semantics to synchronize with cleanup code
+    // that uses RELEASE semantics when freeing the array
+    struct pluginsd_rrddim *prd_array = __atomic_load_n(&st->pluginsd.prd_array, __ATOMIC_ACQUIRE);
+    size_t prd_size = __atomic_load_n(&st->pluginsd.size, __ATOMIC_ACQUIRE);
 
-    if (unlikely(!size || !prd_array)) {
+    if (unlikely(!prd_size || !prd_array)) {
         netdata_log_error("PLUGINSD: 'host:%s/chart:%s' got a %s, but the chart has no dimensions.",
                           rrdhost_hostname(host), rrdset_id(st), cmd);
         return NULL;
@@ -187,9 +191,9 @@ static ALWAYS_INLINE RRDDIM *pluginsd_acquire_dimension(RRDHOST *host, RRDSET *s
     if(likely(st->pluginsd.dims_with_slots)) {
         // caching with slots
 
-        if(unlikely(slot < 1 || slot > (ssize_t)size)) {
-            netdata_log_error("PLUGINSD: 'host:%s/chart:%s' got a %s with slot %zd, but slots in the range [1 - %u] are expected.",
-                              rrdhost_hostname(host), rrdset_id(st), cmd, slot, size);
+        if(unlikely(slot < 1 || slot > (ssize_t)prd_size)) {
+            netdata_log_error("PLUGINSD: 'host:%s/chart:%s' got a %s with slot %zd, but slots in the range [1 - %zu] are expected.",
+                              rrdhost_hostname(host), rrdset_id(st), cmd, slot, prd_size);
             return NULL;
         }
 
@@ -200,11 +204,11 @@ static ALWAYS_INLINE RRDDIM *pluginsd_acquire_dimension(RRDHOST *host, RRDSET *s
 #ifdef NETDATA_INTERNAL_CHECKS
             if(strcmp(prd->id, dimension) != 0) {
                 ssize_t t;
-                for(t = 0; t < (ssize_t)size ;t++) {
+                for(t = 0; t < (ssize_t)prd_size ;t++) {
                     if (strcmp(prd_array[t].id, dimension) == 0)
                         break;
                 }
-                if(t >= (ssize_t)size)
+                if(t >= (ssize_t)prd_size)
                     t = -1;
 
                 internal_fatal(true,
@@ -219,7 +223,7 @@ static ALWAYS_INLINE RRDDIM *pluginsd_acquire_dimension(RRDHOST *host, RRDSET *s
     else {
         // caching without slots
 
-        if(unlikely(st->pluginsd.pos >= size))
+        if(unlikely(st->pluginsd.pos >= prd_size))
             st->pluginsd.pos = 0;
 
         prd = &prd_array[st->pluginsd.pos++];

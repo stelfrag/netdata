@@ -42,11 +42,16 @@ void rrdset_stream_send_chart_slot_release(RRDSET *st) {
 }
 
 void rrdset_pluginsd_receive_unslot(RRDSET *st) {
-    for(size_t i = 0; i < st->pluginsd.size ;i++) {
-        rrddim_acquired_release(st->pluginsd.prd_array[i].rda); // can be NULL
-        st->pluginsd.prd_array[i].rda = NULL;
-        st->pluginsd.prd_array[i].rd = NULL;
-        st->pluginsd.prd_array[i].id = NULL;
+    // Use atomic loads with ACQUIRE semantics to synchronize with cleanup code
+    // that uses RELEASE semantics when freeing the array
+    struct pluginsd_rrddim *prd_array = __atomic_load_n(&st->pluginsd.prd_array, __ATOMIC_ACQUIRE);
+    size_t prd_size = __atomic_load_n(&st->pluginsd.size, __ATOMIC_ACQUIRE);
+
+    for(size_t i = 0; i < prd_size && prd_array; i++) {
+        rrddim_acquired_release(prd_array[i].rda); // can be NULL
+        prd_array[i].rda = NULL;
+        prd_array[i].rd = NULL;
+        prd_array[i].id = NULL;
     }
 
     RRDHOST *host = st->rrdhost;
@@ -73,10 +78,11 @@ void rrdset_pluginsd_receive_unslot_and_cleanup(RRDSET *st) {
     struct pluginsd_rrddim *old_prd_array = st->pluginsd.prd_array;
     size_t old_size = st->pluginsd.size;
 
-    // NULL the pointer and zero the size BEFORE freeing,
-    // so concurrent readers see NULL and return early
-    st->pluginsd.prd_array = NULL;
-    st->pluginsd.size = 0;
+    // Use atomic stores with RELEASE semantics to ensure readers with ACQUIRE
+    // see consistent state - they will either see the old valid state or NULL
+    __atomic_store_n(&st->pluginsd.prd_array, NULL, __ATOMIC_RELEASE);
+    __atomic_store_n(&st->pluginsd.size, 0, __ATOMIC_RELEASE);
+
     st->pluginsd.pos = 0;
     st->pluginsd.set = false;
     st->pluginsd.last_slot = -1;

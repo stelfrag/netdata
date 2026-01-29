@@ -1092,9 +1092,10 @@ static ALWAYS_INLINE PARSER_RC pluginsd_end_v2(char **words __maybe_unused, size
     // ------------------------------------------------------------------------
     // cleanup RRDSET / RRDDIM
 
-    // Read prd_array pointer once to avoid race with cleanup
-    struct pluginsd_rrddim *prd_array = st->pluginsd.prd_array;
-    uint32_t prd_size = st->pluginsd.size;
+    // Use atomic loads with ACQUIRE semantics to synchronize with cleanup code
+    // that uses RELEASE semantics when freeing the array
+    struct pluginsd_rrddim *prd_array = __atomic_load_n(&st->pluginsd.prd_array, __ATOMIC_ACQUIRE);
+    size_t prd_size = __atomic_load_n(&st->pluginsd.size, __ATOMIC_ACQUIRE);
 
     if(likely(st->pluginsd.dims_with_slots && prd_array && prd_size)) {
         for(size_t i = 0; i < prd_size ;i++) {
