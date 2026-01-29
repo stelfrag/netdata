@@ -89,8 +89,8 @@ void rrdset_pluginsd_receive_unslot_and_cleanup(RRDSET *st) {
     rrdset_pluginsd_receive_unslot(st);
 
     // Save old values for freeing after we NULL the pointers
-    struct pluginsd_rrddim *old_prd_array = st->pluginsd.prd_array;
-    size_t old_size = st->pluginsd.size;
+    struct pluginsd_rrddim *old_prd_array = __atomic_load_n(&st->pluginsd.prd_array, __ATOMIC_RELAXED);
+    size_t old_size = __atomic_load_n(&st->pluginsd.size, __ATOMIC_RELAXED);
 
     // Use atomic stores with RELEASE semantics to ensure readers with ACQUIRE
     // see consistent state - they will either see the old valid state or NULL
