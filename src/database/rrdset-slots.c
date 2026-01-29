@@ -72,6 +72,20 @@ void rrdset_pluginsd_receive_unslot_and_cleanup(RRDSET *st) {
 
     spinlock_lock(&st->pluginsd.spinlock);
 
+    // Check if collector is still active - if so, we cannot safely cleanup
+    // The collector will clear collector_tid after it's done accessing the array
+    pid_t collector_tid = __atomic_load_n(&st->pluginsd.collector_tid, __ATOMIC_ACQUIRE);
+    if(collector_tid != 0) {
+        // Collector is still active, cannot cleanup now
+        // This shouldn't happen during normal operation - log a warning
+        nd_log_limit_static_global_var(erl, 1, 0);
+        nd_log_limit(&erl, NDLS_DAEMON, NDLP_WARNING,
+                     "PLUGINSD: attempted cleanup while collector (tid %d) is still active on chart, skipping",
+                     collector_tid);
+        spinlock_unlock(&st->pluginsd.spinlock);
+        return;
+    }
+
     rrdset_pluginsd_receive_unslot(st);
 
     // Save old values for freeing after we NULL the pointers
@@ -83,11 +97,10 @@ void rrdset_pluginsd_receive_unslot_and_cleanup(RRDSET *st) {
     __atomic_store_n(&st->pluginsd.prd_array, NULL, __ATOMIC_RELEASE);
     __atomic_store_n(&st->pluginsd.size, 0, __ATOMIC_RELEASE);
 
-    st->pluginsd.pos = 0;
+    __atomic_store_n(&st->pluginsd.pos, 0, __ATOMIC_RELAXED);
     st->pluginsd.set = false;
     st->pluginsd.last_slot = -1;
     st->pluginsd.dims_with_slots = false;
-    st->pluginsd.collector_tid = 0;
 
     spinlock_unlock(&st->pluginsd.spinlock);
 
