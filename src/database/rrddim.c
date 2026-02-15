@@ -10,6 +10,97 @@ void rrddim_metadata_updated(RRDDIM *rd) {
 }
 
 // ----------------------------------------------------------------------------
+// RRDDIM UUID to RRDDIM pointer registry
+// This allows fast lookup of RRDDIM by UUIDMAP_ID
+
+static Pvoid_t uuid_to_rrddim_judy = NULL;
+static SPINLOCK uuid_to_rrddim_spinlock = SPINLOCK_INITIALIZER;
+
+static void rrddim_register_uuid(RRDDIM *rd) {
+    if (!rd || !rd->uuid)
+        return;
+
+    spinlock_lock(&uuid_to_rrddim_spinlock);
+
+    Word_t index = rd->uuid;
+    PPvoid_t pvalue = JudyLIns(&uuid_to_rrddim_judy, index, PJE0);
+    if (pvalue && pvalue != PPJERR)
+        *pvalue = rd;
+
+    spinlock_unlock(&uuid_to_rrddim_spinlock);
+}
+
+static void rrddim_unregister_uuid(RRDDIM *rd) {
+    if (!rd || !rd->uuid)
+        return;
+
+    spinlock_lock(&uuid_to_rrddim_spinlock);
+
+    Word_t index = rd->uuid;
+    int rc = JudyLDel(&uuid_to_rrddim_judy, index, PJE0);
+    (void)rc;  // Ignore return value
+
+    spinlock_unlock(&uuid_to_rrddim_spinlock);
+}
+
+RRDDIM_ACQUIRED *rrddim_find_and_acquire_by_uuid(UUIDMAP_ID uuid) {
+    if (!uuid)
+        return NULL;
+
+    RRDHOST *host = NULL;
+    STRING *chart_id_copy = NULL;
+    STRING *dim_id_copy = NULL;
+
+    spinlock_lock(&uuid_to_rrddim_spinlock);
+
+    Word_t index = uuid;
+    PPvoid_t pvalue = JudyLGet(uuid_to_rrddim_judy, index, PJE0);
+    RRDDIM *rd = (pvalue && pvalue != PPJERR) ? (RRDDIM *)*pvalue : NULL;
+
+    if (rd && rd->rrdset && rd->rrdset->rrdhost && rd->rrdset->id && rd->id) {
+        // While we hold the spinlock the dimension is still registered, so
+        // the RRDDIM, its RRDSET, and the RRDHOST are all alive.  Copy the
+        // identifiers we need to safely re-acquire them outside the spinlock.
+        host = rd->rrdset->rrdhost;
+        chart_id_copy = string_dup(rd->rrdset->id);
+        dim_id_copy = string_dup(rd->id);
+    }
+
+    spinlock_unlock(&uuid_to_rrddim_spinlock);
+
+    if (!host || !chart_id_copy || !dim_id_copy) {
+        string_freez(chart_id_copy);
+        string_freez(dim_id_copy);
+        return NULL;
+    }
+
+    // Acquire the RRDSET first.  This keeps the chart (and its
+    // rrddim_root_index dictionary) alive while we acquire the dimension.
+    // Without this, the chart could be freed between our spinlock release
+    // and the dictionary_get_and_acquire_item call below.
+    //
+    // Lock ordering is safe: we do NOT hold uuid_to_rrddim_spinlock here,
+    // so there is no inversion with the delete callback path
+    // (dict_lock → rrddim_delete_callback → uuid_spinlock).
+    RRDSET_ACQUIRED *rsa = rrdset_find_and_acquire(host, string2str(chart_id_copy), true);
+    string_freez(chart_id_copy);
+
+    if (!rsa) {
+        string_freez(dim_id_copy);
+        return NULL;
+    }
+
+    RRDSET *st = rrdset_acquired_to_rrdset(rsa);
+    RRDDIM_ACQUIRED *rda = (RRDDIM_ACQUIRED *)dictionary_get_and_acquire_item(
+        st->rrddim_root_index, string2str(dim_id_copy));
+
+    string_freez(dim_id_copy);
+    rrdset_acquired_release(rsa);
+
+    return rda;
+}
+
+// ----------------------------------------------------------------------------
 // RRDDIM index
 
 struct rrddim_constructor {
@@ -100,6 +191,9 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     if (unlikely(rrdcontext_find_dimension_uuid(st, rrddim_id(rd), &uuid)))
         uuid_generate(uuid);
     rd->uuid = uuidmap_create(uuid);
+
+    // register the dimension in the UUID to RRDDIM registry
+    rrddim_register_uuid(rd);
 
     // initialize the db tiers
     {
@@ -226,6 +320,9 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     rrdcontext_removed_rrddim(rd);
 
     ml_dimension_delete(rd);
+
+    // unregister from the UUID to RRDDIM registry
+    rrddim_unregister_uuid(rd);
 
     netdata_log_debug(D_RRD_CALLS, "rrddim_free() %s.%s", rrdset_name(st), rrddim_name(rd));
 

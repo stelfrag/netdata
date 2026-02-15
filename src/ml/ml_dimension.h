@@ -134,11 +134,6 @@ public:
         return reinterpret_cast<ml_host_t *>(RH->ml_host);
     }
 
-    ml_queue_t *queue() const {
-        assert(acquired());
-        return host()->queue;
-    }
-
     ml_dimension_t *dimension() const {
         assert(acquired());
         return Dim;

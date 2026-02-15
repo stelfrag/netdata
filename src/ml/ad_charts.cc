@@ -429,194 +429,114 @@ void ml_update_host_and_detection_rate_charts(ml_host_t *host, collected_number 
     }
 }
 
-void ml_update_training_statistics_chart(ml_worker_t *worker, const ml_queue_stats_t &stats) {
-    /*
-     * queue stats
-    */
+void ml_update_event_loop_training_chart(const ml_training_stats_t &stats) {
+    // Static chart/dimension pointers (single event loop, not N workers)
+    static RRDSET *queue_ops_rs = nullptr;
+    static RRDDIM *queue_ops_queued_rd = nullptr;
+    static RRDDIM *queue_ops_trained_rd = nullptr;
+
+    static RRDSET *queue_size_rs = nullptr;
+    static RRDDIM *queue_size_pending_rd = nullptr;
+    static RRDDIM *queue_size_scheduled_rd = nullptr;
+
+    static RRDSET *training_results_rs = nullptr;
+    static RRDDIM *results_ok_rd = nullptr;
+    static RRDDIM *results_invalid_query_rd = nullptr;
+    static RRDDIM *results_not_enough_values_rd = nullptr;
+    static RRDDIM *results_dim_not_found_rd = nullptr;
+    static RRDDIM *results_chart_replication_rd = nullptr;
+
+    // Queue operations chart
     {
-        if (!worker->queue_stats_rs) {
-            char id_buf[1024];
-            char name_buf[1024];
-
-            snprintfz(id_buf, 1024, "training_queue_%zu_ops", worker->id);
-            snprintfz(name_buf, 1024, "training_queue_%zu_ops", worker->id);
-
-            worker->queue_stats_rs = rrdset_create(
+        if (!queue_ops_rs) {
+            queue_ops_rs = rrdset_create(
                     localhost,
-                    "netdata", // type
-                    id_buf, // id
-                    name_buf, // name
-                    NETDATA_ML_CHART_FAMILY, // family
-                    "netdata.ml_queue_ops", // ctx
-                    "Training queue operations", // title
-                    "count", // units
-                    NETDATA_ML_PLUGIN, // plugin
-                    NETDATA_ML_MODULE_TRAINING, // module
-                    NETDATA_ML_CHART_PRIO_QUEUE_STATS, // priority
-                    localhost->rrd_update_every, // update_every
-                    RRDSET_TYPE_LINE// chart_type
+                    "netdata",
+                    "ml_training_queue_ops",
+                    "ml_training_queue_ops",
+                    NETDATA_ML_CHART_FAMILY,
+                    "netdata.ml_queue_ops",
+                    "Training queue operations",
+                    "count",
+                    NETDATA_ML_PLUGIN,
+                    NETDATA_ML_MODULE_TRAINING,
+                    NETDATA_ML_CHART_PRIO_QUEUE_STATS,
+                    localhost->rrd_update_every,
+                    RRDSET_TYPE_LINE
             );
-            rrdset_flag_set(worker->queue_stats_rs, RRDSET_FLAG_ANOMALY_DETECTION);
+            rrdset_flag_set(queue_ops_rs, RRDSET_FLAG_ANOMALY_DETECTION);
 
-            worker->queue_stats_num_create_new_model_requests_rd =
-                rrddim_add(worker->queue_stats_rs, "pushed create model", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-            worker->queue_stats_num_create_new_model_requests_completed_rd =
-                rrddim_add(worker->queue_stats_rs, "popped create model", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-
-            worker->queue_stats_num_add_existing_model_requests_rd =
-                rrddim_add(worker->queue_stats_rs, "pushed add model", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-
-            worker->queue_stats_num_add_existing_model_requests_completed_rd =
-                rrddim_add(worker->queue_stats_rs, "popped add models", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            queue_ops_queued_rd = rrddim_add(queue_ops_rs, "queued", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            queue_ops_trained_rd = rrddim_add(queue_ops_rs, "trained", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
         }
 
-        rrddim_set_by_pointer(worker->queue_stats_rs,
-                              worker->queue_stats_num_create_new_model_requests_rd, stats.total_create_new_model_requests_pushed);
-        rrddim_set_by_pointer(worker->queue_stats_rs,
-                              worker->queue_stats_num_create_new_model_requests_completed_rd, stats.total_create_new_model_requests_popped);
-
-        rrddim_set_by_pointer(worker->queue_stats_rs,
-                              worker->queue_stats_num_add_existing_model_requests_rd, stats.total_add_existing_model_requests_pushed);
-        rrddim_set_by_pointer(worker->queue_stats_rs,
-                              worker->queue_stats_num_add_existing_model_requests_completed_rd, stats.total_add_existing_model_requests_popped);
-
-        rrdset_done(worker->queue_stats_rs);
+        rrddim_set_by_pointer(queue_ops_rs, queue_ops_queued_rd, (collected_number)stats.total_queued);
+        rrddim_set_by_pointer(queue_ops_rs, queue_ops_trained_rd, (collected_number)stats.total_trained);
+        rrdset_done(queue_ops_rs);
     }
 
+    // Queue size chart
     {
-        if (!worker->queue_size_rs) {
-            char id_buf[1024];
-            char name_buf[1024];
-
-            snprintfz(id_buf, 1024, "training_queue_%zu_size", worker->id);
-            snprintfz(name_buf, 1024, "training_queue_%zu_size", worker->id);
-
-            worker->queue_size_rs = rrdset_create(
+        if (!queue_size_rs) {
+            queue_size_rs = rrdset_create(
                     localhost,
-                    "netdata", // type
-                    id_buf, // id
-                    name_buf, // name
-                    NETDATA_ML_CHART_FAMILY, // family
-                    "netdata.ml_queue_size", // ctx
-                    "Training queue size", // title
-                    "count", // units
-                    NETDATA_ML_PLUGIN, // plugin
-                    NETDATA_ML_MODULE_TRAINING, // module
-                    NETDATA_ML_CHART_PRIO_QUEUE_STATS, // priority
-                    localhost->rrd_update_every, // update_every
-                    RRDSET_TYPE_LINE// chart_type
+                    "netdata",
+                    "ml_training_queue_size",
+                    "ml_training_queue_size",
+                    NETDATA_ML_CHART_FAMILY,
+                    "netdata.ml_queue_size",
+                    "Training queue size",
+                    "dimensions",
+                    NETDATA_ML_PLUGIN,
+                    NETDATA_ML_MODULE_TRAINING,
+                    NETDATA_ML_CHART_PRIO_QUEUE_STATS + 1,
+                    localhost->rrd_update_every,
+                    RRDSET_TYPE_LINE
             );
-            rrdset_flag_set(worker->queue_size_rs, RRDSET_FLAG_ANOMALY_DETECTION);
+            rrdset_flag_set(queue_size_rs, RRDSET_FLAG_ANOMALY_DETECTION);
 
-            worker->queue_size_rd =
-                rrddim_add(worker->queue_size_rs, "items", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            queue_size_pending_rd = rrddim_add(queue_size_rs, "pending", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
+            queue_size_scheduled_rd = rrddim_add(queue_size_rs, "scheduled", NULL, 1, 1, RRD_ALGORITHM_ABSOLUTE);
         }
 
-        ml_queue_size_t qs = ml_queue_size(worker->queue);
-        collected_number cn = qs.add_exisiting_model + qs.create_new_model;
-
-        rrddim_set_by_pointer(worker->queue_size_rs, worker->queue_size_rd, cn);
-        rrdset_done(worker->queue_size_rs);
+        rrddim_set_by_pointer(queue_size_rs, queue_size_pending_rd, (collected_number)stats.queue_depth);
+        rrddim_set_by_pointer(queue_size_rs, queue_size_scheduled_rd, (collected_number)stats.scheduled_count);
+        rrdset_done(queue_size_rs);
     }
 
-    /*
-     * training stats
-    */
+    // Training results chart
     {
-        if (!worker->training_time_stats_rs) {
-            char id_buf[1024];
-            char name_buf[1024];
-
-            snprintfz(id_buf, 1024, "training_queue_%zu_time_stats", worker->id);
-            snprintfz(name_buf, 1024, "training_queue_%zu_time_stats", worker->id);
-
-            worker->training_time_stats_rs = rrdset_create(
+        if (!training_results_rs) {
+            training_results_rs = rrdset_create(
                     localhost,
-                    "netdata", // type
-                    id_buf, // id
-                    name_buf, // name
-                    NETDATA_ML_CHART_FAMILY, // family
-                    "netdata.ml_training_time_stats", // ctx
-                    "Training time stats", // title
-                    "microseconds", // units
-                    NETDATA_ML_PLUGIN, // plugin
-                    NETDATA_ML_MODULE_TRAINING, // module
-                    NETDATA_ML_CHART_PRIO_TRAINING_TIME_STATS, // priority
-                    localhost->rrd_update_every, // update_every
-                    RRDSET_TYPE_LINE// chart_type
+                    "netdata",
+                    "ml_training_results",
+                    "ml_training_results",
+                    NETDATA_ML_CHART_FAMILY,
+                    "netdata.ml_training_results",
+                    "Training results",
+                    "events",
+                    NETDATA_ML_PLUGIN,
+                    NETDATA_ML_MODULE_TRAINING,
+                    NETDATA_ML_CHART_PRIO_TRAINING_RESULTS,
+                    localhost->rrd_update_every,
+                    RRDSET_TYPE_LINE
             );
-            rrdset_flag_set(worker->training_time_stats_rs, RRDSET_FLAG_ANOMALY_DETECTION);
+            rrdset_flag_set(training_results_rs, RRDSET_FLAG_ANOMALY_DETECTION);
 
-            worker->training_time_stats_allotted_rd =
-                rrddim_add(worker->training_time_stats_rs, "allotted", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
-            worker->training_time_stats_consumed_rd =
-                rrddim_add(worker->training_time_stats_rs, "consumed", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
-            worker->training_time_stats_remaining_rd =
-                rrddim_add(worker->training_time_stats_rs, "remaining", NULL, 1, 1000, RRD_ALGORITHM_INCREMENTAL);
+            results_ok_rd = rrddim_add(training_results_rs, "ok", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            results_invalid_query_rd = rrddim_add(training_results_rs, "invalid-queries", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            results_not_enough_values_rd = rrddim_add(training_results_rs, "not-enough-values", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            results_dim_not_found_rd = rrddim_add(training_results_rs, "null-acquired-dimensions", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
+            results_chart_replication_rd = rrddim_add(training_results_rs, "chart-under-replication", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
         }
 
-        rrddim_set_by_pointer(worker->training_time_stats_rs,
-                              worker->training_time_stats_allotted_rd, stats.allotted_ut);
-        rrddim_set_by_pointer(worker->training_time_stats_rs,
-                              worker->training_time_stats_consumed_rd, stats.consumed_ut);
-        rrddim_set_by_pointer(worker->training_time_stats_rs,
-                              worker->training_time_stats_remaining_rd, stats.remaining_ut);
-
-        rrdset_done(worker->training_time_stats_rs);
-    }
-
-    /*
-     * training result stats
-    */
-    {
-        if (!worker->training_results_rs) {
-            char id_buf[1024];
-            char name_buf[1024];
-
-            snprintfz(id_buf, 1024, "training_queue_%zu_results", worker->id);
-            snprintfz(name_buf, 1024, "training_queue_%zu_results", worker->id);
-
-            worker->training_results_rs = rrdset_create(
-                    localhost,
-                    "netdata", // type
-                    id_buf, // id
-                    name_buf, // name
-                    NETDATA_ML_CHART_FAMILY, // family
-                    "netdata.ml_training_results", // ctx
-                    "Training results", // title
-                    "events", // units
-                    NETDATA_ML_PLUGIN, // plugin
-                    NETDATA_ML_MODULE_TRAINING, // module
-                    NETDATA_ML_CHART_PRIO_TRAINING_RESULTS, // priority
-                    localhost->rrd_update_every, // update_every
-                    RRDSET_TYPE_LINE// chart_type
-            );
-            rrdset_flag_set(worker->training_results_rs, RRDSET_FLAG_ANOMALY_DETECTION);
-
-            worker->training_results_ok_rd =
-                rrddim_add(worker->training_results_rs, "ok", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-            worker->training_results_invalid_query_time_range_rd =
-                rrddim_add(worker->training_results_rs, "invalid-queries", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-            worker->training_results_not_enough_collected_values_rd =
-                rrddim_add(worker->training_results_rs, "not-enough-values", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-            worker->training_results_null_acquired_dimension_rd =
-                rrddim_add(worker->training_results_rs, "null-acquired-dimensions", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-            worker->training_results_chart_under_replication_rd =
-                rrddim_add(worker->training_results_rs, "chart-under-replication", NULL, 1, 1, RRD_ALGORITHM_INCREMENTAL);
-        }
-
-        rrddim_set_by_pointer(worker->training_results_rs,
-                              worker->training_results_ok_rd, stats.item_result_ok);
-        rrddim_set_by_pointer(worker->training_results_rs,
-                              worker->training_results_invalid_query_time_range_rd, stats.item_result_invalid_query_time_range);
-        rrddim_set_by_pointer(worker->training_results_rs,
-                              worker->training_results_not_enough_collected_values_rd, stats.item_result_not_enough_collected_values);
-        rrddim_set_by_pointer(worker->training_results_rs,
-                              worker->training_results_null_acquired_dimension_rd, stats.item_result_null_acquired_dimension);
-        rrddim_set_by_pointer(worker->training_results_rs,
-                              worker->training_results_chart_under_replication_rd, stats.item_result_chart_under_replication);
-
-        rrdset_done(worker->training_results_rs);
+        rrddim_set_by_pointer(training_results_rs, results_ok_rd, (collected_number)stats.result_ok);
+        rrddim_set_by_pointer(training_results_rs, results_invalid_query_rd, (collected_number)stats.result_invalid_query_time_range);
+        rrddim_set_by_pointer(training_results_rs, results_not_enough_values_rd, (collected_number)stats.result_not_enough_collected_values);
+        rrddim_set_by_pointer(training_results_rs, results_dim_not_found_rd, (collected_number)stats.result_dim_not_found);
+        rrddim_set_by_pointer(training_results_rs, results_chart_replication_rd, (collected_number)stats.result_chart_under_replication);
+        rrdset_done(training_results_rs);
     }
 }
 
