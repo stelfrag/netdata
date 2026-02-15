@@ -3,13 +3,13 @@
 #ifndef NETDATA_ML_PUBLIC_H
 #define NETDATA_ML_PUBLIC_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "database/rrd.h"
 #include "web/api/queries/rrdr.h"
 #include "database/sqlite/vendored/sqlite3.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 bool ml_capable();
 bool ml_enabled(RRDHOST *rh);
@@ -59,6 +59,20 @@ uint64_t sqlite_get_ml_space(void);
 bool ml_model_received_from_child(RRDHOST *host, const char *json);
 
 void ml_host_disconnected(RRDHOST *host);
+
+// C wrapper for training a dimension by UUID (for event loop)
+// Returns 0 on success, negative error code on failure
+int ml_train_dimension_by_uuid(UUIDMAP_ID metric_id, void *ml_worker);
+
+// Create/destroy an ml_worker_t (opaque C++ struct with training buffers,
+// pending model info, streaming buffers, etc.)
+void *ml_worker_create(size_t buffer_size);
+void ml_worker_destroy(void *ml_worker);
+
+// Flush pending trained models to the database.
+// ml_flush_worker_models always flushes; _if_needed only when threshold is met.
+void ml_flush_worker_models(void *ml_worker);
+void ml_flush_worker_models_if_needed(void *ml_worker);
 
 #ifdef __cplusplus
 };

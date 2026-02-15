@@ -10,6 +10,79 @@ void rrddim_metadata_updated(RRDDIM *rd) {
 }
 
 // ----------------------------------------------------------------------------
+// RRDDIM UUID to RRDDIM pointer registry
+// This allows fast lookup of RRDDIM by UUIDMAP_ID
+
+static Pvoid_t uuid_to_rrddim_judy = NULL;
+static SPINLOCK uuid_to_rrddim_spinlock = SPINLOCK_INITIALIZER;
+
+static void rrddim_register_uuid(RRDDIM *rd) {
+    if (!rd || !rd->uuid)
+        return;
+
+    spinlock_lock(&uuid_to_rrddim_spinlock);
+
+    Word_t index = rd->uuid;
+    PPvoid_t pvalue = JudyLIns(&uuid_to_rrddim_judy, index, PJE0);
+    if (pvalue && pvalue != PPJERR)
+        *pvalue = rd;
+
+    spinlock_unlock(&uuid_to_rrddim_spinlock);
+}
+
+static void rrddim_unregister_uuid(RRDDIM *rd) {
+    if (!rd || !rd->uuid)
+        return;
+
+    spinlock_lock(&uuid_to_rrddim_spinlock);
+
+    Word_t index = rd->uuid;
+    int rc = JudyLDel(&uuid_to_rrddim_judy, index, PJE0);
+    (void)rc;  // Ignore return value
+
+    spinlock_unlock(&uuid_to_rrddim_spinlock);
+}
+
+RRDDIM_ACQUIRED *rrddim_find_and_acquire_by_uuid(UUIDMAP_ID uuid) {
+    if (!uuid)
+        return NULL;
+
+    DICTIONARY *dict = NULL;
+    STRING *id_copy = NULL;
+
+    spinlock_lock(&uuid_to_rrddim_spinlock);
+
+    Word_t index = uuid;
+    PPvoid_t pvalue = JudyLGet(uuid_to_rrddim_judy, index, PJE0);
+    RRDDIM *rd = (pvalue && pvalue != PPJERR) ? (RRDDIM *)*pvalue : NULL;
+
+    if (rd && rd->rrdset && rd->rrdset->rrddim_root_index && rd->id) {
+        // Copy what we need before releasing the spinlock.
+        // string_dup() keeps the key alive across the gap.
+        dict = rd->rrdset->rrddim_root_index;
+        id_copy = string_dup(rd->id);
+    }
+
+    spinlock_unlock(&uuid_to_rrddim_spinlock);
+
+    if (!dict || !id_copy)
+        return NULL;
+
+    // Acquire from dictionary without holding our spinlock.
+    // This avoids a lock ordering inversion: the dictionary's delete callback
+    // takes dict_lock then uuid_spinlock, so we must not hold uuid_spinlock
+    // while calling into the dictionary (which takes dict_lock).
+    // If the dimension was deleted between spinlock release and here,
+    // dictionary_get_and_acquire_item returns NULL safely.
+    RRDDIM_ACQUIRED *rda = (RRDDIM_ACQUIRED *)dictionary_get_and_acquire_item(
+        dict, string2str(id_copy));
+
+    string_freez(id_copy);
+
+    return rda;
+}
+
+// ----------------------------------------------------------------------------
 // RRDDIM index
 
 struct rrddim_constructor {
@@ -100,6 +173,9 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     if (unlikely(rrdcontext_find_dimension_uuid(st, rrddim_id(rd), &uuid)))
         uuid_generate(uuid);
     rd->uuid = uuidmap_create(uuid);
+
+    // register the dimension in the UUID to RRDDIM registry
+    rrddim_register_uuid(rd);
 
     // initialize the db tiers
     {
@@ -226,6 +302,9 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     rrdcontext_removed_rrddim(rd);
 
     ml_dimension_delete(rd);
+
+    // unregister from the UUID to RRDDIM registry
+    rrddim_unregister_uuid(rd);
 
     netdata_log_debug(D_RRD_CALLS, "rrddim_free() %s.%s", rrdset_name(st), rrddim_name(rd));
 

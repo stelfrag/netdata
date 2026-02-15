@@ -61,18 +61,3 @@ ml_worker_result_to_string(enum ml_worker_result tr)
             return "unknown";
     }
 }
-
-const char *
-ml_queue_item_type_to_string(enum ml_queue_item_type qit)
-{
-    switch (qit) {
-        case ML_QUEUE_ITEM_TYPE_CREATE_NEW_MODEL:
-            return "create-new-model";
-        case ML_QUEUE_ITEM_TYPE_ADD_EXISTING_MODEL:
-            return "add-existing-model";
-        case ML_QUEUE_ITEM_STOP_REQUEST:
-            return "stop-request";
-        default:
-            return "unknown";
-    }
-}

@@ -6,19 +6,13 @@
 
 #include "ad_charts.h"
 #include "database/sqlite/vendored/sqlite3.h"
-#include "streaming/stream-control.h"
 
-#define WORKER_TRAIN_QUEUE_POP         0
-#define WORKER_TRAIN_ACQUIRE_DIMENSION 1
-#define WORKER_TRAIN_QUERY             2
-#define WORKER_TRAIN_KMEANS            3
-#define WORKER_TRAIN_UPDATE_MODELS     4
-#define WORKER_TRAIN_RELEASE_DIMENSION 5
-#define WORKER_TRAIN_UPDATE_HOST       6
-#define WORKER_TRAIN_FLUSH_MODELS      7
+#define WORKER_TRAIN_QUERY             0
+#define WORKER_TRAIN_KMEANS            1
+#define WORKER_TRAIN_UPDATE_MODELS     2
 
 sqlite3 *ml_db = NULL;
-static netdata_mutex_t db_mutex;
+netdata_mutex_t db_mutex;
 
 static void __attribute__((constructor)) init_mutex(void) {
     netdata_mutex_init(&db_mutex);
@@ -576,12 +570,19 @@ ml_dimension_deserialize_kmeans(const char *json_str)
         return true;
     }
 
-    ml_queue_item_t item;
-    item.type = ML_QUEUE_ITEM_TYPE_ADD_EXISTING_MODEL;
-    item.add_existing_model = {
-        DLI, inlined_km
-    };
-    ml_queue_push(AcqDim.queue(), item);
+    // Check if training is in progress and skip if so to avoid race condition
+    spinlock_lock(&Dim->slock);
+    if (Dim->training_in_progress) {
+        spinlock_unlock(&Dim->slock);
+        pulse_ml_models_ignored();
+        json_object_put(root);
+        return true;
+    }
+    spinlock_unlock(&Dim->slock);
+
+    // Directly update the model (no need to queue since we're not training)
+    Dim->kmeans = inlined_km;
+    pulse_ml_models_received();
 
     json_object_put(root);
     return true;
@@ -663,7 +664,7 @@ static void ml_dimension_update_models(ml_worker_t *worker, ml_dimension_t *dim)
     spinlock_unlock(&dim->slock);
 }
 
-static enum ml_worker_result
+enum ml_worker_result
 ml_dimension_train_model(ml_worker_t *worker, ml_dimension_t *dim)
 {
     worker_is_busy(WORKER_TRAIN_QUERY);
@@ -1027,23 +1028,15 @@ void ml_detect_main(void *arg)
         rrd_rdunlock();
 
         if (Cfg.enable_statistics_charts) {
-            // collect and update training thread stats
-            for (size_t idx = 0; idx != Cfg.num_worker_threads; idx++) {
-                ml_worker_t *worker = &Cfg.workers[idx];
-
-                netdata_mutex_lock(&worker->nd_mutex);
-                ml_queue_stats_t queue_stats = worker->queue_stats;
-                netdata_mutex_unlock(&worker->nd_mutex);
-
-                ml_update_training_statistics_chart(worker, queue_stats);
-            }
+            ml_training_stats_t training_stats;
+            ml_training_get_stats(&training_stats);
+            ml_update_event_loop_training_chart(training_stats);
         }
     }
-    Cfg.training_stop = true;
     finalize_self_prepared_sql_statements();
 }
 
-static void ml_flush_pending_models(ml_worker_t *worker) {
+void ml_flush_pending_models(ml_worker_t *worker) {
     static time_t next_vacuum_run = 0;
     int op_no = 1;
 
@@ -1097,185 +1090,3 @@ static void ml_flush_pending_models(ml_worker_t *worker) {
     worker->pending_model_info.clear();
 }
 
-static enum ml_worker_result ml_worker_create_new_model(ml_worker_t *worker, ml_request_create_new_model_t req) {
-    AcquiredDimension AcqDim(req.DLI);
-
-    if (!AcqDim.acquired()) {
-        return ML_WORKER_RESULT_NULL_ACQUIRED_DIMENSION;
-    }
-
-    ml_dimension_t *Dim = reinterpret_cast<ml_dimension_t *>(AcqDim.dimension());
-    return ml_dimension_train_model(worker, Dim);
-}
-
-static enum ml_worker_result ml_worker_add_existing_model(ml_worker_t *worker, ml_request_add_existing_model_t req) {
-    UNUSED(worker);
-    UNUSED(req);
-
-    AcquiredDimension AcqDim(req.DLI);
-
-    if (!AcqDim.acquired()) {
-        return ML_WORKER_RESULT_NULL_ACQUIRED_DIMENSION;
-    }
-
-    ml_dimension_t *Dim = reinterpret_cast<ml_dimension_t *>(AcqDim.dimension());
-    if (!Dim) {
-        pulse_ml_models_ignored();
-        return ML_WORKER_RESULT_OK;
-    }
-
-    // Check if training is in progress and skip if so to avoid race condition
-    spinlock_lock(&Dim->slock);
-    if (Dim->training_in_progress) {
-        spinlock_unlock(&Dim->slock);
-        pulse_ml_models_ignored();
-        return ML_WORKER_RESULT_OK;
-    }
-    spinlock_unlock(&Dim->slock);
-
-    Dim->kmeans = req.inlined_km;
-    ml_dimension_update_models(worker, Dim);
-    pulse_ml_models_received();
-    return ML_WORKER_RESULT_OK;
-}
-
-void ml_train_main(void *arg) {
-    ml_worker_t *worker = (ml_worker_t *) arg;
-
-    char worker_name[1024];
-    snprintfz(worker_name, 1024, "ml_worker_%zu", worker->id);
-    worker_register("MLTRAIN");
-
-    worker_register_job_name(WORKER_TRAIN_QUEUE_POP, "pop queue");
-    worker_register_job_name(WORKER_TRAIN_ACQUIRE_DIMENSION, "acquire");
-    worker_register_job_name(WORKER_TRAIN_QUERY, "query");
-    worker_register_job_name(WORKER_TRAIN_KMEANS, "kmeans");
-    worker_register_job_name(WORKER_TRAIN_UPDATE_MODELS, "update models");
-    worker_register_job_name(WORKER_TRAIN_RELEASE_DIMENSION, "release");
-    worker_register_job_name(WORKER_TRAIN_UPDATE_HOST, "update host");
-    worker_register_job_name(WORKER_TRAIN_FLUSH_MODELS, "flush models");
-
-    while (!Cfg.training_stop) {
-        if(!stream_control_ml_should_be_running()) {
-            worker_is_idle();
-            stream_control_throttle();
-            continue;
-        }
-
-        worker_is_busy(WORKER_TRAIN_QUEUE_POP);
-
-        ml_queue_stats_t loop_stats{};
-
-        ml_queue_item_t item = ml_queue_pop(worker->queue);
-        if (item.type == ML_QUEUE_ITEM_STOP_REQUEST) {
-            break;
-        }
-
-        ml_queue_size_t queue_size = ml_queue_size(worker->queue);
-
-        usec_t allotted_ut = (Cfg.train_every * USEC_PER_SEC) / (queue_size.create_new_model + 1);
-        if (allotted_ut > USEC_PER_SEC)
-            allotted_ut = USEC_PER_SEC;
-
-        usec_t start_ut = now_monotonic_usec();
-
-        enum ml_worker_result worker_res;
-
-        switch (item.type) {
-            case ML_QUEUE_ITEM_TYPE_CREATE_NEW_MODEL: {
-                worker_res = ml_worker_create_new_model(worker, item.create_new_model);
-                if (worker_res != ML_WORKER_RESULT_NULL_ACQUIRED_DIMENSION) {
-                    ml_queue_push(worker->queue, item);
-                }
-                break;
-            }
-            case ML_QUEUE_ITEM_TYPE_ADD_EXISTING_MODEL: {
-                worker_res = ml_worker_add_existing_model(worker, item.add_existing_model);
-                break;
-            }
-            default: {
-                fatal("Unknown queue item type");
-            }
-        }
-
-        usec_t consumed_ut = now_monotonic_usec() - start_ut;
-
-        usec_t remaining_ut = 0;
-        if (consumed_ut < allotted_ut)
-            remaining_ut = allotted_ut - consumed_ut;
-
-        if (Cfg.enable_statistics_charts) {
-            worker_is_busy(WORKER_TRAIN_UPDATE_HOST);
-
-            ml_queue_stats_t queue_stats = ml_queue_stats(worker->queue);
-
-            loop_stats.total_add_existing_model_requests_pushed = queue_stats.total_add_existing_model_requests_pushed;
-            loop_stats.total_add_existing_model_requests_popped = queue_stats.total_add_existing_model_requests_popped;
-            loop_stats.total_create_new_model_requests_pushed = queue_stats.total_create_new_model_requests_pushed;
-            loop_stats.total_create_new_model_requests_popped = queue_stats.total_create_new_model_requests_popped;
-
-            loop_stats.allotted_ut = allotted_ut;
-            loop_stats.consumed_ut = consumed_ut;
-            loop_stats.remaining_ut = remaining_ut;
-
-            switch (worker_res) {
-                case ML_WORKER_RESULT_OK:
-                    loop_stats.item_result_ok = 1;
-                    break;
-                case ML_WORKER_RESULT_INVALID_QUERY_TIME_RANGE:
-                    loop_stats.item_result_invalid_query_time_range = 1;
-                    break;
-                case ML_WORKER_RESULT_NOT_ENOUGH_COLLECTED_VALUES:
-                    loop_stats.item_result_not_enough_collected_values = 1;
-                    break;
-                case ML_WORKER_RESULT_NULL_ACQUIRED_DIMENSION:
-                    loop_stats.item_result_null_acquired_dimension = 1;
-                    break;
-                case ML_WORKER_RESULT_CHART_UNDER_REPLICATION:
-                    loop_stats.item_result_chart_under_replication = 1;
-                    break;
-            }
-
-            netdata_mutex_lock(&worker->nd_mutex);
-
-            worker->queue_stats.total_add_existing_model_requests_pushed = loop_stats.total_add_existing_model_requests_pushed;
-            worker->queue_stats.total_add_existing_model_requests_popped = loop_stats.total_add_existing_model_requests_popped;
-
-            worker->queue_stats.total_create_new_model_requests_pushed = loop_stats.total_create_new_model_requests_pushed;
-            worker->queue_stats.total_create_new_model_requests_popped = loop_stats.total_create_new_model_requests_popped;
-
-            worker->queue_stats.allotted_ut += loop_stats.allotted_ut;
-            worker->queue_stats.consumed_ut += loop_stats.consumed_ut;
-            worker->queue_stats.remaining_ut += loop_stats.remaining_ut;
-
-            worker->queue_stats.item_result_ok += loop_stats.item_result_ok;
-            worker->queue_stats.item_result_invalid_query_time_range += loop_stats.item_result_invalid_query_time_range;
-            worker->queue_stats.item_result_not_enough_collected_values += loop_stats.item_result_not_enough_collected_values;
-            worker->queue_stats.item_result_null_acquired_dimension += loop_stats.item_result_null_acquired_dimension;
-            worker->queue_stats.item_result_chart_under_replication += loop_stats.item_result_chart_under_replication;
-
-            netdata_mutex_unlock(&worker->nd_mutex);
-        }
-
-        bool should_sleep = true;
-
-        if (worker->pending_model_info.size() >= Cfg.flush_models_batch_size) {
-            worker_is_busy(WORKER_TRAIN_FLUSH_MODELS);
-            netdata_mutex_lock(&db_mutex);
-            ml_flush_pending_models(worker);
-            netdata_mutex_unlock(&db_mutex);
-            should_sleep = false;
-        }
-
-        if (item.type == ML_QUEUE_ITEM_TYPE_ADD_EXISTING_MODEL) {
-           should_sleep = false;
-        }
-
-        if (!should_sleep)
-            continue;
-
-        worker_is_idle();
-        std::this_thread::sleep_for(std::chrono::microseconds{remaining_ut});
-    }
-    finalize_self_prepared_sql_statements();
-}

@@ -144,10 +144,14 @@ void ml_config_load(ml_config_t *cfg) {
     std::string anomaly_detection_grouping_method = inicfg_get(&netdata_config, config_section_ml, "anomaly detection grouping method", "average");
     time_t anomaly_detection_query_duration = inicfg_get_duration_seconds(&netdata_config, config_section_ml, "anomaly detection grouping duration", 5 * 60);
 
-    size_t num_worker_threads = netdata_conf_is_parent() ? netdata_conf_cpus() / 4 : 1;
-    if (num_worker_threads < 1) num_worker_threads = 1;
-    else if (num_worker_threads > 256) num_worker_threads = 256;
-    num_worker_threads = inicfg_get_number(&netdata_config, config_section_ml, "num training threads", num_worker_threads);
+    // "num training threads" config option is no longer used (event loop manages its own thread pool)
+    // but we still read it so existing config files don't produce warnings
+    {
+        size_t num_worker_threads = netdata_conf_is_parent() ? netdata_conf_cpus() / 4 : 1;
+        if (num_worker_threads < 1) num_worker_threads = 1;
+        else if (num_worker_threads > 256) num_worker_threads = 256;
+        inicfg_get_number(&netdata_config, config_section_ml, "num training threads", num_worker_threads);
+    }
 
     size_t flush_models_batch_size = inicfg_get_number(&netdata_config, config_section_ml, "flush models batch size", 256);
 
@@ -181,7 +185,6 @@ void ml_config_load(ml_config_t *cfg) {
     host_anomaly_rate_threshold = clamp(host_anomaly_rate_threshold, 0.1, 10.0);
     anomaly_detection_query_duration = clamp<time_t>(anomaly_detection_query_duration, 60, 15 * 60);
 
-    num_worker_threads = clamp<size_t>(num_worker_threads, 4, netdata_conf_cpus());
     flush_models_batch_size = clamp<size_t>(flush_models_batch_size, 8, 512);
 
     suppression_window = clamp<size_t>(suppression_window, 1, training_window);
@@ -234,7 +237,6 @@ void ml_config_load(ml_config_t *cfg) {
 
     cfg->stream_anomaly_detection_charts = inicfg_get_boolean(&netdata_config, config_section_ml, "stream anomaly detection charts", true);
 
-    cfg->num_worker_threads = num_worker_threads;
     cfg->flush_models_batch_size = flush_models_batch_size;
 
     cfg->suppression_window = suppression_window;

@@ -3,6 +3,7 @@
 #include "ml_private.h"
 
 #include "database/sqlite/sqlite_db_migration.h"
+#include "ml_event_loop.h"
 
 #include <random>
 
@@ -37,37 +38,34 @@ void ml_host_new(RRDHOST *rh)
     if (!ml_enabled(rh))
         return;
 
-    ml_host_t *host = new ml_host_t();
+    auto *host = new ml_host_t();
 
     host->rh = rh;
     host->mls = ml_machine_learning_stats_t();
     host->host_anomaly_rate = 0.0;
-    host->anomaly_rate_rs = NULL;
-
-    static std::atomic<size_t> times_called(0);
-    host->queue = Cfg.workers[times_called++ % Cfg.num_worker_threads].queue;
+    host->anomaly_rate_rs = nullptr;
 
     netdata_mutex_init(&host->mutex);
     spinlock_init(&host->context_anomaly_rate_spinlock);
 
     host->ml_running = false;
-    rh->ml_host = (rrd_ml_host_t *) host;
+    rh->ml_host = reinterpret_cast<rrd_ml_host_t*>(host);
 }
 
 void ml_host_delete(RRDHOST *rh)
 {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if (!host)
         return;
 
     netdata_mutex_destroy(&host->mutex);
 
     delete host;
-    rh->ml_host = NULL;
+    rh->ml_host = nullptr;
 }
 
 void ml_host_start(RRDHOST *rh) {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if (!host)
         return;
 
@@ -75,7 +73,7 @@ void ml_host_start(RRDHOST *rh) {
 }
 
 void ml_host_stop(RRDHOST *rh) {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if (!host || !host->ml_running)
         return;
 
@@ -85,22 +83,22 @@ void ml_host_stop(RRDHOST *rh) {
     host->mls = ml_machine_learning_stats_t();
 
     // reset charts/dims
-    void *rsp = NULL;
+    void *rsp = nullptr;
     rrdset_foreach_read(rsp, host->rh) {
-        RRDSET *rs = static_cast<RRDSET *>(rsp);
+        auto *rs = static_cast<RRDSET *>(rsp);
 
-        ml_chart_t *chart = (ml_chart_t *) rs->ml_chart;
+        auto *chart = reinterpret_cast<ml_chart_t*>(rs->ml_chart);
         if (!chart)
             continue;
 
         // reset chart
         chart->mls = ml_machine_learning_stats_t();
 
-        void *rdp = NULL;
+        void *rdp = nullptr;
         rrddim_foreach_read(rdp, rs) {
-            RRDDIM *rd = static_cast<RRDDIM *>(rdp);
+            auto *rd = static_cast<RRDDIM *>(rdp);
 
-            ml_dimension_t *dim = (ml_dimension_t *) rd->ml_dimension;
+            auto *dim = reinterpret_cast<ml_dimension_t*>(rd->ml_dimension);
             if (!dim)
                 continue;
 
@@ -128,7 +126,7 @@ void ml_host_stop(RRDHOST *rh) {
 
 void ml_host_get_info(RRDHOST *rh, BUFFER *wb)
 {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if (!host) {
         buffer_json_member_add_boolean(wb, "enabled", false);
         return;
@@ -161,7 +159,7 @@ void ml_host_get_info(RRDHOST *rh, BUFFER *wb)
 
 void ml_host_get_detection_info(RRDHOST *rh, BUFFER *wb)
 {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if (!host)
         return;
 
@@ -179,7 +177,7 @@ void ml_host_get_detection_info(RRDHOST *rh, BUFFER *wb)
 }
 
 bool ml_host_get_host_status(RRDHOST *rh, struct ml_metrics_statistics *mlm) {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if (!host) {
         memset(mlm, 0, sizeof(*mlm));
         return false;
@@ -199,7 +197,7 @@ bool ml_host_get_host_status(RRDHOST *rh, struct ml_metrics_statistics *mlm) {
 }
 
 bool ml_host_running(RRDHOST *rh) {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if(!host)
         return false;
 
@@ -217,33 +215,33 @@ void ml_host_get_models(RRDHOST *rh, BUFFER *wb)
 
 void ml_chart_new(RRDSET *rs)
 {
-    ml_host_t *host = (ml_host_t *) rs->rrdhost->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rs->rrdhost->ml_host);
     if (!host)
         return;
 
-    ml_chart_t *chart = new ml_chart_t();
+    auto *chart = new ml_chart_t();
 
     chart->rs = rs;
     chart->mls = ml_machine_learning_stats_t();
 
-    rs->ml_chart = (rrd_ml_chart_t *) chart;
+    rs->ml_chart = reinterpret_cast<rrd_ml_chart_t*>(chart);
 }
 
 void ml_chart_delete(RRDSET *rs)
 {
-    ml_host_t *host = (ml_host_t *) rs->rrdhost->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rs->rrdhost->ml_host);
     if (!host)
         return;
 
-    ml_chart_t *chart = (ml_chart_t *) rs->ml_chart;
+    auto *chart = reinterpret_cast<ml_chart_t*>(rs->ml_chart);
 
     delete chart;
-    rs->ml_chart = NULL;
+    rs->ml_chart = nullptr;
 }
 
 ALWAYS_INLINE_ONLY bool ml_chart_update_begin(RRDSET *rs)
 {
-    ml_chart_t *chart = (ml_chart_t *)rs->ml_chart;
+    auto *chart = reinterpret_cast<ml_chart_t*>(rs->ml_chart);
     if (!chart)
         return false;
 
@@ -253,18 +251,18 @@ ALWAYS_INLINE_ONLY bool ml_chart_update_begin(RRDSET *rs)
 
 void ml_chart_update_end(RRDSET *rs)
 {
-    ml_chart_t *chart = (ml_chart_t *) rs->ml_chart;
+    auto *chart = reinterpret_cast<ml_chart_t*>(rs->ml_chart);
     if (!chart)
         return;
 }
 
 void ml_dimension_new(RRDDIM *rd)
 {
-    ml_chart_t *chart = (ml_chart_t *) rd->rrdset->ml_chart;
+    auto *chart = reinterpret_cast<ml_chart_t*>(rd->rrdset->ml_chart);
     if (!chart)
         return;
 
-    ml_dimension_t *dim = new ml_dimension_t();
+    auto *dim = new ml_dimension_t();
 
     dim->rd = rd;
 
@@ -285,33 +283,18 @@ void ml_dimension_new(RRDDIM *rd)
 
     dim->km_contexts.reserve(Cfg.num_models_to_use);
 
-    rd->ml_dimension = (rrd_ml_dimension_t *) dim;
+    rd->ml_dimension = reinterpret_cast<rrd_ml_dimension_t*>(dim);
 
     metaqueue_ml_load_models(rd);
 
-    // add to worker queue
-    {
-        RRDHOST *rh = rd->rrdset->rrdhost;
-        ml_host_t *host = (ml_host_t *) rh->ml_host;
-
-        ml_queue_item_t item;
-        item.type = ML_QUEUE_ITEM_TYPE_CREATE_NEW_MODEL;
-
-        ml_request_create_new_model_t req;
-        req.DLI = DimensionLookupInfo(
-            &rh->machine_guid[0],
-            rd->rrdset->id,
-            rd->id
-        );
-        item.create_new_model = req;
-
-        ml_queue_push(host->queue, item);
-    }
+    // Queue dimension for training using the new event loop
+    if (rd->uuid)
+        ml_training_queue_dimension(rd->uuid);
 }
 
 void ml_dimension_delete(RRDDIM *rd)
 {
-    ml_dimension_t *dim = (ml_dimension_t *) rd->ml_dimension;
+    auto *dim = reinterpret_cast<ml_dimension_t*>(rd->ml_dimension);
     if (!dim)
         return;
 
@@ -338,19 +321,19 @@ void ml_dimension_delete(RRDDIM *rd)
     spinlock_unlock(&dim->slock);
 
     delete dim;
-    rd->ml_dimension = NULL;
+    rd->ml_dimension = nullptr;
 }
 
 ALWAYS_INLINE_ONLY void ml_dimension_received_anomaly(RRDDIM *rd, bool is_anomalous) {
-    ml_dimension_t *dim = (ml_dimension_t *) rd->ml_dimension;
+    auto *dim = reinterpret_cast<ml_dimension_t*>(rd->ml_dimension);
     if (!dim)
         return;
 
-    ml_host_t *host = (ml_host_t *) rd->rrdset->rrdhost->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rd->rrdset->rrdhost->ml_host);
     if (!host->ml_running)
         return;
 
-    ml_chart_t *chart = (ml_chart_t *) rd->rrdset->ml_chart;
+    auto *chart = reinterpret_cast<ml_chart_t*>(rd->rrdset->ml_chart);
 
     ml_chart_update_dimension(chart, dim, is_anomalous);
 }
@@ -359,15 +342,15 @@ bool ml_dimension_is_anomalous(RRDDIM *rd, time_t curr_time, double value, bool 
 {
     UNUSED(curr_time);
 
-    ml_dimension_t *dim = (ml_dimension_t *) rd->ml_dimension;
+    auto *dim = reinterpret_cast<ml_dimension_t*>(rd->ml_dimension);
     if (!dim)
         return false;
 
-    ml_host_t *host = (ml_host_t *) rd->rrdset->rrdhost->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rd->rrdset->rrdhost->ml_host);
     if (!host->ml_running)
         return false;
 
-    ml_chart_t *chart = (ml_chart_t *) rd->rrdset->ml_chart;
+    auto *chart = reinterpret_cast<ml_chart_t*>(rd->rrdset->ml_chart);
 
     bool is_anomalous = ml_dimension_predict(dim, value, exists);
     ml_chart_update_dimension(chart, dim, is_anomalous);
@@ -392,28 +375,6 @@ void ml_init()
     for (size_t Idx = 0; Idx != Cfg.max_training_vectors; Idx++)
         Cfg.random_nums.push_back(Gen());
 
-    // init training thread-specific data
-    Cfg.workers.resize(Cfg.num_worker_threads);
-    for (size_t idx = 0; idx != Cfg.num_worker_threads; idx++) {
-        ml_worker_t *worker = &Cfg.workers[idx];
-
-        // Calculate max elements needed based on the highest frequency metrics
-        // For 1-second metrics: training_window samples
-        // We allocate for worst case (1-second update frequency)
-        size_t max_elements_needed_for_training = (size_t) Cfg.training_window * (size_t) (Cfg.lag_n + 1);
-        worker->training_cns = new calculated_number_t[max_elements_needed_for_training]();
-        worker->scratch_training_cns = new calculated_number_t[max_elements_needed_for_training]();
-
-        worker->id = idx;
-        worker->queue = ml_queue_init();
-        worker->pending_model_info.reserve(Cfg.flush_models_batch_size);
-        netdata_mutex_init(&worker->nd_mutex);
-
-        // Initialize reusable buffers for streaming kmeans models
-        worker->stream_payload_buffer = buffer_create(0, NULL);
-        worker->stream_wb_buffer = buffer_create(0, NULL);
-    }
-
     // open sqlite db
     char path[FILENAME_MAX];
     snprintfz(path, FILENAME_MAX - 1, "%s/%s", netdata_configured_cache_dir, "ml.db");
@@ -421,7 +382,7 @@ void ml_init()
     if (rc != SQLITE_OK) {
         error_report("Failed to initialize database at %s, due to \"%s\"", path, sqlite3_errstr(rc));
         sqlite3_close(ml_db);
-        ml_db = NULL;
+        ml_db = nullptr;
     }
 
     // create table
@@ -430,16 +391,16 @@ void ml_init()
         if (configure_sqlite_database(ml_db, target_version, "ml_config")) {
             error_report("Failed to setup ML database");
             sqlite3_close(ml_db);
-            ml_db = NULL;
+            ml_db = nullptr;
         }
         else {
-            char *err = NULL;
-            int rc = sqlite3_exec(ml_db, db_models_create_table, NULL, NULL, &err);
-            if (rc != SQLITE_OK) {
-                error_report("Failed to create models table (%s, %s)", sqlite3_errstr(rc), err ? err : "");
+            char *err = nullptr;
+            int rc1 = sqlite3_exec(ml_db, db_models_create_table, nullptr, nullptr, &err);
+            if (rc1 != SQLITE_OK) {
+                error_report("Failed to create models table (%s, %s)", sqlite3_errstr(rc1), err ? err : "");
                 sqlite3_close(ml_db);
                 sqlite3_free(err);
-                ml_db = NULL;
+                ml_db = nullptr;
             }
         }
     }
@@ -455,27 +416,23 @@ void ml_fini() {
         return;
 
     sql_close_database(ml_db, "ML");
-    ml_db = NULL;
+    ml_db = nullptr;
 }
 
 void ml_start_threads() {
     if (!Cfg.enable_anomaly_detection)
         return;
 
-    // start detection & training threads
+    // start detection thread
     Cfg.detection_stop = false;
-    Cfg.training_stop = false;
 
     char tag[NETDATA_THREAD_TAG_MAX + 1];
 
     snprintfz(tag, NETDATA_THREAD_TAG_MAX, "%s", "PREDICT");
-    Cfg.detection_thread = nd_thread_create(tag, NETDATA_THREAD_OPTION_DEFAULT, ml_detect_main, NULL);
+    Cfg.detection_thread = nd_thread_create(tag, NETDATA_THREAD_OPTION_DEFAULT, ml_detect_main, nullptr);
 
-    for (size_t idx = 0; idx != Cfg.num_worker_threads; idx++) {
-        ml_worker_t *worker = &Cfg.workers[idx];
-        snprintfz(tag, NETDATA_THREAD_TAG_MAX, "TRAIN[%zu]", worker->id);
-        worker->nd_thread = nd_thread_create(tag, NETDATA_THREAD_OPTION_DEFAULT, ml_train_main, worker);
-    }
+    // Initialize the new training event loop
+    ml_training_initialize();
 }
 
 void ml_stop_threads()
@@ -484,40 +441,15 @@ void ml_stop_threads()
         return;
 
     Cfg.detection_stop = true;
-    Cfg.training_stop = true;
 
     if (!Cfg.detection_thread)
         return;
 
     nd_thread_join(Cfg.detection_thread);
-    Cfg.detection_thread = 0;
+    Cfg.detection_thread = nullptr;
 
-    // signal the worker queue of each thread
-    for (size_t idx = 0; idx != Cfg.num_worker_threads; idx++) {
-        ml_worker_t *worker = &Cfg.workers[idx];
-        ml_queue_signal(worker->queue);
-    }
-
-    // join worker threads
-    for (size_t idx = 0; idx != Cfg.num_worker_threads; idx++) {
-        ml_worker_t *worker = &Cfg.workers[idx];
-
-        nd_thread_join(worker->nd_thread);
-    }
-
-    // clear worker thread data
-    for (size_t idx = 0; idx != Cfg.num_worker_threads; idx++) {
-        ml_worker_t *worker = &Cfg.workers[idx];
-
-        delete[] worker->training_cns;
-        delete[] worker->scratch_training_cns;
-        ml_queue_destroy(worker->queue);
-        netdata_mutex_destroy(&worker->nd_mutex);
-
-        // Free reusable buffers
-        buffer_free(worker->stream_payload_buffer);
-        buffer_free(worker->stream_wb_buffer);
-    }
+    // Shutdown the training event loop
+    ml_training_shutdown();
 }
 
 bool ml_model_received_from_child(RRDHOST *host, const char *json)
@@ -533,9 +465,132 @@ bool ml_model_received_from_child(RRDHOST *host, const char *json)
 }
 
 void ml_host_disconnected(RRDHOST *rh) {
-    ml_host_t *host = (ml_host_t *) rh->ml_host;
+    auto *host = reinterpret_cast<ml_host_t*>(rh->ml_host);
     if (!host)
         return;
 
     __atomic_store_n(&host->reset_pointers, true, __ATOMIC_RELAXED);
+}
+
+// C accessor functions for ML config (to avoid C++ header includes in C code)
+extern "C" time_t ml_get_training_window(void) {
+    return Cfg.training_window;
+}
+
+extern "C" unsigned ml_get_lag_n(void) {
+    return Cfg.lag_n;
+}
+
+extern "C" unsigned ml_get_train_every(void) {
+    return Cfg.train_every;
+}
+
+// Create an ml_worker_t with training buffers and model info storage
+extern "C" void *ml_worker_create(size_t buffer_size) {
+    auto *worker = new ml_worker_t();
+
+    worker->training_cns = new calculated_number_t[buffer_size]();
+    worker->scratch_training_cns = new calculated_number_t[buffer_size]();
+    worker->training_samples.clear();
+    worker->pending_model_info.reserve(Cfg.flush_models_batch_size);
+
+    worker->stream_payload_buffer = buffer_create(0, nullptr);
+    worker->stream_wb_buffer = buffer_create(0, nullptr);
+
+    worker->num_db_transactions = 0;
+    worker->num_models_to_prune = 0;
+
+    netdata_mutex_init(&worker->nd_mutex);
+
+    return worker;
+}
+
+// Destroy an ml_worker_t and free all its resources
+extern "C" void ml_worker_destroy(void *opaque) {
+    if (!opaque)
+        return;
+
+    auto *worker = static_cast<ml_worker_t *>(opaque);
+
+    delete[] worker->training_cns;
+    delete[] worker->scratch_training_cns;
+
+    buffer_free(worker->stream_payload_buffer);
+    buffer_free(worker->stream_wb_buffer);
+
+    netdata_mutex_destroy(&worker->nd_mutex);
+
+    delete worker;
+}
+
+// Flush all pending models to the database (unconditional)
+extern "C" void ml_flush_worker_models(void *opaque) {
+    if (!opaque)
+        return;
+
+    auto *worker = static_cast<ml_worker_t *>(opaque);
+    if (worker->pending_model_info.empty())
+        return;
+
+    netdata_mutex_lock(&db_mutex);
+    ml_flush_pending_models(worker);
+    netdata_mutex_unlock(&db_mutex);
+}
+
+// Flush pending models only when the batch threshold is met
+extern "C" void ml_flush_worker_models_if_needed(void *opaque) {
+    if (!opaque)
+        return;
+
+    auto *worker = static_cast<ml_worker_t *>(opaque);
+    if (worker->pending_model_info.size() >= Cfg.flush_models_batch_size) {
+        netdata_mutex_lock(&db_mutex);
+        ml_flush_pending_models(worker);
+        netdata_mutex_unlock(&db_mutex);
+    }
+}
+
+// Return codes for ml_train_dimension_by_uuid:
+//   0 to -99:  training results from ml_dimension_train_model (transient, reschedule)
+//   <= -100:   dimension is gone or permanently excluded (do NOT reschedule)
+#define ML_TRAIN_ERR_INVALID_ARGS   (-100)
+#define ML_TRAIN_ERR_DIM_NOT_FOUND  (-101)
+#define ML_TRAIN_ERR_NO_ML_DIM      (-102)
+#define ML_TRAIN_ERR_ML_DISABLED    (-103)
+
+// C wrapper function for training a dimension by UUID
+// Returns 0 on success, negative on failure (see ML_TRAIN_ERR_* above)
+extern "C" int ml_train_dimension_by_uuid(UUIDMAP_ID metric_id, void *ml_worker_opaque) {
+    if (!metric_id || !ml_worker_opaque)
+        return ML_TRAIN_ERR_INVALID_ARGS;
+
+    auto *worker = static_cast<ml_worker_t *>(ml_worker_opaque);
+
+    // Look up and acquire the dimension by UUID (safe reference)
+    RRDDIM_ACQUIRED *rda = rrddim_find_and_acquire_by_uuid(metric_id);
+    if (!rda)
+        return ML_TRAIN_ERR_DIM_NOT_FOUND;
+
+    RRDDIM *rd = rrddim_acquired_to_rrddim(rda);
+
+    // Get the ML dimension
+    auto *dim = reinterpret_cast<ml_dimension_t *>(rd->ml_dimension);
+    if (!dim) {
+        rrddim_acquired_release(rda);
+        return ML_TRAIN_ERR_NO_ML_DIM;
+    }
+
+    // Check if ML is enabled for this dimension
+    if (dim->mls != MACHINE_LEARNING_STATUS_ENABLED) {
+        rrddim_acquired_release(rda);
+        return ML_TRAIN_ERR_ML_DISABLED;
+    }
+
+    // Train the model using the persistent worker
+    enum ml_worker_result result = ml_dimension_train_model(worker, dim);
+
+    // Release the acquired reference
+    rrddim_acquired_release(rda);
+
+    return (result == ML_WORKER_RESULT_OK) ? 0 : -static_cast<int>(result);
 }

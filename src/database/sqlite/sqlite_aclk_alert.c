@@ -1094,6 +1094,7 @@ void send_alert_snapshot_to_cloud(RRDHOST *host __maybe_unused)
     param = 0;
     uint64_t version = 0;
     int total_count = 0;
+
     while (sqlite3_step_monitored(res) == SQLITE_ROW) {
         cnt++;
         total_count++;

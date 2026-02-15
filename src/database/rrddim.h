@@ -215,6 +215,7 @@ int rrddim_set_multiplier(RRDSET *st, RRDDIM *rd, int32_t multiplier);
 int rrddim_set_divisor(RRDSET *st, RRDDIM *rd, int32_t divisor);
 
 RRDDIM *rrddim_find(RRDSET *st, const char *id, bool include_obsolete);
+RRDDIM_ACQUIRED *rrddim_find_and_acquire_by_uuid(UUIDMAP_ID uuid);
 RRDDIM_ACQUIRED *rrddim_find_and_acquire(RRDSET *st, const char *id, bool include_obsolete);
 RRDDIM *rrddim_acquired_to_rrddim(RRDDIM_ACQUIRED *rda);
 void rrddim_acquired_release(RRDDIM_ACQUIRED *rda);

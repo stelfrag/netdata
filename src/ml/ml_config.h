@@ -42,11 +42,7 @@ typedef struct {
     ND_THREAD *detection_thread;
     std::atomic<bool> detection_stop;
 
-    size_t num_worker_threads;
     size_t flush_models_batch_size;
-
-    std::vector<ml_worker_t> workers;
-    std::atomic<bool> training_stop;
 
     size_t suppression_window;
     size_t suppression_threshold;

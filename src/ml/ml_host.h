@@ -10,8 +10,6 @@
 #include <atomic>
 #include <unordered_map>
 
-struct ml_queue_t;
-
 typedef struct machine_learning_stats_t {
     uint32_t num_machine_learning_status_enabled;
     uint32_t num_machine_learning_status_disabled_sp;
@@ -45,8 +43,6 @@ typedef struct {
     calculated_number_t host_anomaly_rate;
 
     netdata_mutex_t mutex;
-
-    ml_queue_t *queue;
 
     /*
      * bookkeeping for anomaly detection charts

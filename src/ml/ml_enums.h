@@ -55,12 +55,4 @@ enum ml_worker_result {
 
 const char *ml_worker_result_to_string(enum ml_worker_result tr);
 
-enum ml_queue_item_type {
-    ML_QUEUE_ITEM_TYPE_CREATE_NEW_MODEL,
-    ML_QUEUE_ITEM_TYPE_ADD_EXISTING_MODEL,
-    ML_QUEUE_ITEM_STOP_REQUEST,
-};
-
-const char *ml_queue_item_type_to_string(enum ml_queue_item_type qit);
-
 #endif /* NETDATA_ML_ENUMS_H */
