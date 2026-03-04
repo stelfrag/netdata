@@ -232,6 +232,8 @@ static long long str2ll(const char *s, char **endptr) {
 
 ALWAYS_INLINE
 static uint32_t str2uint32_hex(const char *src, char **endptr) {
+    buffer_initialize_ascii_maps();
+
     while(isspace((uint8_t)*src))
         src++;
 
@@ -252,6 +254,8 @@ static uint32_t str2uint32_hex(const char *src, char **endptr) {
 
 ALWAYS_INLINE
 static uint64_t str2uint64_hex(const char *src, char **endptr) {
+    buffer_initialize_ascii_maps();
+
     while(isspace((uint8_t)*src))
         src++;
 
@@ -272,6 +276,8 @@ static uint64_t str2uint64_hex(const char *src, char **endptr) {
 
 ALWAYS_INLINE
 static uint64_t str2uint64_base64(const char *src, char **endptr) {
+    buffer_initialize_ascii_maps();
+
     while(isspace((uint8_t)*src))
         src++;
 
@@ -576,61 +582,108 @@ static bool sanitize_command_argument_string(char *dst, const char *src, size_t 
 }
 
 ALWAYS_INLINE
+static int nd_open_readonly_cloexec(const char *filename) {
+#if defined(OS_WINDOWS)
+    return _open(filename, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+#else
+    return open(filename, O_RDONLY | O_CLOEXEC, 0666);
+#endif
+}
+
+ALWAYS_INLINE
+static ssize_t nd_read_fd(int fd, void *buf, size_t count) {
+#if defined(OS_WINDOWS)
+    return _read(fd, buf, (unsigned int)count);
+#else
+    return read(fd, buf, count);
+#endif
+}
+
+ALWAYS_INLINE
+static int nd_close_fd(int fd) {
+#if defined(OS_WINDOWS)
+    return _close(fd);
+#else
+    return close(fd);
+#endif
+}
+
+ALWAYS_INLINE
+static int nd_fstat_fd_size(int fd, size_t *file_size) {
+    if(!file_size)
+        return -1;
+
+#if defined(OS_WINDOWS)
+    struct _stat64 st;
+    if(_fstat64(fd, &st) == -1)
+        return -1;
+#else
+    struct stat st;
+    if(fstat(fd, &st) == -1)
+        return -1;
+#endif
+
+    if(st.st_size < 0)
+        return -1;
+
+    *file_size = (size_t)st.st_size;
+    return 0;
+}
+
+ALWAYS_INLINE
 static int read_txt_file(const char *filename, char *buffer, size_t size) {
     if(unlikely(!size)) return 3;
 
-    int fd = open(filename, O_RDONLY | O_CLOEXEC, 0666);
+    int fd = nd_open_readonly_cloexec(filename);
     if(unlikely(fd == -1)) {
         buffer[0] = '\0';
         return 1;
     }
 
-    ssize_t r = read(fd, buffer, size - 1); // leave space of the final zero
+    ssize_t r = nd_read_fd(fd, buffer, size - 1); // leave space of the final zero
     if(unlikely(r == -1)) {
         buffer[0] = '\0';
-        close(fd);
+        nd_close_fd(fd);
         return 2;
     }
     buffer[r] = '\0';
 
-    close(fd);
+    nd_close_fd(fd);
     return 0;
 }
 
 ALWAYS_INLINE
 static bool read_txt_file_to_buffer(const char *filename, BUFFER *wb, size_t max_size) {
     // Open the file
-    int fd = open(filename, O_RDONLY | O_CLOEXEC);
+    int fd = nd_open_readonly_cloexec(filename);
     if (fd == -1)
         return false;
 
     // Get the file size
-    struct stat st;
-    if (fstat(fd, &st) == -1) {
-        close(fd);
+    size_t file_size = 0;
+    if (nd_fstat_fd_size(fd, &file_size) == -1) {
+        nd_close_fd(fd);
         return false;
     }
 
-    size_t file_size = st.st_size;
-
     // Check if the file size exceeds the maximum allowed size
     if (file_size > max_size) {
-        close(fd);
+        nd_close_fd(fd);
         return false; // File size too large
     }
 
     buffer_need_bytes(wb, file_size + 1);
 
     // Read the file contents into the buffer
-    ssize_t r = read(fd, &wb->buffer[wb->len], file_size);
+    ssize_t r = nd_read_fd(fd, &wb->buffer[wb->len], file_size);
     if (r != (ssize_t)file_size) {
-        close(fd);
+        nd_close_fd(fd);
         return false; // Read error
     }
     wb->len = r;
 
     // Close the file descriptor
-    close(fd);
+    nd_close_fd(fd);
 
     return true; // Success
 }
@@ -639,16 +692,16 @@ ALWAYS_INLINE
 static int read_proc_cmdline(const char *filename, char *buffer, size_t size) {
     if (unlikely(!size)) return 3;
 
-    int fd = open(filename, O_RDONLY | O_CLOEXEC, 0666);
+    int fd = nd_open_readonly_cloexec(filename);
     if (unlikely(fd == -1)) {
         buffer[0] = '\0';
         return 1;
     }
 
-    ssize_t r = read(fd, buffer, size - 1); // Leave space for final null character
+    ssize_t r = nd_read_fd(fd, buffer, size - 1); // Leave space for final null character
     if (unlikely(r == -1)) {
         buffer[0] = '\0';
-        close(fd);
+        nd_close_fd(fd);
         return 2;
     }
 
@@ -665,7 +718,7 @@ static int read_proc_cmdline(const char *filename, char *buffer, size_t size) {
         buffer[0] = '\0'; // Empty cmdline
     }
 
-    close(fd);
+    nd_close_fd(fd);
     return 0;
 }
 

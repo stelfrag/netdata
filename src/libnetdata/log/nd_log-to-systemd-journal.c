@@ -40,7 +40,7 @@ bool nd_log_journal_socket_available(void) {
     char filename[FILENAME_MAX];
     int fd = nd_log_journal_direct_fd_find_and_open(filename, sizeof(filename));
     if(fd == -1) return false;
-    close(fd);
+    sock_close_fd(fd);
     return true;
 }
 

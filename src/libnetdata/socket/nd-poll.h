@@ -5,7 +5,7 @@
 
 #include "libnetdata/common.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     ND_POLL_NONE            = 0,
 
     ND_POLL_READ            = 1 << 0, // same as EPOLLIN, POLLIN

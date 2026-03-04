@@ -26,8 +26,9 @@ extern const char hex_digits_lower[16];
 extern const char base64_digits[64];
 extern unsigned char hex_value_from_ascii[256];
 extern unsigned char base64_value_from_ascii[256];
+void buffer_initialize_ascii_maps(void);
 
-typedef enum __attribute__ ((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     BUFFER_JSON_EMPTY = 0,
     BUFFER_JSON_OBJECT,
     BUFFER_JSON_ARRAY,
@@ -40,12 +41,12 @@ typedef struct web_buffer_json_node {
 
 #define BUFFER_QUOTE_MAX_SIZE 7
 
-typedef enum __attribute__ ((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     WB_CONTENT_CACHEABLE = (1 << 0),
     WB_CONTENT_NO_CACHEABLE = (1 << 1),
 } BUFFER_OPTIONS;
 
-typedef enum __attribute__ ((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     BUFFER_JSON_OPTIONS_DEFAULT = 0,
     BUFFER_JSON_OPTIONS_MINIFY = (1 << 0),
     BUFFER_JSON_OPTIONS_NEWLINE_ON_ARRAY_ITEMS = (1 << 1),

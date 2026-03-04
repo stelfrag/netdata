@@ -46,7 +46,7 @@ typedef struct {
 
 struct provider_meta_handle;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     WEVT_QUERY_BASIC        = (1 << 0),
     WEVT_QUERY_EXTENDED     = (1 << 1),
     WEVT_QUERY_EVENT_DATA   = (1 << 2),

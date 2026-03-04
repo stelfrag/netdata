@@ -5,14 +5,14 @@
 
 #include "../libnetdata.h"
 
-typedef enum __attribute__ ((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     SIMPLE_PATTERN_EXACT,
     SIMPLE_PATTERN_PREFIX,
     SIMPLE_PATTERN_SUFFIX,
     SIMPLE_PATTERN_SUBSTRING
 } SIMPLE_PREFIX_MODE;
 
-typedef enum __attribute__ ((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     SP_NOT_MATCHED,
     SP_MATCHED_NEGATIVE,
     SP_MATCHED_POSITIVE,

@@ -9,12 +9,12 @@
 #define FACET_VALUE_UNSAMPLED "[unsampled]"
 #define FACET_VALUE_ESTIMATED "[estimated]"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     FACETS_ANCHOR_DIRECTION_FORWARD,
     FACETS_ANCHOR_DIRECTION_BACKWARD,
 } FACETS_ANCHOR_DIRECTION;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     FACETS_TRANSFORM_VALUE,
     FACETS_TRANSFORM_HISTOGRAM,
     FACETS_TRANSFORM_FACET,
@@ -22,7 +22,7 @@ typedef enum __attribute__((packed)) {
     FACETS_TRANSFORM_FACET_SORT,
 } FACETS_TRANSFORMATION_SCOPE;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     FACET_KEY_OPTION_NONE           = 0,
     FACET_KEY_OPTION_FACET          = (1 << 0), // filterable values
     FACET_KEY_OPTION_NO_FACET       = (1 << 1), // non-filterable value
@@ -41,7 +41,7 @@ typedef enum __attribute__((packed)) {
     FACET_KEY_OPTION_FILTER_ONLY    = (1 << 14), // the key is filterable, but not to be exposed as facet
 } FACET_KEY_OPTIONS;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     FACET_ROW_SEVERITY_DEBUG,       // lowest - not important
     FACET_ROW_SEVERITY_NORMAL,      // the default
     FACET_ROW_SEVERITY_NOTICE,      // bold
@@ -81,7 +81,7 @@ FACET_KEY *facets_register_dynamic_key_name(FACETS *facets, const char *key, FAC
 FACET_KEY *facets_register_key_name_transformation(FACETS *facets, const char *key, FACET_KEY_OPTIONS options, facets_key_transformer_t cb, void *data);
 void facets_register_row_severity(FACETS *facets, facet_row_severity_t cb, void *data);
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     FACETS_OPTION_ALL_FACETS_VISIBLE            = (1 << 0), // all facets should be visible by default in the table
     FACETS_OPTION_ALL_KEYS_FTS                  = (1 << 1), // all keys are searchable by full text search
     FACETS_OPTION_DONT_SEND_FACETS              = (1 << 2), // "facets" object will not be included in the report

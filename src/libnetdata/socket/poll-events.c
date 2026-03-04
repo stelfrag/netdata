@@ -98,7 +98,7 @@ static inline void poll_close_fd(POLLINFO *pi, const char *func) {
         pi->del_callback(pi);
 
         if(likely(!(pi->flags & POLLINFO_FLAG_DONT_CLOSE))) {
-            if(close(pi->fd) == -1)
+            if(sock_close_fd(pi->fd) == -1)
                 nd_log(NDLS_DAEMON, NDLP_ERR,
                        "Failed to close() poll_events() socket %d",
                        pi->fd);
@@ -293,7 +293,7 @@ static int poll_process_new_tcp_connection(POLLINFO *pi, time_t now) {
 
     }
     else if(is_socket_closed(nfd))
-        close(nfd);
+        sock_close_fd(nfd);
 
     else {
         // accept ok

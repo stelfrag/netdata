@@ -162,6 +162,10 @@ cmake_dependent_option(ENABLE_PLUGIN_SYSTEMD_UNITS "Enable systemd units informa
 cmake_dependent_option(ENABLE_PLUGIN_XENSTAT "Enable Xen domain monitoring" ${DEFAULT_FEATURE_STATE} "OS_LINUX" False)
 
 cmake_dependent_option(ENABLE_PLUGIN_IBM "Enable IBM ecosystem collectors (requires CGO)" False "OS_LINUX AND CPU_X86_64" False)
+cmake_dependent_option(ENABLE_WINDOWS_DRIVER "Enable Windows kernel driver build" True "OS_WINDOWS AND OS_WINDOWS_MSYS2" False)
+mark_as_advanced(ENABLE_WINDOWS_DRIVER)
+cmake_dependent_option(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND "Force native Windows compatibility backend even when compiling under MSYS2" Off "OS_WINDOWS" Off)
+mark_as_advanced(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
 
 # Metrics exporters
 option(ENABLE_EXPORTER_PROMETHEUS_REMOTE_WRITE "Enable exporting to Prometheus via remote write API" ${DEFAULT_FEATURE_STATE})
@@ -3064,6 +3068,19 @@ if(OS_WINDOWS)
         set(NETDATA_RES_FILES "packaging/windows/resources/netdata.rc")
         configure_file(packaging/windows/resources/netdata.manifest.in ${CMAKE_SOURCE_DIR}/packaging/windows/resources/netdata.manifest @ONLY)
 
+        if(OS_WINDOWS_MSYS2)
+                set(WINDOWS_WIX_SOURCE_ROOT "C:\\msys64\\opt\\netdata")
+        else()
+                set(WINDOWS_WIX_SOURCE_ROOT "${CMAKE_INSTALL_PREFIX}")
+                string(REPLACE "/" "\\" WINDOWS_WIX_SOURCE_ROOT "${WINDOWS_WIX_SOURCE_ROOT}")
+        endif()
+
+        if(ENABLE_WINDOWS_DRIVER)
+                set(WIX_ENABLE_WINDOWS_DRIVER "1")
+        else()
+                set(WIX_ENABLE_WINDOWS_DRIVER "0")
+        endif()
+
         configure_file(packaging/windows/netdata.wxs.in netdata.wxs @ONLY)
         configure_file(packaging/windows/NetdataWhite.ico NetdataWhite.ico COPYONLY)
         configure_file(packaging/windows/eula.rtf eula.rtf COPYONLY)
@@ -3086,36 +3103,42 @@ endif()
 if(OS_WINDOWS)
         add_executable(NetdataClaim ${CLAIM_WINDOWS_FILES} ${NETDATA_CLAIM_RES_FILES})
         target_link_libraries(NetdataClaim shell32 gdi32 msftedit)
-        target_compile_options(NetdataClaim PUBLIC -mwindows)
+        if(MSVC)
+                target_link_options(NetdataClaim PRIVATE "/SUBSYSTEM:WINDOWS")
+        else()
+                target_compile_options(NetdataClaim PUBLIC -mwindows)
+        endif()
 
-        set(NETDATA_DRIVER_FILE "${CMAKE_BINARY_DIR}/netdata_driver.sys")
+        if(ENABLE_WINDOWS_DRIVER)
+                set(NETDATA_DRIVER_FILE "${CMAKE_BINARY_DIR}/netdata_driver.sys")
 
-        add_library(netdata_driver SHARED ${WINDOWS_PLUGIN_DRIVER})
-        set_target_properties(netdata_driver PROPERTIES LIBRARY_OUTPUT_NAME "netdata_driver")
-        set_target_properties(netdata_driver PROPERTIES PREFIX "")
-        set_target_properties(netdata_driver PROPERTIES SUFFIX ".sys")
-        target_include_directories(netdata_driver PRIVATE BEFORE "/mingw64/include/ddk" "${CMAKE_SOURCE_DIR}/src/collectors/windows.plugin")
-        target_compile_options(netdata_driver PRIVATE
-                -Wall
-                -Wextra
-                -Werror
-                -ffreestanding
-                -fno-exceptions
-                -fno-stack-protector
-                -fshort-wchar
-                -mno-red-zone
-        )
-        target_link_options(netdata_driver PRIVATE
-                -Wl,--entry,DriverEntry@8
-                -nostdlib
-                -Wl,--subsystem,native
-                -Wl,--image-base,0x10000
-        )
-        target_link_libraries(netdata_driver kernel32 ntoskrnl)
+                add_library(netdata_driver SHARED ${WINDOWS_PLUGIN_DRIVER})
+                set_target_properties(netdata_driver PROPERTIES LIBRARY_OUTPUT_NAME "netdata_driver")
+                set_target_properties(netdata_driver PROPERTIES PREFIX "")
+                set_target_properties(netdata_driver PROPERTIES SUFFIX ".sys")
+                target_include_directories(netdata_driver PRIVATE BEFORE "/mingw64/include/ddk" "${CMAKE_SOURCE_DIR}/src/collectors/windows.plugin")
+                target_compile_options(netdata_driver PRIVATE
+                        -Wall
+                        -Wextra
+                        -Werror
+                        -ffreestanding
+                        -fno-exceptions
+                        -fno-stack-protector
+                        -fshort-wchar
+                        -mno-red-zone
+                )
+                target_link_options(netdata_driver PRIVATE
+                        -Wl,--entry,DriverEntry@8
+                        -nostdlib
+                        -Wl,--subsystem,native
+                        -Wl,--image-base,0x10000
+                )
+                target_link_libraries(netdata_driver kernel32 ntoskrnl)
 
-        install(FILES "${NETDATA_DRIVER_FILE}"
-                COMPONENT netdata_win_driver
-                DESTINATION "${BINDIR}")
+                install(FILES "${NETDATA_DRIVER_FILE}"
+                        COMPONENT netdata_win_driver
+                        DESTINATION "${BINDIR}")
+        endif()
 endif()
 
 target_compile_options(netdata PRIVATE
@@ -4011,7 +4034,7 @@ install(CODE "
 # vendor msys stuff on Windows
 #
 
-if(OS_WINDOWS)
+if(OS_WINDOWS AND OS_WINDOWS_MSYS2)
         install(FILES /usr/bin/msys-protobuf-32.dll
                       /usr/bin/msys-yaml-0-2.dll
                       /usr/bin/msys-uv-1.dll

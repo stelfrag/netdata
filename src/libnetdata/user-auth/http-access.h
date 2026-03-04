@@ -3,7 +3,7 @@
 #ifndef NETDATA_HTTP_ACCESS_H
 #define NETDATA_HTTP_ACCESS_H
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     HTTP_USER_ROLE_NONE = 0,
     HTTP_USER_ROLE_ADMIN = 1,
     HTTP_USER_ROLE_MANAGER = 2,
@@ -18,7 +18,7 @@ typedef enum __attribute__((packed)) {
 const char *http_id2user_role(HTTP_USER_ROLE role);
 HTTP_USER_ROLE http_user_role2id(const char *role);
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     HTTP_ACCESS_NONE                        = 0,         //                                    adm man trb obs mem bil
     HTTP_ACCESS_SIGNED_ID                   = (1 << 0),  // User is authenticated               A   A   A   A   A   A
     HTTP_ACCESS_SAME_SPACE                  = (1 << 1),  // NC user+agent = same space          A   A   A   A   A   A
@@ -80,7 +80,7 @@ bool log_cb_http_access_to_hex(struct web_buffer *wb, void *data);
 
 #define HTTP_ACCESS_PERMISSION_DENIED_HTTP_CODE(access) ((access & HTTP_ACCESS_SIGNED_ID) ? HTTP_RESP_FORBIDDEN : HTTP_RESP_PRECOND_FAIL)
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     HTTP_ACL_NONE                   = (0),
 
     HTTP_ACL_NOCHECK                = (1 << 0), // Don't check anything - adding this to an endpoint, disables ACL checking

@@ -4,6 +4,8 @@
     xmlns="http://wixtoolset.org/schemas/v4/wxs"
     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+    <?define NdSourceRoot = "@WINDOWS_WIX_SOURCE_ROOT@" ?>
+    <?define NdEnableWindowsDriver = "@WIX_ENABLE_WINDOWS_DRIVER@" ?>
 
     <Package Name="Netdata Agent"
              Manufacturer="Netdata Inc."
@@ -53,7 +55,9 @@
                 <ComponentRef Id="NetdataEtcPython" />
                 <ComponentRef Id="NetdataEtcStatsd" />
                 <ComponentGroupRef Id="WevtComponents" />
+                <?if "$(var.NdEnableWindowsDriver)" = "1" ?>
                 <FeatureGroupRef Id="NetdataDriver" />
+                <?endif?>
                 <ComponentRef Id="NetdataService" />
             </Feature>
 
@@ -176,11 +180,11 @@
 
             <!-- All the files except for the ones we need to handle specially -->
             <ComponentGroup Id="NetdataComponents" Directory="INSTALLFOLDER">
-                <Files Include="C:\msys64\opt\netdata\**">
-                    <Exclude Files="C:\msys64\opt\netdata\usr\bin\netdata.exe" />
-                    <Exclude Files="C:\msys64\opt\netdata\usr\bin\wevt_netdata_manifest.xml" />
-                    <Exclude Files="C:\msys64\opt\netdata\usr\bin\wevt_netdata.dll" />
-                    <Exclude Files="C:\msys64\opt\netdata\usr\bin\netdata_driver.sys" />
+                <Files Include="$(var.NdSourceRoot)\**">
+                    <Exclude Files="$(var.NdSourceRoot)\usr\bin\netdata.exe" />
+                    <Exclude Files="$(var.NdSourceRoot)\usr\bin\wevt_netdata_manifest.xml" />
+                    <Exclude Files="$(var.NdSourceRoot)\usr\bin\wevt_netdata.dll" />
+                    <Exclude Files="$(var.NdSourceRoot)\usr\bin\netdata_driver.sys" />
                 </Files>
             </ComponentGroup>
 
@@ -245,18 +249,20 @@
 
             <!-- Install wevt manifest/dll files -->
             <ComponentGroup Id="WevtComponents" Directory="System64Folder">
-                <File Id="WevtDll" Name="wevt_netdata.dll" Source="C:\msys64\opt\netdata\usr\bin\wevt_netdata.dll">
+                <File Id="WevtDll" Name="wevt_netdata.dll" Source="$(var.NdSourceRoot)\usr\bin\wevt_netdata.dll">
                 </File>
 
-                <File Id="WevtManifest" Name="wevt_netdata_manifest.xml" Source="C:\msys64\opt\netdata\usr\bin\wevt_netdata_manifest.xml">
+                <File Id="WevtManifest" Name="wevt_netdata_manifest.xml" Source="$(var.NdSourceRoot)\usr\bin\wevt_netdata_manifest.xml">
                 </File>
             </ComponentGroup>
 
             <!-- Install netdata driver file -->
+            <?if "$(var.NdEnableWindowsDriver)" = "1" ?>
             <FeatureGroup Id="NetdataDriver">
-                <File Id="NetdataDrv" Name="netdata_driver.sys" Directory="System64Folder" Source="C:\msys64\opt\netdata\usr\bin\netdata_driver.sys" Condition="NDDRVINST=1">
+                <File Id="NetdataDrv" Name="netdata_driver.sys" Directory="System64Folder" Source="$(var.NdSourceRoot)\usr\bin\netdata_driver.sys" Condition="NDDRVINST=1">
                 </File>
             </FeatureGroup>
+            <?endif?>
 
             <CustomAction Id="DllPermission" Directory="System64Folder" ExeCommand='[System64Folder]icacls.exe &quot;[System64Folder]wevt_netdata.dll&quot; /grant &quot;NT SERVICE\EventLog&quot;:R' Execute="deferred" Return="ignore" Impersonate="no"/>
             <InstallExecuteSequence>
@@ -269,7 +275,7 @@
             </InstallExecuteSequence>
 
             <Component Id="NetdataService" Directory="USRBINDIR">
-                <File Id="netdata.exe" Source="C:\msys64\opt\netdata\usr\bin\netdata.exe" KeyPath="yes" />
+                <File Id="netdata.exe" Source="$(var.NdSourceRoot)\usr\bin\netdata.exe" KeyPath="yes" />
 
                 <ServiceInstall Id="InstallService"
                                 Name="Netdata"

@@ -113,7 +113,9 @@ static unsigned char label_values_char_map[256] = {
         [255] = ' '
 };
 
-__attribute__((constructor)) void initialize_labels_keys_char_map(void) {
+void initialize_labels_keys_char_map(void) {
+    FUNCTION_RUN_ONCE();
+
     // copy the values char map to the names char map
     size_t i;
     for(i = 0; i < 256 ;i++)
@@ -140,6 +142,8 @@ __attribute__((constructor)) void initialize_labels_keys_char_map(void) {
 }
 
 size_t rrdlabels_sanitize_name(char *dst, const char *src, size_t dst_size) {
+    initialize_labels_keys_char_map();
+
     size_t rc = text_sanitize((unsigned char *)dst, (const unsigned char *)src, dst_size, label_names_char_map, 0, "", NULL);
 
     for(size_t i = 0; i < rc ; i++)
@@ -149,9 +153,13 @@ size_t rrdlabels_sanitize_name(char *dst, const char *src, size_t dst_size) {
 }
 
 size_t rrdlabels_sanitize_value(char *dst, const char *src, size_t dst_size) {
+    initialize_labels_keys_char_map();
+
     return text_sanitize((unsigned char *)dst, (const unsigned char *)src, dst_size, label_values_char_map, 1, "[none]", NULL);
 }
 
 size_t prometheus_rrdlabels_sanitize_name(char *dst, const char *src, size_t dst_size) {
+    initialize_labels_keys_char_map();
+
     return text_sanitize((unsigned char *)dst, (const unsigned char *)src, dst_size, prometheus_label_names_char_map, 0, "", NULL);
 }

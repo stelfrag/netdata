@@ -5,7 +5,7 @@
 
 #include "windows-events.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     WEVT_FIELD_TYPE_LEVEL = 0,
     WEVT_FIELD_TYPE_OPCODE,
     WEVT_FIELD_TYPE_KEYWORD,

@@ -26,7 +26,7 @@ const char *errno2str(int errnum, char *buf, size_t size);
 // --------------------------------------------------------------------------------------------------------------------
 // ND_LOG_METHOD
 
-typedef enum  __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     NDLM_DISABLED = 0,
     NDLM_DEVNULL,
     NDLM_DEFAULT,
@@ -67,7 +67,7 @@ const char *nd_log_id2method(ND_LOG_METHOD method);
 // --------------------------------------------------------------------------------------------------------------------
 // ND_LOG_FORMAT
 
-typedef enum __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     NDLF_JOURNAL,
     NDLF_LOGFMT,
     NDLF_JSON,

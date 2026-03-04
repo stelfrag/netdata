@@ -4,7 +4,9 @@
 
 // --------------------------------------------------------------------------------------------------------------------
 
-__attribute__((constructor)) void initialize_invocation_id(void) {
+static void initialize_invocation_id(void) {
+    FUNCTION_RUN_ONCE();
+
     // check for a NETDATA_INVOCATION_ID
     if(uuid_parse_flexi(getenv("NETDATA_INVOCATION_ID"), nd_log.invocation_id) != 0) {
         // not found, check for systemd set INVOCATION_ID
@@ -20,6 +22,8 @@ __attribute__((constructor)) void initialize_invocation_id(void) {
 }
 
 ND_UUID nd_log_get_invocation_id(void) {
+    initialize_invocation_id();
+
     ND_UUID rc;
     uuid_copy(rc.uuid, nd_log.invocation_id);
     return rc;
@@ -28,6 +32,8 @@ ND_UUID nd_log_get_invocation_id(void) {
 // --------------------------------------------------------------------------------------------------------------------
 
 void nd_log_initialize_for_external_plugins(const char *name) {
+    initialize_invocation_id();
+
     // if we don't run under Netdata, log to stderr,
     // otherwise, use the logging method Netdata wants us to use.
 #if defined(OS_WINDOWS)

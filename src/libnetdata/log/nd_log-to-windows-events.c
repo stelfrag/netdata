@@ -330,7 +330,9 @@ static EVENT_DATA_DESCRIPTOR etw_eventData[_NDF_MAX - 1];
 
 static LPCWSTR wel_messages[_NDF_MAX - 1];
 
-__attribute__((constructor)) void wevents_initialize_buffers(void) {
+static void wevents_initialize_buffers(void) {
+    FUNCTION_RUN_ONCE();
+
     for(size_t i = 0; i < _NDF_MAX ;i++) {
         fields_buffers[i].buf = small_wide_buffers[i];
         fields_buffers[i].size = SMALL_WIDE_BUFFERS_SIZE;
@@ -463,6 +465,8 @@ static bool has_user_role_permissions(struct log_field *fields, size_t fields_ma
 static bool nd_logger_windows(struct nd_log_source *source, struct log_field *fields, size_t fields_max) {
     if (!nd_log.eventlog.initialized)
         return false;
+
+    wevents_initialize_buffers();
 
     ND_LOG_FIELD_PRIORITY priority = NDLP_INFO;
     if (fields[NDF_PRIORITY].entry.set)

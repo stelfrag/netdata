@@ -3,7 +3,7 @@
 #ifndef NETDATA_CONTENT_TYPE_H
 #define NETDATA_CONTENT_TYPE_H
 
-typedef enum __attribute__ ((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     CT_NONE = 0,
     CT_APPLICATION_JSON,
     CT_TEXT_PLAIN,

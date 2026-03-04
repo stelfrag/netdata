@@ -5,7 +5,7 @@
 
 #include "inicfg.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     CONFIG_VALUE_TYPE_UNKNOWN = 0,
     CONFIG_VALUE_TYPE_TEXT,
     CONFIG_VALUE_TYPE_HOSTNAME,
@@ -27,7 +27,7 @@ typedef enum __attribute__((packed)) {
     CONFIG_VALUE_TYPE_SIZE_IN_MB,
 } CONFIG_VALUE_TYPES;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     CONFIG_VALUE_LOADED         = (1 << 0), // has been loaded from the config
     CONFIG_VALUE_USED           = (1 << 1), // has been accessed from the program
     CONFIG_VALUE_CHANGED        = (1 << 2), // has been changed from the loaded value or the internal default value

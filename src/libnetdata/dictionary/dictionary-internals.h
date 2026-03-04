@@ -7,7 +7,7 @@
 #include "../libnetdata.h"
 
 // runtime flags of the dictionary - must be checked with atomics
-typedef enum __attribute__ ((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     DICT_FLAG_NONE                  = 0,
     DICT_FLAG_DESTROYED             = (1 << 0), // this dictionary has been destroyed
 } DICT_FLAGS;
@@ -24,14 +24,14 @@ typedef enum __attribute__ ((__packed__)) {
 #define is_view_dictionary(dict) ((dict)->master)
 #define is_master_dictionary(dict) (!is_view_dictionary(dict))
 
-typedef enum __attribute__ ((__packed__)) item_options {
+typedef enum ND_ATTR_PACKED item_options {
     ITEM_OPTION_NONE            = 0,
     ITEM_OPTION_ALLOCATED_NAME  = (1 << 0), // the name pointer is a STRING
 
     // IMPORTANT: This is 1-bit - to add more change ITEM_OPTIONS_BITS
 } ITEM_OPTIONS;
 
-typedef enum __attribute__ ((__packed__)) item_flags {
+typedef enum ND_ATTR_PACKED item_flags {
     ITEM_FLAG_NONE              = 0,
     ITEM_FLAG_DELETED           = (1 << 0), // this item is marked deleted, so it is not available for traversal (deleted from the index too)
     ITEM_FLAG_BEING_CREATED     = (1 << 1), // this item is currently being created - this flag is removed when construction finishes

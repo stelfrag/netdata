@@ -1363,7 +1363,9 @@ static bool do_app_pool(PERF_DATA_BLOCK *pDataBlock, int update_every)
     return true;
 }
 
-static int iis_web_service(char *name, int update_every, typeof(bool(PERF_DATA_BLOCK *, int)) *routine)
+typedef bool (*iis_web_service_collector_t)(PERF_DATA_BLOCK *pDataBlock, int update_every);
+
+static int iis_web_service(char *name, int update_every, iis_web_service_collector_t routine)
 {
     DWORD id = RegistryFindIDByName(name);
     if (id == PERFLIB_REGISTRY_NAME_NOT_FOUND)

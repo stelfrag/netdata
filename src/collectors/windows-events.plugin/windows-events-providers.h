@@ -3,7 +3,7 @@
 #ifndef NETDATA_WINDOWS_EVENTS_PROVIDERS_H
 #define NETDATA_WINDOWS_EVENTS_PROVIDERS_H
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     WEVT_PLATFORM_UNKNOWN = 0,
     WEVT_PLATFORM_WEL,
     WEVT_PLATFORM_ETW,

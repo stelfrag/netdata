@@ -5,7 +5,7 @@
 #ifndef NETDATA_ISO8601_H
 #define NETDATA_ISO8601_H
 
-typedef enum __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     ISO8601_UTC             = (1 << 0),
     ISO8601_LOCAL_TIMEZONE  = (1 << 1),
     ISO8601_MILLISECONDS    = (1 << 2),

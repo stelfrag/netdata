@@ -22,14 +22,14 @@ static void update_cygpath_env(void) {
     if(done) return;
     done = true;
 
-    char win_path[MAX_PATH];
-
-    // Convert Cygwin root path to Windows path
-    cygwin_conv_path(CCP_POSIX_TO_WIN_A, "/", win_path, sizeof(win_path));
-
-    nd_setenv("NETDATA_CYGWIN_BASE_PATH", win_path, 1);
-
-    nd_log(NDLS_COLLECTORS, NDLP_INFO, "Cygwin/MSYS2 base path set to '%s'", win_path);
+#if defined(OS_WINDOWS_MSYS2)
+    char *win_path = NULL;
+    if(nd_windows_path_to_win32_utf8z("/", &win_path)) {
+        nd_setenv("NETDATA_CYGWIN_BASE_PATH", win_path, 1);
+        nd_log(NDLS_COLLECTORS, NDLP_INFO, "Cygwin/MSYS2 base path set to '%s'", win_path);
+        freez(win_path);
+    }
+#endif
 }
 
 SPAWN_SERVER* spawn_server_create(SPAWN_SERVER_OPTIONS options __maybe_unused, const char *name, spawn_request_callback_t cb  __maybe_unused, int argc __maybe_unused, const char **argv __maybe_unused) {
@@ -61,11 +61,12 @@ static BUFFER *argv_to_windows(const char **argv) {
     BUFFER *wb = buffer_create(0, NULL);
 
     // argv[0] is the path
-    char b[strlen(argv[0]) * 2 + FILENAME_MAX];
-    cygwin_conv_path(CCP_POSIX_TO_WIN_A | CCP_ABSOLUTE, argv[0], b, sizeof(b));
+    char *argv0_win = NULL;
+    if(!nd_windows_path_to_win32_utf8z(argv[0], &argv0_win))
+        argv0_win = strdupz(argv[0]);
 
     for(size_t i = 0; argv[i] ;i++) {
-        const char *s = (i == 0) ? b : argv[i];
+        const char *s = (i == 0) ? argv0_win : argv[i];
         size_t len = strlen(s);
         buffer_need_bytes(wb, len * 2 + 1);
 
@@ -110,23 +111,8 @@ static BUFFER *argv_to_windows(const char **argv) {
             buffer_strcat(wb, "\"");
     }
 
+    freez(argv0_win);
     return wb;
-}
-
-int set_fd_blocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) {
-        nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN PARENT: fcntl(F_GETFL) failed");
-        return -1;
-    }
-
-    flags &= ~O_NONBLOCK;
-    if (fcntl(fd, F_SETFL, flags) == -1) {
-        nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN PARENT: fcntl(F_SETFL) failed");
-        return -1;
-    }
-
-    return 0;
 }
 
 //static void print_environment_block(char *env_block) {
@@ -159,21 +145,21 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd __maybe_un
     CLEAN_BUFFER *wb = argv_to_windows(argv);
     char *command = (char *)buffer_tostring(wb);
 
-    if (pipe(pipe_stdin) == -1) {
+    if (os_pipe(pipe_stdin) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR,
                "SPAWN PARENT: Cannot create stdin pipe() for request No %zu, command: %s",
                instance->request_id, command);
         goto cleanup;
     }
 
-    if (pipe(pipe_stdout) == -1) {
+    if (os_pipe(pipe_stdout) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR,
                "SPAWN PARENT: Cannot create stdout pipe() for request No %zu, command: %s",
                instance->request_id, command);
         goto cleanup;
     }
 
-    if (pipe(pipe_stderr) == -1) {
+    if (os_pipe(pipe_stderr) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR,
                "SPAWN PARENT: Cannot create stderr pipe() for request No %zu, command: %s",
                instance->request_id, command);
@@ -181,9 +167,9 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd __maybe_un
     }
 
     // Ensure pipes are in blocking mode
-    if (set_fd_blocking(pipe_stdin[PIPE_READ]) == -1 || set_fd_blocking(pipe_stdin[PIPE_WRITE]) == -1 ||
-        set_fd_blocking(pipe_stdout[PIPE_READ]) == -1 || set_fd_blocking(pipe_stdout[PIPE_WRITE]) == -1 ||
-        set_fd_blocking(pipe_stderr[PIPE_READ]) == -1 || set_fd_blocking(pipe_stderr[PIPE_WRITE]) == -1) {
+    if (os_set_fd_blocking(pipe_stdin[PIPE_READ]) == -1 || os_set_fd_blocking(pipe_stdin[PIPE_WRITE]) == -1 ||
+        os_set_fd_blocking(pipe_stdout[PIPE_READ]) == -1 || os_set_fd_blocking(pipe_stdout[PIPE_WRITE]) == -1 ||
+        os_set_fd_blocking(pipe_stderr[PIPE_READ]) == -1 || os_set_fd_blocking(pipe_stderr[PIPE_WRITE]) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR,
                "SPAWN PARENT: Failed to set blocking I/O on pipes for request No %zu, command: %s",
                instance->request_id, command);
@@ -261,13 +247,13 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd __maybe_un
     spinlock_unlock(&spinlock);
 
     // Close unused pipe ends
-    close(pipe_stdin[PIPE_READ]); pipe_stdin[PIPE_READ] = -1;
-    close(pipe_stdout[PIPE_WRITE]); pipe_stdout[PIPE_WRITE] = -1;
-    close(pipe_stderr[PIPE_WRITE]); pipe_stderr[PIPE_WRITE] = -1;
+    os_close(pipe_stdin[PIPE_READ]); pipe_stdin[PIPE_READ] = -1;
+    os_close(pipe_stdout[PIPE_WRITE]); pipe_stdout[PIPE_WRITE] = -1;
+    os_close(pipe_stderr[PIPE_WRITE]); pipe_stderr[PIPE_WRITE] = -1;
 
     // Store process information in instance
     instance->dwProcessId = pi.dwProcessId;
-    instance->child_pid = cygwin_winpid_to_pid((pid_t)pi.dwProcessId);
+    instance->child_pid = nd_windows_process_id_to_pid_t(pi.dwProcessId);
     instance->process_handle = pi.hProcess;
 
     // Convert handles to POSIX file descriptors
@@ -288,12 +274,12 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd __maybe_un
     return instance;
 
     cleanup:
-    if (pipe_stdin[PIPE_READ] >= 0) close(pipe_stdin[PIPE_READ]);
-    if (pipe_stdin[PIPE_WRITE] >= 0) close(pipe_stdin[PIPE_WRITE]);
-    if (pipe_stdout[PIPE_READ] >= 0) close(pipe_stdout[PIPE_READ]);
-    if (pipe_stdout[PIPE_WRITE] >= 0) close(pipe_stdout[PIPE_WRITE]);
-    if (pipe_stderr[PIPE_READ] >= 0) close(pipe_stderr[PIPE_READ]);
-    if (pipe_stderr[PIPE_WRITE] >= 0) close(pipe_stderr[PIPE_WRITE]);
+    if (pipe_stdin[PIPE_READ] >= 0) os_close(pipe_stdin[PIPE_READ]);
+    if (pipe_stdin[PIPE_WRITE] >= 0) os_close(pipe_stdin[PIPE_WRITE]);
+    if (pipe_stdout[PIPE_READ] >= 0) os_close(pipe_stdout[PIPE_READ]);
+    if (pipe_stdout[PIPE_WRITE] >= 0) os_close(pipe_stdout[PIPE_WRITE]);
+    if (pipe_stderr[PIPE_READ] >= 0) os_close(pipe_stderr[PIPE_READ]);
+    if (pipe_stderr[PIPE_WRITE] >= 0) os_close(pipe_stderr[PIPE_WRITE]);
     freez(instance);
     return NULL;
 }
@@ -396,14 +382,14 @@ int map_status_code_to_signal(DWORD status_code) {
 int spawn_server_exec_kill(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *si, int timeout_ms __maybe_unused) {
     // this gives some warnings at the spawn-tester, but it is generally better
     // to have them, to avoid abnormal shutdown of the plugins
-    if(si->read_fd != -1) { close(si->read_fd); si->read_fd = -1; }
-    if(si->write_fd != -1) { close(si->write_fd); si->write_fd = -1; }
+    if(si->read_fd != -1) { os_close(si->read_fd); si->read_fd = -1; }
+    if(si->write_fd != -1) { os_close(si->write_fd); si->write_fd = -1; }
 
     if(timeout_ms > 0)
         WaitForSingleObject(si->process_handle, timeout_ms);
 
     errno_clear();
-    if(si->child_pid != -1 && kill(si->child_pid, SIGTERM) != 0)
+    if(si->child_pid != -1 && os_kill_pid(si->child_pid, SIGTERM) != 0)
         nd_log(NDLS_COLLECTORS, NDLP_ERR,
                "SPAWN PARENT: child of request No %zu, pid %d (winpid %u), failed to be killed",
                si->request_id, (int)si->child_pid, si->dwProcessId);
@@ -419,7 +405,7 @@ int spawn_server_exec_kill(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *
 
     if(si->stderr_fd != -1) {
         if(!log_forwarder_del_and_close_fd(server->log_forwarder, si->stderr_fd))
-            close(si->stderr_fd);
+            os_close(si->stderr_fd);
 
         si->stderr_fd = -1;
     }
@@ -428,8 +414,8 @@ int spawn_server_exec_kill(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *
 }
 
 int spawn_server_exec_wait(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *si) {
-    if(si->read_fd != -1) { close(si->read_fd); si->read_fd = -1; }
-    if(si->write_fd != -1) { close(si->write_fd); si->write_fd = -1; }
+    if(si->read_fd != -1) { os_close(si->read_fd); si->read_fd = -1; }
+    if(si->write_fd != -1) { os_close(si->write_fd); si->write_fd = -1; }
 
     // wait for the process to end
     WaitForSingleObject(si->process_handle, INFINITE);
@@ -450,7 +436,7 @@ int spawn_server_exec_wait(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *
 
     if(si->stderr_fd != -1) {
         if(!log_forwarder_del_and_close_fd(server->log_forwarder, si->stderr_fd))
-            close(si->stderr_fd);
+            os_close(si->stderr_fd);
 
         si->stderr_fd = -1;
     }

@@ -4,6 +4,16 @@
 
 #if defined(SPAWN_SERVER_VERSION_POSIX_SPAWN)
 
+#if defined(OS_WINDOWS)
+#define ss_close os_close
+#define ss_pipe os_pipe
+#define ss_kill os_kill_pid
+#else
+#define ss_close close
+#define ss_pipe pipe
+#define ss_kill kill
+#endif
+
 #ifdef __APPLE__
 #include <crt_externs.h>
 #define environ (*_NSGetEnviron())
@@ -90,16 +100,16 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd, int custo
     int stdin_pipe[2] = { -1, -1 };
     int stdout_pipe[2] = { -1, -1 };
 
-    if (pipe(stdin_pipe) == -1) {
+    if (ss_pipe(stdin_pipe) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN PARENT: stdin pipe() failed: %s", cmdline);
         freez(si);
         return NULL;
     }
 
-    if (pipe(stdout_pipe) == -1) {
+    if (ss_pipe(stdout_pipe) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN PARENT: stdout pipe() failed: %s", cmdline);
-        close(stdin_pipe[PIPE_READ]);
-        close(stdin_pipe[PIPE_WRITE]);
+        ss_close(stdin_pipe[PIPE_READ]);
+        ss_close(stdin_pipe[PIPE_WRITE]);
         freez(si);
         return NULL;
     }
@@ -109,10 +119,10 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd, int custo
 
     if (posix_spawn_file_actions_init(&file_actions) != 0) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN PARENT: posix_spawn_file_actions_init() failed: %s", cmdline);
-        close(stdin_pipe[PIPE_READ]);
-        close(stdin_pipe[PIPE_WRITE]);
-        close(stdout_pipe[PIPE_READ]);
-        close(stdout_pipe[PIPE_WRITE]);
+        ss_close(stdin_pipe[PIPE_READ]);
+        ss_close(stdin_pipe[PIPE_WRITE]);
+        ss_close(stdout_pipe[PIPE_READ]);
+        ss_close(stdout_pipe[PIPE_WRITE]);
         freez(si);
         return NULL;
     }
@@ -131,10 +141,10 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd, int custo
     if (posix_spawnattr_init(&attr) != 0) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN PARENT: posix_spawnattr_init() failed: %s", cmdline);
         posix_spawn_file_actions_destroy(&file_actions);
-        close(stdin_pipe[PIPE_READ]);
-        close(stdin_pipe[PIPE_WRITE]);
-        close(stdout_pipe[PIPE_READ]);
-        close(stdout_pipe[PIPE_WRITE]);
+        ss_close(stdin_pipe[PIPE_READ]);
+        ss_close(stdin_pipe[PIPE_WRITE]);
+        ss_close(stdout_pipe[PIPE_READ]);
+        ss_close(stdout_pipe[PIPE_WRITE]);
         freez(si);
         return NULL;
     }
@@ -181,10 +191,10 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd, int custo
         posix_spawnattr_destroy(&attr);
         posix_spawn_file_actions_destroy(&file_actions);
 
-        close(stdin_pipe[PIPE_READ]);
-        close(stdin_pipe[PIPE_WRITE]);
-        close(stdout_pipe[PIPE_READ]);
-        close(stdout_pipe[PIPE_WRITE]);
+        ss_close(stdin_pipe[PIPE_READ]);
+        ss_close(stdin_pipe[PIPE_WRITE]);
+        ss_close(stdout_pipe[PIPE_READ]);
+        ss_close(stdout_pipe[PIPE_WRITE]);
         freez(si);
         return NULL;
     }
@@ -195,8 +205,8 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd, int custo
     posix_spawn_file_actions_destroy(&file_actions);
 
     // Close the read end of the stdin pipe and the write end of the stdout pipe in the parent process
-    close(stdin_pipe[PIPE_READ]);
-    close(stdout_pipe[PIPE_WRITE]);
+    ss_close(stdin_pipe[PIPE_READ]);
+    ss_close(stdout_pipe[PIPE_WRITE]);
 
     si->write_fd = stdin_pipe[PIPE_WRITE];
     si->read_fd = stdout_pipe[PIPE_READ];
@@ -211,7 +221,7 @@ SPAWN_INSTANCE* spawn_server_exec(SPAWN_SERVER *server, int stderr_fd, int custo
 int spawn_server_exec_kill(SPAWN_SERVER *server, SPAWN_INSTANCE *si, int timeout_ms __maybe_unused) {
     if (!si) return -1;
 
-    if (kill(si->child_pid, SIGTERM))
+    if (ss_kill(si->child_pid, SIGTERM))
         nd_log(NDLS_COLLECTORS, NDLP_ERR,
                "SPAWN PARENT: kill() of pid %d failed: %s",
                si->child_pid, si->cmdline);
@@ -274,8 +284,8 @@ int spawn_server_exec_wait(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *
     if (!si) return -1;
 
     // Close all pipe descriptors to force the child to exit
-    if (si->read_fd != -1) close(si->read_fd);
-    if (si->write_fd != -1) close(si->write_fd);
+    if (si->read_fd != -1) ss_close(si->read_fd);
+    if (si->write_fd != -1) ss_close(si->write_fd);
 
     // Wait for the process to exit
     int status = __atomic_load_n(&si->waitpid_status, __ATOMIC_RELAXED);

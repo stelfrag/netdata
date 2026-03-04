@@ -12,6 +12,7 @@ int wait_on_socket_or_cancel_with_timeout(NETDATA_SSL *ssl, int fd, int timeout_
 
 bool fd_is_socket(int fd);
 bool is_socket_closed(int fd);
+int sock_close_fd(int fd);
 
 // Returns -1 for errors, 0 if TCP_DEFER_ACCEPT is unset, 1 if TCP_DEFER_ACCEPT is set
 int sock_set_tcp_defer_accept(int fd, bool defer);

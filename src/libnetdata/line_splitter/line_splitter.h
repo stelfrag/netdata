@@ -14,6 +14,7 @@ struct line_splitter {
 };
 
 bool line_splitter_reconstruct_line(BUFFER *wb, void *ptr);
+void line_splitter_init_maps(void);
 
 static inline void line_splitter_reset(struct line_splitter *line) {
     line->num_words = 0;
@@ -32,6 +33,8 @@ extern bool isspace_map_group_by_label[256];
 extern bool isspace_dyncfg_id_map[256];
 
 static ALWAYS_INLINE size_t quoted_strings_splitter(char *str, char **words, size_t max_words, bool *isspace_map) {
+    line_splitter_init_maps();
+
     char *s = str, quote = 0;
     size_t i = 0;
 

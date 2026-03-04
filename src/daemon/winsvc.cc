@@ -9,7 +9,7 @@ void nd_process_signals(void);
 
 }
 
-__attribute__((format(printf, 1, 2)))
+PRINTFLIKE(1, 2)
 static void netdata_service_log(const char *fmt, ...)
 {
     char path[FILENAME_MAX + 1];
@@ -203,6 +203,7 @@ void WINAPI ServiceMain(DWORD argc, LPSTR* argv)
 }
 
 static bool update_path() {
+#ifdef OS_WINDOWS_MSYS2
     const char *old_path = getenv("PATH");
 
     if (!old_path) {
@@ -226,6 +227,10 @@ static bool update_path() {
 
     freez(new_path);
     return true;
+#else
+    // Native Windows builds should not inject MSYS2 runtime paths.
+    return true;
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -233,7 +238,7 @@ int main(int argc, char *argv[])
 #if defined(OS_WINDOWS) && defined(RUN_UNDER_CLION)
     bool tty = true;
 #else
-    bool tty = isatty(fileno(stdin)) == 1;
+    bool tty = os_stream_isatty(stdin) == 1;
 #endif
 
     if (!update_path()) {

@@ -2,15 +2,32 @@
 
 #include "../libnetdata.h"
 
+#if defined(OS_WINDOWS)
+#include <io.h>
+#endif
+
 static int fd_is_valid(int fd) {
+#if defined(OS_WINDOWS)
+    intptr_t h = _get_osfhandle(fd);
+    return h != (intptr_t)-1;
+#else
     errno_clear();
     return fcntl(fd, F_GETFD) != -1 || errno != EBADF;
+#endif
 }
 
 static void setcloexec(int fd) {
+#if defined(OS_WINDOWS)
+    intptr_t h = _get_osfhandle(fd);
+    if(h == (intptr_t)-1)
+        return;
+
+    (void)SetHandleInformation((HANDLE)h, HANDLE_FLAG_INHERIT, 0);
+#else
     int flags = fcntl(fd, F_GETFD);
     if (flags != -1)
         (void) fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+#endif
 }
 
 int os_get_fd_open_max(void) {
@@ -20,9 +37,13 @@ int os_get_fd_open_max(void) {
         return fd_open_max;
 
     if(fd_open_max == CLOSE_RANGE_FD_MAX || fd_open_max == -1) {
+#if defined(OS_WINDOWS)
+        fd_open_max = _getmaxstdio();
+#else
         struct rlimit rl;
         if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_max != RLIM_INFINITY)
             fd_open_max = rl.rlim_max;
+#endif
     }
 
 #ifdef _SC_OPEN_MAX
@@ -71,7 +92,11 @@ void os_close_range(int first, int last, int flags) {
             if(flags & CLOSE_RANGE_CLOEXEC)
                 setcloexec(fd);
             else
+#if defined(OS_WINDOWS)
+                (void)_close(fd);
+#else
                 (void)close(fd);
+#endif
         }
     }
 }

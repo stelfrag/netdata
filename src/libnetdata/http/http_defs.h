@@ -43,7 +43,7 @@
 #define HTTP_RESP_GATEWAY_TIMEOUT 504
 #define HTTP_RESP_BACKEND_RESPONSE_INVALID 591
 
-typedef enum __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     HTTP_REQUEST_MODE_NONE      = 0,
     HTTP_REQUEST_MODE_GET       = 1,
     HTTP_REQUEST_MODE_POST      = 2,

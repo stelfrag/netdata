@@ -3,6 +3,18 @@
 #include "../libnetdata.h"
 #include "log-forwarder.h"
 
+#if defined(OS_WINDOWS)
+#define lf_pipe os_pipe
+#define lf_read os_read
+#define lf_write os_write
+#define lf_close os_close
+#else
+#define lf_pipe pipe
+#define lf_read read
+#define lf_write write
+#define lf_close close
+#endif
+
 typedef struct LOG_FORWARDER_ENTRY {
     int fd;
     char *cmd;
@@ -26,6 +38,69 @@ typedef struct LOG_FORWARDER {
 
 static void log_forwarder_thread_func(void *arg);
 
+static int lf_wait_readable(struct pollfd *pfds, nfds_t nfds, int timeout_ms) {
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
+    if(!pfds || !nfds)
+        return -1;
+
+    for(nfds_t i = 0; i < nfds; i++)
+        pfds[i].revents = 0;
+
+    int elapsed_ms = 0;
+    const int slice_ms = 20;
+
+    while(elapsed_ms <= timeout_ms) {
+        int ready = 0;
+
+        for(nfds_t i = 0; i < nfds; i++) {
+            if(pfds[i].fd < 0)
+                continue;
+
+            HANDLE h = (HANDLE)_get_osfhandle(pfds[i].fd);
+            if(h == INVALID_HANDLE_VALUE) {
+                pfds[i].revents |= POLLNVAL;
+                ready++;
+                continue;
+            }
+
+            DWORD bytes_available = 0;
+            if(PeekNamedPipe(h, NULL, 0, NULL, &bytes_available, NULL)) {
+                if(bytes_available > 0) {
+                    pfds[i].revents |= POLLIN;
+                    ready++;
+                }
+            }
+            else {
+                DWORD err = GetLastError();
+                if(err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED || err == ERROR_NO_DATA)
+                    pfds[i].revents |= POLLHUP;
+                else
+                    pfds[i].revents |= POLLERR;
+
+                ready++;
+            }
+        }
+
+        if(ready > 0)
+            return ready;
+
+        if(timeout_ms == 0 || elapsed_ms >= timeout_ms)
+            return 0;
+
+        int sleep_ms = (timeout_ms - elapsed_ms < slice_ms) ? (timeout_ms - elapsed_ms) : slice_ms;
+        if(sleep_ms <= 0)
+            return 0;
+
+        sleep_usec((usec_t)sleep_ms * USEC_PER_MS);
+        elapsed_ms += sleep_ms;
+    }
+
+    return 0;
+#else
+    return poll(pfds, nfds, timeout_ms);
+#endif
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 // helper functions
 
@@ -44,13 +119,13 @@ static inline void log_forwarder_del_entry_unsafe(LOG_FORWARDER *lf, LOG_FORWARD
     DOUBLE_LINKED_LIST_REMOVE_ITEM_UNSAFE(lf->entries, entry, prev, next);
     buffer_free(entry->wb);
     freez(entry->cmd);
-    close(entry->fd);
+    lf_close(entry->fd);
     freez(entry);
 }
 
 static inline void log_forwarder_wake_up_worker(LOG_FORWARDER *lf) {
     char ch = 0;
-    ssize_t bytes_written = write(lf->pipe_fds[PIPE_WRITE], &ch, 1);
+    ssize_t bytes_written = lf_write(lf->pipe_fds[PIPE_WRITE], &ch, 1);
     if (bytes_written != 1)
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "Log forwarder: Failed to write to notification pipe");
 }
@@ -62,14 +137,17 @@ LOG_FORWARDER *log_forwarder_start(void) {
     LOG_FORWARDER *lf = callocz(1, sizeof(LOG_FORWARDER));
 
     spinlock_init(&lf->spinlock);
-    if (pipe(lf->pipe_fds) != 0) {
+    if (lf_pipe(lf->pipe_fds) != 0) {
         freez(lf);
         return NULL;
     }
 
+    // Native Windows backend uses PeekNamedPipe() in lf_wait_readable(), so no fcntl-based nonblocking setup is required.
+#if !(defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2))
     // make sure read() will not block on this pipe
     if(sock_setnonblock(lf->pipe_fds[PIPE_READ], true) != 1)
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "Log forwarder: Failed to set non-blocking mode");
+#endif
 
     lf->running = true;
     __atomic_store_n(&lf->initialized, false, __ATOMIC_RELEASE);
@@ -78,8 +156,8 @@ LOG_FORWARDER *log_forwarder_start(void) {
 
     if(!lf->thread) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "Log forwarder: nd_thread_create() failed!");
-        close(lf->pipe_fds[PIPE_READ]);
-        close(lf->pipe_fds[PIPE_WRITE]);
+        lf_close(lf->pipe_fds[PIPE_READ]);
+        lf_close(lf->pipe_fds[PIPE_WRITE]);
         freez(lf);
         return NULL;
     }
@@ -120,7 +198,7 @@ void log_forwarder_stop(LOG_FORWARDER *lf) {
 
     // Wake up the thread by writing to the pipe (don't close it yet - let the thread clean up)
     char ch = 0;
-    ssize_t written = write(lf->pipe_fds[PIPE_WRITE], &ch, 1);
+    ssize_t written = lf_write(lf->pipe_fds[PIPE_WRITE], &ch, 1);
     (void)written;
 
     // Wait for the thread to finish
@@ -133,7 +211,7 @@ void log_forwarder_stop(LOG_FORWARDER *lf) {
 
     // Always clean up - if join failed, the thread has still exited
     lf->thread = NULL;
-    close(lf->pipe_fds[PIPE_WRITE]);
+    lf_close(lf->pipe_fds[PIPE_WRITE]);
     freez(lf);
 }
 
@@ -290,7 +368,7 @@ static void log_forwarder_thread_func(void *arg) {
         spinlock_unlock(&lf->spinlock);
 
         int timeout = 200; // 200ms
-        int ret = poll(pfds, nfds, timeout);
+        int ret = lf_wait_readable(pfds, nfds, timeout);
 
         if (ret > 0) {
             // Check the notification pipe
@@ -314,7 +392,7 @@ static void log_forwarder_thread_func(void *arg) {
                 if (pfds[0].revents & POLLIN) {
                     // Read and discard the data
                     char buf[256];
-                    ssize_t bytes_read = read(lf->pipe_fds[PIPE_READ], buf, sizeof(buf));
+                    ssize_t bytes_read = lf_read(lf->pipe_fds[PIPE_READ], buf, sizeof(buf));
                     // Ignore the data; proceed regardless of the result
                     if (bytes_read == -1) {
                         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
@@ -336,7 +414,7 @@ static void log_forwarder_thread_func(void *arg) {
                 BUFFER *wb = entry->wb;
                 buffer_need_bytes(wb, 1024);
 
-                ssize_t bytes_read = read(entry->fd, &wb->buffer[wb->len], wb->size - wb->len - 1);
+                ssize_t bytes_read = lf_read(entry->fd, &wb->buffer[wb->len], wb->size - wb->len - 1);
                 if(bytes_read > 0)
                     wb->len += bytes_read;
                 else if(bytes_read == 0 || (bytes_read == -1 && errno != EINTR && errno != EAGAIN)) {
@@ -372,12 +450,12 @@ static void log_forwarder_thread_func(void *arg) {
 
         }
         else
-            nd_log(NDLS_COLLECTORS, NDLP_ERR, "Log forwarder: poll() error");
+            nd_log(NDLS_COLLECTORS, NDLP_ERR, "Log forwarder: wait/readable check error");
     }
 
     spinlock_lock(&lf->spinlock);
     mark_all_entries_for_deletion_unsafe(lf);
     log_forwarder_remove_deleted_unsafe(lf);
     spinlock_unlock(&lf->spinlock);
-    close(lf->pipe_fds[PIPE_READ]);
+    lf_close(lf->pipe_fds[PIPE_READ]);
 }

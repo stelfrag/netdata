@@ -5,7 +5,7 @@
 
 #include "../libnetdata.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     NETDATA_THREAD_OPTION_DEFAULT          = 0 << 0,
     NETDATA_THREAD_OPTION_DONT_LOG_STARTUP = 1 << 0,
     NETDATA_THREAD_OPTION_DONT_LOG_CLEANUP = 1 << 1,

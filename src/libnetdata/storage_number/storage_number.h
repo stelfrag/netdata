@@ -113,6 +113,7 @@ typedef enum {
 #define is_storage_number_anomalous(value)  (does_storage_number_exist(value) && !(((storage_number)(value)) & SN_FLAG_NOT_ANOMALOUS))
 
 storage_number pack_storage_number(NETDATA_DOUBLE value, SN_FLAGS flags) __attribute__((const));
+void storage_number_init_lut(void);
 static inline NETDATA_DOUBLE unpack_storage_number(storage_number value) __attribute__((const));
 
 //                                                          sign       div/mul      <--- multiplier / divider --->     10/100       RESET      EXISTS     VALUE
@@ -133,6 +134,7 @@ static inline NETDATA_DOUBLE unpack_storage_number(storage_number value) __attri
 ALWAYS_INLINE_HOT_FLATTEN
 static NETDATA_DOUBLE unpack_storage_number(storage_number value) {
     extern NETDATA_DOUBLE unpack_storage_number_lut10x[4 * 8];
+    storage_number_init_lut();
 
     if(unlikely(value == SN_EMPTY_SLOT))
         return NAN;

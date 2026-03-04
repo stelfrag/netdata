@@ -38,7 +38,7 @@ static inline int connect_to_unix(const char *path, struct timeval *timeout) {
                "Cannot connect to UNIX socket on path '%s'.",
                path);
 
-        close(fd);
+        sock_close_fd(fd);
         return -1;
     }
 
@@ -169,7 +169,7 @@ int connect_to_this_ip46(
                                    "Thread is cancelled while connecting to '%s', port '%s'.",
                                    hostBfr, servBfr);
 
-                            close(fd);
+                            sock_close_fd(fd);
                             fd = -ND_SOCK_ERR_THREAD_CANCELLED;
                             break;
 
@@ -178,7 +178,7 @@ int connect_to_this_ip46(
                                    "Timed out while connecting to '%s', port '%s'.",
                                    hostBfr, servBfr);
 
-                            close(fd);
+                            sock_close_fd(fd);
                             fd = -ND_SOCK_ERR_TIMEOUT;
 
                             if (fallback_ipv4 && ai->ai_family == PF_INET6)
@@ -191,7 +191,7 @@ int connect_to_this_ip46(
                                    "Failed to connect to '%s', port '%s'.",
                                    hostBfr, servBfr);
 
-                            close(fd);
+                            sock_close_fd(fd);
                             fd = -ND_SOCK_ERR_POLL_ERROR;
                             break;
                     }
@@ -201,7 +201,7 @@ int connect_to_this_ip46(
                            "Failed to connect to '%s', port '%s'",
                            hostBfr, servBfr);
 
-                    close(fd);
+                    sock_close_fd(fd);
                     fd = -ND_SOCK_ERR_CONNECTION_REFUSED;
                 }
             }

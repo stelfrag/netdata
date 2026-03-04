@@ -61,7 +61,7 @@ int journal_direct_fd(const char *path) {
 
     // Connect the socket (optional, but can simplify send operations)
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(fd);
+        sock_close_fd(fd);
         return -1;
     }
 

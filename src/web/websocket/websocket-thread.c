@@ -3,6 +3,16 @@
 #include "daemon/daemon-service.h"
 #include "websocket-internal.h"
 
+#if defined(OS_WINDOWS)
+#define ws_read os_read
+#define ws_write os_write
+#define ws_close os_close
+#else
+#define ws_read read
+#define ws_write write
+#define ws_close close
+#endif
+
 static void websocket_thread_client_socket_error(WEBSOCKET_THREAD *wth, WS_CLIENT *wsc, const char *reason) {
     internal_fatal(wth->tid != gettid_cached(), "Function %s() should only be used by the websocket thread", __FUNCTION__ );
 
@@ -122,7 +132,7 @@ bool websocket_thread_send_command(WEBSOCKET_THREAD *wth, uint8_t cmd, uint32_t 
     spinlock_lock(&wth->spinlock);
 
     // Write command header
-    ssize_t bytes = write(wth->cmd.pipe[PIPE_WRITE], &header, sizeof(header));
+    ssize_t bytes = ws_write(wth->cmd.pipe[PIPE_WRITE], &header, sizeof(header));
     if(bytes != sizeof(header)) {
         netdata_log_error("WEBSOCKET[%zu]: Failed to write command header to pipe", wth->id);
         spinlock_unlock(&wth->spinlock);
@@ -153,7 +163,7 @@ bool websocket_thread_send_broadcast(WEBSOCKET_THREAD *wth, WEBSOCKET_OPCODE opc
     spinlock_lock(&wth->spinlock);
 
     // Write command header
-    ssize_t bytes = write(wth->cmd.pipe[PIPE_WRITE], &header, sizeof(header.cmd));
+    ssize_t bytes = ws_write(wth->cmd.pipe[PIPE_WRITE], &header, sizeof(header.cmd));
     if(bytes != sizeof(header.cmd)) {
         netdata_log_error("WEBSOCKET[%zu]: Failed to write command header to pipe", wth->id);
         spinlock_unlock(&wth->spinlock);
@@ -161,7 +171,7 @@ bool websocket_thread_send_broadcast(WEBSOCKET_THREAD *wth, WEBSOCKET_OPCODE opc
     }
 
     // Write the opcode
-    bytes = write(wth->cmd.pipe[PIPE_WRITE], &opcode, sizeof(opcode));
+    bytes = ws_write(wth->cmd.pipe[PIPE_WRITE], &opcode, sizeof(opcode));
     if(bytes != sizeof(opcode)) {
         netdata_log_error("WEBSOCKET[%zu]: Failed to write broadcast opcode to pipe", wth->id);
         spinlock_unlock(&wth->spinlock);
@@ -169,7 +179,7 @@ bool websocket_thread_send_broadcast(WEBSOCKET_THREAD *wth, WEBSOCKET_OPCODE opc
     }
 
     // Write the message
-    bytes = write(wth->cmd.pipe[PIPE_WRITE], message, message_len);;
+    bytes = ws_write(wth->cmd.pipe[PIPE_WRITE], message, message_len);;
     if(bytes != message_len) {
         netdata_log_error("WEBSOCKET[%zu]: Failed to write broadcast message to pipe", wth->id);
         spinlock_unlock(&wth->spinlock);
@@ -187,7 +197,7 @@ static ssize_t read_pipe_block(int fd, void *buffer, size_t size) {
     ssize_t total_read = 0;
 
     while (total_read < (ssize_t) size) {
-        ssize_t bytes = read(fd, buf + total_read, size - total_read);
+        ssize_t bytes = ws_read(fd, buf + total_read, size - total_read);
 
         if (bytes < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -500,12 +510,9 @@ void websocket_thread(void *ptr) {
             bool skip_client = false;
 
             // Ensure socket is non-blocking
-            int flags = fcntl(wsc->sock.fd, F_GETFL, 0);
-            if(flags >= 0 && !(flags & O_NONBLOCK)) {
-                if(fcntl(wsc->sock.fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-                    websocket_debug(wsc, "Failed to set O_NONBLOCK during shutdown: %s", strerror(errno));
-                    skip_client = true;
-                }
+            if(sock_setnonblock(wsc->sock.fd, true) == -1) {
+                websocket_debug(wsc, "Failed to set O_NONBLOCK during shutdown: %s", strerror(errno));
+                skip_client = true;
             }
 
             if(!skip_client) {
@@ -559,12 +566,12 @@ void websocket_thread(void *ptr) {
 
     // Cleanup command pipe
     if(wth->cmd.pipe[PIPE_READ] != -1) {
-        close(wth->cmd.pipe[PIPE_READ]);
+        ws_close(wth->cmd.pipe[PIPE_READ]);
         wth->cmd.pipe[PIPE_READ] = -1;
     }
 
     if(wth->cmd.pipe[PIPE_WRITE] != -1) {
-        close(wth->cmd.pipe[PIPE_WRITE]);
+        ws_close(wth->cmd.pipe[PIPE_WRITE]);
         wth->cmd.pipe[PIPE_WRITE] = -1;
     }
 

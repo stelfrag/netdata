@@ -5,7 +5,7 @@
 
 #include <syslog.h>
 
-typedef enum  __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     NDLS_UNSET = 0,   // internal use only
     NDLS_ACCESS,      // access.log
     NDLS_ACLK,        // aclk.log
@@ -18,7 +18,7 @@ typedef enum  __attribute__((__packed__)) {
     _NDLS_MAX,
 } ND_LOG_SOURCES;
 
-typedef enum __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     NDLP_EMERG      = LOG_EMERG,    // from syslog.h
     NDLP_ALERT      = LOG_ALERT,    // from syslog.h
     NDLP_CRIT       = LOG_CRIT,     // from syslog.h
@@ -32,7 +32,7 @@ typedef enum __attribute__((__packed__)) {
     _NDLP_MAX,
 } ND_LOG_FIELD_PRIORITY;
 
-typedef enum __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     // KEEP THESE IN THE SAME ORDER AS in thread_log_fields (log.c)
     // so that it easy to audit for missing fields
 
@@ -128,7 +128,7 @@ typedef enum __attribute__((__packed__)) {
     _NDF_MAX,
 } ND_LOG_FIELD_ID;
 
-typedef enum __attribute__((__packed__)) {
+typedef enum ND_ATTR_PACKED {
     NDFT_UNSET = 0,
     NDFT_TXT,
     NDFT_STR,

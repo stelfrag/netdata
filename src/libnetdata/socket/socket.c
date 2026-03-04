@@ -57,6 +57,19 @@ bool fd_is_socket(int fd) {
     return true;
 }
 
+int sock_close_fd(int fd) {
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
+    int rc = closesocket((SOCKET)fd);
+    if(rc == SOCKET_ERROR) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+#else
+    return close(fd);
+#endif
+}
+
 #if defined(POLLRDHUP) && 0 // ktsaou: disabled because the recv() method is faster (1 syscall vs multiple by poll())
 bool is_socket_closed(int fd) {
     if(fd < 0)
@@ -75,7 +88,7 @@ bool is_socket_closed(int fd) {
             .revents = 0,
     };
 
-    if(poll(&pfd, 1, 0) == -1) {
+    if(os_poll_fds(&pfd, 1, 0) == -1) {
         //internal_error(true, "poll() failed");
         return false;
     }
@@ -225,6 +238,13 @@ int sock_setcork(int fd __maybe_unused, bool cork __maybe_unused) {
 
 // Returns -1 for errors, 0 if O_NONBLOCK is unset, 1 if O_NONBLOCK is set
 int sock_setnonblock(int fd, bool nonblock) {
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
+    u_long mode = nonblock ? 1UL : 0UL;
+    if(ioctlsocket((SOCKET)fd, FIONBIO, &mode) == 0)
+        return nonblock ? 1 : 0;
+
+    return -1;
+#else
     int rc = -1;
     int flags = fcntl(fd, F_GETFL);
 
@@ -246,6 +266,7 @@ int sock_setnonblock(int fd, bool nonblock) {
     }
 
     return rc;
+#endif
 }
 
 // Returns -1 for errors, 0 if SO_REUSEADDR is unset, 1 if SO_REUSEADDR is set
@@ -298,6 +319,24 @@ int sock_setreuse_port(int fd __maybe_unused, bool reuse __maybe_unused) {
 
 // Returns -1 for errors, 0 if FD_CLOEXEC is unset, 1 if FD_CLOEXEC is set
 int sock_setcloexec(int fd, bool cloexec) {
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
+    intptr_t os_handle = _get_osfhandle(fd);
+    if(os_handle == -1) {
+        errno = EBADF;
+        return -1;
+    }
+
+    HANDLE h = (HANDLE)os_handle;
+    DWORD desired = cloexec ? 0 : HANDLE_FLAG_INHERIT;
+    if(!SetHandleInformation(h, HANDLE_FLAG_INHERIT, desired))
+        return -1;
+
+    DWORD flags = 0;
+    if(!GetHandleInformation(h, &flags))
+        return -1;
+
+    return (flags & HANDLE_FLAG_INHERIT) ? 0 : 1;
+#else
     int rc = -1;
 
     // Get current file descriptor flags
@@ -320,6 +359,7 @@ int sock_setcloexec(int fd, bool cloexec) {
     }
 
     return rc;
+#endif
 }
 
 // Returns -1 for errors, 0 if TCP_DEFER_ACCEPT is unset, 1 if TCP_DEFER_ACCEPT is set
@@ -384,14 +424,13 @@ inline int wait_on_socket_or_cancel_with_timeout(
         errno_clear();
 
         // check every wait_ms
-        const int ret = poll(&pfd, 1, wait_ms);
+        const int ret = os_poll_fds(&pfd, 1, wait_ms);
 
         if(revents)
             *revents = pfd.revents;
 
         if(ret == -1) {
             // poll failed
-
             if(errno == EINTR || errno == EAGAIN)
                 continue;
 
@@ -452,31 +491,41 @@ ssize_t send_timeout(NETDATA_SSL *ssl, int sockfd, void *buf, size_t len, int fl
 #ifndef HAVE_ACCEPT4
 int accept4(int sock, struct sockaddr *addr, socklen_t *addrlen, int flags) {
     int fd = accept(sock, addr, addrlen);
-    int newflags = 0;
+    int valid_flags = 0;
 
     if (fd < 0) return fd;
 
 #ifdef SOCK_CLOEXEC
-#ifdef O_CLOEXEC
-    if (flags & SOCK_CLOEXEC) {
-        newflags |= O_CLOEXEC;
-        flags &= ~SOCK_CLOEXEC;
-    }
-#endif
+    valid_flags |= SOCK_CLOEXEC;
 #endif
 
-    if (flags) {
-        close(fd);
+#ifdef SOCK_NONBLOCK
+    valid_flags |= SOCK_NONBLOCK;
+#endif
+
+    if (flags & ~valid_flags) {
+        sock_close_fd(fd);
         errno = EINVAL;
         return -1;
     }
 
-    if (fcntl(fd, F_SETFL, newflags) < 0) {
+#ifdef SOCK_NONBLOCK
+    if ((flags & SOCK_NONBLOCK) && sock_setnonblock(fd, true) < 0) {
         int saved_errno = errno;
-        close(fd);
+        sock_close_fd(fd);
         errno = saved_errno;
         return -1;
     }
+#endif
+
+#ifdef SOCK_CLOEXEC
+    if ((flags & SOCK_CLOEXEC) && sock_setcloexec(fd, true) < 0) {
+        int saved_errno = errno;
+        sock_close_fd(fd);
+        errno = saved_errno;
+        return -1;
+    }
+#endif
 
     return fd;
 }
@@ -626,7 +675,7 @@ int accept_socket(int fd, int flags, char *client_ip, size_t ipsize, char *clien
                    "Permission denied for client '%s', port '%s'",
                    client_ip, client_port);
 
-            close(nfd);
+            sock_close_fd(nfd);
             nfd = -1;
             errno = EPERM;
         }

@@ -30,7 +30,7 @@ size_t utf16_to_utf8(char *dst, size_t dst_size, const wchar_t *src, int src_len
 // --------------------------------------------------------------------------------------------------------------------
 // TXT_UTF8
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     TXT_SOURCE_UNKNOWN = 0,
     TXT_SOURCE_PROVIDER,
     TXT_SOURCE_FIELD_CACHE,

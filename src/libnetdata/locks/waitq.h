@@ -22,7 +22,7 @@
  *
  */
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     WAITQ_PRIO_URGENT = 0,      // will be first
     WAITQ_PRIO_HIGH,            // will be second
     WAITQ_PRIO_NORMAL,          // will be third

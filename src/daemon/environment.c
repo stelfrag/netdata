@@ -108,11 +108,23 @@ void set_environment_for_plugins_and_scripts(void) {
         freez((char *)default_port);
 
     // set the path we need
-    char path[4096];
     const char *p = getenv("PATH");
+#if defined(OS_WINDOWS)
+    const char *windows_backend = nd_windows_backend_name();
+    nd_setenv("NETDATA_WINDOWS_BACKEND", windows_backend, 1);
+    nd_log(NDLS_DAEMON, NDLP_INFO, "WINDOWS COMPAT BACKEND: %s", windows_backend);
+
+    char *path = NULL;
+    if(!nd_windows_compose_agent_path(p, &path))
+        path = strdupz(p ? p : "");
+    setenv("PATH", inicfg_get(&netdata_config, CONFIG_SECTION_ENV_VARS, "PATH", path), 1);
+    freez(path);
+#else
+    char path[4096];
     if (!p) p = "/bin:/usr/bin";
     snprintfz(path, sizeof(path), "%s:%s", p, "/sbin:/usr/sbin:/usr/local/bin:/usr/local/sbin");
     setenv("PATH", inicfg_get(&netdata_config, CONFIG_SECTION_ENV_VARS, "PATH", path), 1);
+#endif
 
     // python options
     p = getenv("PYTHONPATH");

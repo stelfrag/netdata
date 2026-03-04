@@ -3,6 +3,16 @@
 #include "api_v2_calls.h"
 #include "claim/claim.h"
 
+#if defined(OS_WINDOWS)
+#define claim_open(path, mode) os_open_write_trunc_create((path), (mode))
+#define claim_write(fd, buf, count) os_write((fd), (buf), (count))
+#define claim_close(fd) os_close(fd)
+#else
+#define claim_open(path, mode) open((path), O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, (mode))
+#define claim_write(fd, buf, count) write((fd), (buf), (count))
+#define claim_close(fd) close(fd)
+#endif
+
 static char *netdata_random_session_id_filename = NULL;
 static nd_uuid_t netdata_random_session_id = { 0 };
 
@@ -20,20 +30,20 @@ bool netdata_random_session_id_generate(void) {
     (void)unlink(filename);
 
     // save it
-    int fd = open(filename, O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 640);
+    int fd = claim_open(filename, 640);
     if(fd == -1) {
         netdata_log_error("Cannot create random session id file '%s'.", filename);
         ret = false;
     }
     else {
-        if (write(fd, guid, UUID_STR_LEN - 1) != UUID_STR_LEN - 1) {
+        if (claim_write(fd, guid, UUID_STR_LEN - 1) != UUID_STR_LEN - 1) {
             netdata_log_error("Cannot write the random session id file '%s'.", filename);
             ret = false;
         } else {
-            ssize_t bytes = write(fd, "\n", 1);
+            ssize_t bytes = claim_write(fd, "\n", 1);
             UNUSED(bytes);
         }
-        close(fd);
+        claim_close(fd);
     }
 
     if(ret && (!netdata_random_session_id_filename || strcmp(netdata_random_session_id_filename, filename) != 0)) {
@@ -113,9 +123,11 @@ static void claim_add_user_info_command(BUFFER *wb) {
     const char *os_message;
 
 #if defined(OS_WINDOWS)
-    char win_path[MAX_PATH];
-    cygwin_conv_path(CCP_POSIX_TO_WIN_A, filename, win_path, sizeof(win_path));
-    os_filename = win_path;
+    char *win_path = NULL;
+    if(nd_windows_path_to_win32_utf8z(filename, &win_path))
+        os_filename = win_path;
+    else
+        os_filename = filename;
     os_prefix = "more";
     os_message = "We need to verify this Windows server is yours. So, open a Command Prompt on this server to run the command. It will give you a UUID. Copy and paste this UUID to this box:";
 #else
@@ -138,6 +150,10 @@ static void claim_add_user_info_command(BUFFER *wb) {
     buffer_json_member_add_string(wb, "key_filename", os_filename);
     buffer_json_member_add_string(wb, "cmd", buffer_tostring(os_cmd));
     buffer_json_member_add_string(wb, "help", os_message);
+
+#if defined(OS_WINDOWS)
+    freez(win_path);
+#endif
 }
 
 static int claim_json_response(BUFFER *wb, CLAIM_RESPONSE response, const char *msg) {

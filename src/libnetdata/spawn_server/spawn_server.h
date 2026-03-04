@@ -5,12 +5,12 @@
 
 #define SPAWN_SERVER_TRANSFER_FDS 4
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     SPAWN_INSTANCE_TYPE_EXEC = 0,
     SPAWN_INSTANCE_TYPE_CALLBACK = 1
 } SPAWN_INSTANCE_TYPE;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     SPAWN_SERVER_OPTION_EXEC = (1 << 0),
     SPAWN_SERVER_OPTION_CALLBACK = (1 << 1),
 } SPAWN_SERVER_OPTIONS;

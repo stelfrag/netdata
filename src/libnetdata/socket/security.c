@@ -468,7 +468,7 @@ static bool want_read_write_should_retry(NETDATA_SSL *ssl, int err) {
                                   ((ssl_errno == SSL_ERROR_WANT_WRITE) ? POLLOUT : 0)),
         }};
 
-        if(poll(pfds, 1, WANT_READ_WRITE_TIMEOUT_MS) <= 0)
+        if(os_poll_fds(pfds, 1, WANT_READ_WRITE_TIMEOUT_MS) <= 0)
             return false; // timeout (0) or error (<0)
 
         return true; // we have activity, so we should retry

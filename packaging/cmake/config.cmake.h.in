@@ -13,6 +13,9 @@
 #cmakedefine OS_LINUX
 #cmakedefine OS_MACOS
 #cmakedefine OS_WINDOWS
+#cmakedefine OS_WINDOWS_MSYS2
+#cmakedefine OS_WINDOWS_NATIVE
+#cmakedefine NETDATA_WINDOWS_FORCE_NATIVE_BACKEND
 #cmakedefine STATIC_BUILD
 
 // required compilation options

@@ -34,6 +34,14 @@ extern "C" {
 #define ENABLE_WEBRTC 1
 #endif
 
+#if defined(_MSC_VER) && !defined(__clang__)
+// MSVC does not support GNU __attribute__ syntax. Keep existing declarations portable by
+// treating raw GNU attributes as no-ops under MSVC.
+#ifndef __attribute__
+#define __attribute__(x)
+#endif
+#endif
+
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
 
@@ -100,6 +108,44 @@ extern "C" {
 #include <unistd.h>
 #include <uv.h>
 #include <assert.h>
+
+#if defined(OS_WINDOWS) && defined(_MSC_VER)
+#ifndef strcasecmp
+#define strcasecmp _stricmp
+#endif
+
+#ifndef strncasecmp
+#define strncasecmp _strnicmp
+#endif
+
+// MSVC does not provide strcasestr(); provide a local, ASCII case-insensitive fallback.
+static inline char *nd_strcasestr_msvc(const char *haystack, const char *needle) {
+    if(!haystack || !needle)
+        return NULL;
+
+    if(!*needle)
+        return (char *)haystack;
+
+    for(const char *h = haystack; *h; h++) {
+        const char *hp = h;
+        const char *np = needle;
+
+        while(*hp && *np && tolower((unsigned char)*hp) == tolower((unsigned char)*np)) {
+            hp++;
+            np++;
+        }
+
+        if(!*np)
+            return (char *)h;
+    }
+
+    return NULL;
+}
+
+#ifndef strcasestr
+#define strcasestr nd_strcasestr_msvc
+#endif
+#endif
 
 #ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
@@ -295,6 +341,12 @@ typedef uint32_t uid_t;
 
 #define _cleanup_(x) __attribute__((__cleanup__(x)))
 
+#if defined(__GNUC__) || defined(__clang__)
+#define ND_ATTR_PACKED __attribute__((packed))
+#else
+#define ND_ATTR_PACKED
+#endif
+
 #ifdef HAVE_FUNC_ATTRIBUTE_RETURNS_NONNULL
 #define NEVERNULL __attribute__((returns_nonnull))
 #else
@@ -366,6 +418,18 @@ typedef uint32_t uid_t;
 #define ABS(x) (((x) < 0)? (-(x)) : (x))
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
+#if defined(_MSC_VER)
+#define SWAP(a, b) do {                              \
+    unsigned char _nd_swap_tmp[sizeof(a)];          \
+    memcpy(_nd_swap_tmp, &(a), sizeof(a));          \
+    memcpy(&(a), &(b), sizeof(a));                  \
+    memcpy(&(b), _nd_swap_tmp, sizeof(a));          \
+} while(0)
+
+// MSVC fallback without GNU typeof; note arguments may be evaluated more than once.
+#define HOWMANY(total, divider) (((divider) ? ((total) + ((divider) - 1)) / (divider) : (total)))
+#define FIT_IN_RANGE(value, min, max) (((value) < (min)) ? (min) : (((value) > (max)) ? (max) : (value)))
+#else
 #define SWAP(a, b) do { \
     typeof(a) _tmp = b; \
     b = a;              \
@@ -387,6 +451,7 @@ typedef uint32_t uid_t;
     typeof(max) _max = (max);       \
     (_v < _min) ? _min : ((_v > _max) ? _max : _v); \
 })
+#endif
 
 // --------------------------------------------------------------------------------------------------------------------
 // NETDATA CLOUD
@@ -460,7 +525,6 @@ typedef uint32_t uid_t;
 #include <fcntl.h>
 #include <process.h>
 #include <tlhelp32.h>
-#include <sys/cygwin.h>
 #include <winevt.h>
 #include <evntprov.h>
 #include <wbemidl.h>

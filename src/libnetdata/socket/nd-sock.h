@@ -5,7 +5,9 @@
 
 #include "socket-peers.h"
 
-typedef enum __attribute__((packed)) {
+int sock_close_fd(int fd);
+
+typedef enum ND_ATTR_PACKED {
     ND_SOCK_ERR_NONE = 0,
     ND_SOCK_ERR_CONNECTION_REFUSED,
     ND_SOCK_ERR_CANNOT_RESOLVE_HOSTNAME,
@@ -68,7 +70,7 @@ static void nd_sock_close(ND_SOCK *s) {
     netdata_ssl_close(&s->ssl);
 
     if(s->fd != -1) {
-        close(s->fd);
+        sock_close_fd(s->fd);
         s->fd = -1;
     }
 

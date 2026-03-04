@@ -5,7 +5,7 @@
 
 #include "eval.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     EVAL_VALUE_INVALID = 0,
     EVAL_VALUE_NUMBER,
     EVAL_VALUE_VARIABLE,

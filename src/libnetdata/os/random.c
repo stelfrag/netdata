@@ -4,7 +4,9 @@
 
 #if !defined(HAVE_ARC4RANDOM_BUF) && !defined(HAVE_RAND_S)
 static SPINLOCK random_lock = SPINLOCK_INITIALIZER;
-static __attribute__((constructor)) void random_seed() {
+static void random_seed_once(void) {
+    FUNCTION_RUN_ONCE();
+
     // Use current time and process ID to create a high-entropy seed
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -16,6 +18,8 @@ static __attribute__((constructor)) void random_seed() {
 }
 
 static inline void random_bytes(void *buf, size_t bytes) {
+    random_seed_once();
+
     spinlock_lock(&random_lock);
     while (bytes > 0) {
         if (bytes >= sizeof(uint32_t)) {

@@ -7,6 +7,16 @@
 #include "../mcp/adapters/mcp-websocket.h"
 #include "web/api/mcp_auth.h"
 
+#if defined(OS_WINDOWS)
+#define ws_pipe os_pipe
+#define ws_close os_close
+#define ws_set_nonblocking(fd) (sock_setnonblock((fd), true) != -1)
+#else
+#define ws_pipe pipe
+#define ws_close close
+#define ws_set_nonblocking(fd) (fcntl((fd), F_SETFL, O_NONBLOCK) != -1)
+#endif
+
 // Global array of WebSocket threads
 WEBSOCKET_THREAD websocket_threads[WEBSOCKET_MAX_THREADS];
 
@@ -92,13 +102,13 @@ static bool websocket_thread_init_poll(WEBSOCKET_THREAD *wth) {
 
     // Create command pipe
     if(wth->cmd.pipe[PIPE_READ] == -1 || wth->cmd.pipe[PIPE_WRITE] == -1) {
-        if (pipe(wth->cmd.pipe) == -1) {
+        if (ws_pipe(wth->cmd.pipe) == -1) {
             netdata_log_error("WEBSOCKET[%zu]: Failed to create command pipe: %s", wth->id, strerror(errno));
             goto cleanup;
         }
 
         // Set pipe to non-blocking
-        if(fcntl(wth->cmd.pipe[PIPE_READ], F_SETFL, O_NONBLOCK) == -1) {
+        if(!ws_set_nonblocking(wth->cmd.pipe[PIPE_READ])) {
             netdata_log_error("WEBSOCKET[%zu]: Failed to set command pipe to non-blocking: %s", wth->id, strerror(errno));
             goto cleanup;
         }
@@ -115,11 +125,11 @@ static bool websocket_thread_init_poll(WEBSOCKET_THREAD *wth) {
 
 cleanup:
     if(wth->cmd.pipe[PIPE_READ] != -1) {
-        close(wth->cmd.pipe[PIPE_READ]);
+        ws_close(wth->cmd.pipe[PIPE_READ]);
         wth->cmd.pipe[PIPE_READ] = -1;
     }
     if(wth->cmd.pipe[PIPE_WRITE] != -1) {
-        close(wth->cmd.pipe[PIPE_WRITE]);
+        ws_close(wth->cmd.pipe[PIPE_WRITE]);
         wth->cmd.pipe[PIPE_WRITE] = -1;
     }
     if(wth->ndpl) {
@@ -468,7 +478,7 @@ short int websocket_handle_handshake(struct web_client *w) {
     // Message structures are already initialized in websocket_client_create()
 
     // Set socket to non-blocking mode
-    if (fcntl(wsc->sock.fd, F_SETFL, O_NONBLOCK) == -1) {
+    if (sock_setnonblock(wsc->sock.fd, true) == -1) {
         websocket_error(wsc, "Failed to set WebSocket socket to non-blocking mode");
         websocket_client_free(wsc);
         return HTTP_RESP_WEBSOCKET_HANDSHAKE;

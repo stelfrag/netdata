@@ -6,7 +6,7 @@
 #include "common.h"
 #include "buildinfo.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     BIB_PACKAGING_NETDATA_VERSION,
     BIB_PACKAGING_INSTALL_TYPE,
     BIB_PACKAGING_ARCHITECTURE,
@@ -128,7 +128,7 @@ typedef enum __attribute__((packed)) {
     BIB_TERMINATOR,
 } BUILD_INFO_SLOT;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     BIC_PACKAGING,
     BIC_DIRECTORIES,
     BIC_OPERATING_SYSTEM,
@@ -144,7 +144,7 @@ typedef enum __attribute__((packed)) {
     BIC_RUNTIME,
 } BUILD_INFO_CATEGORY;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     BIT_BOOLEAN,
     BIT_STRING,
 } BUILD_INFO_TYPE;
@@ -1153,7 +1153,7 @@ static void build_info_set_status(BUILD_INFO_SLOT slot, bool status) {
     BUILD_INFO[slot].status = status;
 }
 
-__attribute__((constructor)) void initialize_build_info(void) {
+static void initialize_build_info(void) {
     build_info_set_value(BIB_PACKAGING_NETDATA_VERSION, NETDATA_VERSION);
     build_info_set_value(BIB_PACKAGING_CONFIGURE_OPTIONS, CONFIGURE_COMMAND);
 
@@ -1373,6 +1373,23 @@ __attribute__((constructor)) void initialize_build_info(void) {
 #endif
 }
 
+static volatile bool build_info_initialized = false;
+
+static inline void ensure_build_info_initialized(void) {
+    if(__atomic_load_n(&build_info_initialized, __ATOMIC_ACQUIRE))
+        return;
+
+    initialize_build_info();
+    __atomic_store_n(&build_info_initialized, true, __ATOMIC_RELEASE);
+}
+
+#if !defined(_MSC_VER)
+__attribute__((constructor))
+static void initialize_build_info_constructor(void) {
+    ensure_build_info_initialized();
+}
+#endif
+
 // ----------------------------------------------------------------------------
 // system info
 
@@ -1491,6 +1508,7 @@ static struct {
 
 static void populate_packaging_info() {
     FUNCTION_RUN_ONCE();
+    ensure_build_info_initialized();
 
     get_install_type_internal(&BUILD_PACKAGING_INFO.install_type, &BUILD_PACKAGING_INFO.prebuilt_arch, &BUILD_PACKAGING_INFO.prebuilt_distro);
 

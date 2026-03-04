@@ -1,7 +1,7 @@
 #ifndef NETDATA_SECURITY_H
 #define NETDATA_SECURITY_H
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     NETDATA_SSL_STATE_NOT_SSL = 1,  // This connection is not SSL
     NETDATA_SSL_STATE_INIT,         // SSL handshake is initialized
     NETDATA_SSL_STATE_FAILED,       // SSL handshake failed

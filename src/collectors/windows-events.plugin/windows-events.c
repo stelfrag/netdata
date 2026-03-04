@@ -7,11 +7,11 @@
 
 netdata_mutex_t stdout_mutex;
 
-static void __attribute__((constructor)) init_mutex(void) {
+static void init_mutex(void) {
     netdata_mutex_init(&stdout_mutex);
 }
 
-static void __attribute__((destructor)) destroy_mutex(void) {
+static void destroy_mutex(void) {
     netdata_mutex_destroy(&stdout_mutex);
 }
 
@@ -1302,6 +1302,8 @@ int main(int argc __maybe_unused, char **argv __maybe_unused) {
     nd_thread_tag_set("wevt.plugin");
     nd_log_initialize_for_external_plugins("windows-events.plugin");
     netdata_threads_init_for_external_plugins(0);
+    init_mutex();
+    atexit(destroy_mutex);
 
     // ------------------------------------------------------------------------
     // initialization
@@ -1381,7 +1383,7 @@ int main(int argc __maybe_unused, char **argv __maybe_unused) {
     usec_t send_newline_ut = 0;
     usec_t since_last_scan_ut = WINDOWS_EVENTS_SCAN_EVERY_USEC * 2; // something big to trigger scanning at start
     usec_t since_last_providers_release_ut = 0;
-    const bool tty = isatty(fileno(stdout)) == 1;
+    const bool tty = os_stream_isatty(stdout) == 1;
 
     heartbeat_t hb;
     heartbeat_init(&hb, USEC_PER_SEC);

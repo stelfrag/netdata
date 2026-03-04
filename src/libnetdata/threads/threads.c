@@ -9,7 +9,7 @@
 
 typedef void (*nd_thread_canceller)(void *data);
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     ND_THREAD_LIST_NONE = 0,
     ND_THREAD_LIST_RUNNING,
     ND_THREAD_LIST_EXITED,

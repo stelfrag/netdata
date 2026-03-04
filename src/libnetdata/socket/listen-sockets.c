@@ -90,7 +90,7 @@ static int create_listen_socket_unix(const char *path, int listen_backlog) {
                path);
 
     if(bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
-        close(sock);
+        sock_close_fd(sock);
         nd_log(NDLS_DAEMON, NDLP_ERR,
                "LISTENER: UNIX bind() on path '%s' failed.",
                path);
@@ -106,7 +106,7 @@ static int create_listen_socket_unix(const char *path, int listen_backlog) {
                path);
 
     if(listen(sock, listen_backlog) < 0) {
-        close(sock);
+        sock_close_fd(sock);
         nd_log(NDLS_DAEMON, NDLP_ERR,
                "LISTENER: UNIX listen() on path '%s' failed.",
                path);
@@ -158,12 +158,12 @@ static int create_listen_socket4(int socktype, const char *ip, uint16_t port, in
                "LISTENER: Failed to convert IP '%s' to a valid IPv4 address.",
                ip);
 
-        close(sock);
+        sock_close_fd(sock);
         return -1;
     }
 
     if(bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
-        close(sock);
+        sock_close_fd(sock);
         nd_log(NDLS_DAEMON, NDLP_ERR,
                "LISTENER: IPv4 bind() on ip '%s' port %d, socktype %d failed.",
                ip, port, socktype);
@@ -172,7 +172,7 @@ static int create_listen_socket4(int socktype, const char *ip, uint16_t port, in
     }
 
     if(socktype == SOCK_STREAM && listen(sock, listen_backlog) < 0) {
-        close(sock);
+        sock_close_fd(sock);
         nd_log(NDLS_DAEMON, NDLP_ERR,
                "LISTENER: IPv4 listen() on ip '%s' port %d, socktype %d failed.",
                ip, port, socktype);
@@ -240,14 +240,14 @@ static int create_listen_socket6(int socktype, uint32_t scope_id, const char *ip
                "LISTENER: Failed to convert IP '%s' to a valid IPv6 address.",
                ip);
 
-        close(sock);
+        sock_close_fd(sock);
         return -1;
     }
 
     name.sin6_scope_id = scope_id;
 
     if (bind (sock, (struct sockaddr *) &name, sizeof (name)) < 0) {
-        close(sock);
+        sock_close_fd(sock);
         nd_log(NDLS_DAEMON, NDLP_ERR,
                "LISTENER: IPv6 bind() on ip '%s' port %d, socktype %d failed.",
                ip, port, socktype);
@@ -256,7 +256,7 @@ static int create_listen_socket6(int socktype, uint32_t scope_id, const char *ip
     }
 
     if (socktype == SOCK_STREAM && listen(sock, listen_backlog) < 0) {
-        close(sock);
+        sock_close_fd(sock);
         nd_log(NDLS_DAEMON, NDLP_ERR,
                "LISTENER: IPv6 listen() on ip '%s' port %d, socktype %d failed.",
                ip, port, socktype);
@@ -281,7 +281,7 @@ static inline int listen_sockets_add(LISTEN_SOCKETS *sockets, int fd, int family
                "LISTENER: Too many listening sockets. Failed to add listening %s socket at ip '%s' port %d, protocol %s, socktype %d",
                protocol, ip, port, protocol, socktype);
 
-        close(fd);
+        sock_close_fd(fd);
         return -1;
     }
 
@@ -318,7 +318,7 @@ static inline void listen_sockets_init(LISTEN_SOCKETS *sockets) {
 void listen_sockets_close(LISTEN_SOCKETS *sockets) {
     size_t i;
     for(i = 0; i < sockets->opened ;i++) {
-        close(sockets->fds[i]);
+        sock_close_fd(sockets->fds[i]);
         sockets->fds[i] = -1;
 
         freez(sockets->fds_names[i]);

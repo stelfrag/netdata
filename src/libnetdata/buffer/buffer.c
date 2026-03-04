@@ -383,7 +383,9 @@ const char base64_digits[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv
 unsigned char hex_value_from_ascii[256];
 unsigned char base64_value_from_ascii[256];
 
-__attribute__((constructor)) void initialize_ascii_maps(void) {
+void buffer_initialize_ascii_maps(void) {
+    FUNCTION_RUN_ONCE();
+
     for(size_t i = 0 ; i < 256 ; i++) {
         hex_value_from_ascii[i] = 255;
         base64_value_from_ascii[i] = 255;

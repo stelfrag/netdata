@@ -76,7 +76,7 @@
 #define EVENT_ID_PRIORITY_MASK      0x000F     // Bits 0-3
 #define EVENT_ID_SOURCE_MASK        0x00F0     // Bits 4-7
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     MSGID_MESSAGE_ONLY = 1,
     MSGID_MESSAGE_ERRNO,
     MSGID_REQUEST_ONLY,

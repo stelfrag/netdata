@@ -411,7 +411,7 @@ int nd_poll_wait(nd_poll_t *ndpl, int timeout_ms, nd_poll_result_t *result) {
         errno_clear();
         ndpl->last_pos = 0;
         rotate_fds(ndpl); // Rotate the array on every wait
-        int ret = poll(ndpl->fds, ndpl->nfds, timeout_ms);
+        int ret = os_poll_fds(ndpl->fds, ndpl->nfds, timeout_ms);
 
         if(unlikely(ret <= 0)) {
             if(ret == 0) {

@@ -368,7 +368,7 @@
                     return false;                                                                               \
                 }                                                                                               \
                 const char *_option_str = json_object_get_string(_joption);                                     \
-                typeof(dst) _bit = converter(_option_str);                                                      \
+                uint64_t _bit = (uint64_t)converter(_option_str);                                               \
                 if (_bit == 0) {                                                                                \
                     buffer_sprintf(error, "unknown option '%s' in '%s.%s' at index %zu", _option_str, path, member, _i); \
                     /* return false; */                                                                         \
@@ -413,7 +413,7 @@
             dst = json_object_get_int64(_j);                                                                    \
         }                                                                                                       \
         else if (json_object_is_type(_j, json_type_double)) {                                                   \
-            dst = (typeof(dst))json_object_get_double(_j);                                                      \
+            dst = json_object_get_double(_j);                                                                   \
         }                                                                                                       \
         else if (json_object_is_type(_j, json_type_boolean)) {                                                  \
             dst = json_object_get_boolean(_j) ? 1 : 0;                                                          \
@@ -427,7 +427,7 @@
                 buffer_sprintf(error, "cannot convert string '%s' to int64 for '%s.%s'", _str, path, member);   \
                 return false;                                                                                   \
             }                                                                                                   \
-            dst = (typeof(dst))_val;                                                                            \
+            dst = _val;                                                                                         \
         }                                                                                                       \
         else if ((flags) & (JSONC_REQUIRED | JSONC_STRICT)) {                                                   \
             buffer_sprintf(error, "cannot convert to int64 for '%s.%s'", path, member);                         \
@@ -449,7 +449,7 @@
             dst = json_object_get_uint64(_j);                                                                   \
         }                                                                                                       \
         else if (json_object_is_type(_j, json_type_double)) {                                                   \
-            dst = (typeof(dst))json_object_get_double(_j);                                                      \
+            dst = json_object_get_double(_j);                                                                   \
         }                                                                                                       \
         else if (json_object_is_type(_j, json_type_boolean)) {                                                  \
             dst = json_object_get_boolean(_j) ? 1 : 0;                                                          \
@@ -467,7 +467,7 @@
                 buffer_sprintf(error, "cannot convert string '%s' to uint64 for '%s.%s'", _str, path, member);  \
                 return false;                                                                                   \
             }                                                                                                   \
-            dst = (typeof(dst))_val;                                                                            \
+            dst = _val;                                                                                         \
         }                                                                                                       \
         else if ((flags) & (JSONC_REQUIRED | JSONC_STRICT)) {                                                   \
             buffer_sprintf(error, "cannot convert to uint64 for '%s.%s'", path, member);                        \
@@ -489,7 +489,7 @@
             dst = json_object_get_double(_j);                                                                   \
         }                                                                                                       \
         else if (json_object_is_type(_j, json_type_int)) {                                                      \
-            dst = (typeof(dst))json_object_get_int64(_j);                                                       \
+            dst = json_object_get_int64(_j);                                                                    \
         }                                                                                                       \
         else if (json_object_is_type(_j, json_type_boolean)) {                                                  \
             dst = json_object_get_boolean(_j) ? 1.0 : 0.0;                                                      \
@@ -503,7 +503,7 @@
                 buffer_sprintf(error, "cannot convert string '%s' to double for '%s.%s'", _str, path, member);  \
                 return false;                                                                                   \
             }                                                                                                   \
-            dst = (typeof(dst))_val;                                                                            \
+            dst = _val;                                                                                         \
         }                                                                                                       \
         else if ((flags) & (JSONC_REQUIRED | JSONC_STRICT)) {                                                   \
             buffer_sprintf(error, "cannot convert to double for '%s.%s'", path, member);                        \

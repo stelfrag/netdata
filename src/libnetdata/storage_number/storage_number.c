@@ -156,7 +156,9 @@ storage_number pack_storage_number(NETDATA_DOUBLE value, SN_FLAGS flags) {
 // Lookup table to make storage number unpacking efficient.
 NETDATA_DOUBLE unpack_storage_number_lut10x[4 * 8];
 
-__attribute__((constructor)) void initialize_lut(void) {
+void storage_number_init_lut(void) {
+    FUNCTION_RUN_ONCE();
+
     // The lookup table is partitioned in 4 subtables based on the
     // values of the factor and exp bits.
     for (int i = 0; i < 8; i++) {

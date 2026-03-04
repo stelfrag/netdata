@@ -77,8 +77,11 @@ static usec_t get_clock_resolution(clockid_t clock) {
 }
 
 // perform any initializations required for clocks
+static void clocks_fin(void);
 
-static __attribute__((constructor)) void clocks_init(void) {
+static void clocks_init(void) {
+    FUNCTION_RUN_ONCE();
+
     os_get_system_HZ();
 
     // monotonic raw has to be tested before boottime
@@ -94,16 +97,19 @@ static __attribute__((constructor)) void clocks_init(void) {
     timeBeginPeriod(1);
     clock_monotonic_resolution = 1 * USEC_PER_MS;
     clock_realtime_resolution = 1 * USEC_PER_MS;
+    atexit(clocks_fin);
 #endif
 }
 
-static __attribute__((destructor)) void clocks_fin(void) {
+static void clocks_fin(void) {
 #if defined(OS_WINDOWS)
     timeEndPeriod(1);
 #endif
 }
 
 ALWAYS_INLINE time_t now_sec(clockid_t clk_id) {
+    clocks_init();
+
     struct timespec ts;
     if(unlikely(clock_gettime(clk_id, &ts) == -1)) {
         netdata_log_error("clock_gettime(%ld, &timespec) failed.", (long int)clk_id);
@@ -113,6 +119,8 @@ ALWAYS_INLINE time_t now_sec(clockid_t clk_id) {
 }
 
 ALWAYS_INLINE usec_t now_usec(clockid_t clk_id) {
+    clocks_init();
+
     struct timespec ts;
     if(unlikely(clock_gettime(clk_id, &ts) == -1)) {
         netdata_log_error("clock_gettime(%ld, &timespec) failed.", (long int)clk_id);
@@ -122,6 +130,8 @@ ALWAYS_INLINE usec_t now_usec(clockid_t clk_id) {
 }
 
 ALWAYS_INLINE int now_timeval(clockid_t clk_id, struct timeval *tv) {
+    clocks_init();
+
     struct timespec ts;
 
     if(unlikely(clock_gettime(clk_id, &ts) == -1)) {

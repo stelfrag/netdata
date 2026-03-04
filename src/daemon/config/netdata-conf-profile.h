@@ -5,7 +5,7 @@
 
 #include "libnetdata/libnetdata.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     ND_PROFILE_NONE = (0),
 
     // system profiles
@@ -18,7 +18,7 @@ typedef enum __attribute__((packed)) {
 
 } ND_PROFILE;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     ND_COMPRESSION_DEFAULT = 0,
     ND_COMPRESSION_FASTEST,
 } ND_COMPRESSION_PROFILE;

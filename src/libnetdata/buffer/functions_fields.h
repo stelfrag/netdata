@@ -7,7 +7,7 @@
 #include "buffer.h"
 #include "../template-enum.h"
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     RRDF_FIELD_OPTS_NONE         = 0,
     RRDF_FIELD_OPTS_UNIQUE_KEY   = (1 << 0), // the field is the unique key of the row
     RRDF_FIELD_OPTS_VISIBLE      = (1 << 1), // the field should be visible by default
@@ -18,7 +18,7 @@ typedef enum __attribute__((packed)) {
     RRDF_FIELD_OPTS_EXPANDED_FILTER = (1 << 6), // show the filter expanded
 } RRDF_FIELD_OPTIONS;
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     RRDF_FIELD_TYPE_NONE,
     RRDF_FIELD_TYPE_INTEGER,
     RRDF_FIELD_TYPE_BOOLEAN,
@@ -37,7 +37,7 @@ ENUM_STR_DEFINE_FUNCTIONS_EXTERN(RRDF_FIELD_TYPE)
 // for easier LLM comprehension
 const char *field_type_to_json_scalar_type(RRDF_FIELD_TYPE type);
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     RRDF_FIELD_VISUAL_VALUE,        // show the value, possibly applying a transformation
     RRDF_FIELD_VISUAL_BAR,          // show the value and a bar, respecting the max field to fill the bar at 100%
     RRDF_FIELD_VISUAL_PILL,         //
@@ -47,7 +47,7 @@ typedef enum __attribute__((packed)) {
 
 ENUM_STR_DEFINE_FUNCTIONS_EXTERN(RRDF_FIELD_VISUAL)
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     RRDF_FIELD_TRANSFORM_NONE,      // show the value as-is
     RRDF_FIELD_TRANSFORM_NUMBER,    // show the value respecting the decimal_points
     RRDF_FIELD_TRANSFORM_DURATION_S,  // transform as duration in second to a human-readable duration
@@ -58,7 +58,7 @@ typedef enum __attribute__((packed)) {
 
 ENUM_STR_DEFINE_FUNCTIONS_EXTERN(RRDF_FIELD_TRANSFORM)
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     RRDF_FIELD_SORT_ASCENDING  = (1 << 0),
     RRDF_FIELD_SORT_DESCENDING = (1 << 1),
 
@@ -67,7 +67,7 @@ typedef enum __attribute__((packed)) {
 
 ENUM_STR_DEFINE_FUNCTIONS_EXTERN(RRDF_FIELD_SORT)
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     RRDF_FIELD_SUMMARY_UNIQUECOUNT,     // Finds the number of unique values of a group of rows
     RRDF_FIELD_SUMMARY_SUM,             // Sums the values of a group of rows
     RRDF_FIELD_SUMMARY_MIN,             // Finds the minimum value of a group of rows
@@ -81,7 +81,7 @@ typedef enum __attribute__((packed)) {
 
 ENUM_STR_DEFINE_FUNCTIONS_EXTERN(RRDF_FIELD_SUMMARY)
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     RRDF_FIELD_FILTER_NONE = 0,
     RRDF_FIELD_FILTER_RANGE,
     RRDF_FIELD_FILTER_MULTISELECT,

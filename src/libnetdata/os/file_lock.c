@@ -31,16 +31,9 @@ FILE_LOCK file_lock_get(const char *filename) {
     return (FILE_LOCK){ .fd = fd };
 
 #elif defined(OS_WINDOWS)
-    // Convert MSYS2/Cygwin path directly to Windows wide-char path
-    ssize_t wpath_size = cygwin_conv_path(CCP_POSIX_TO_WIN_W, filename, NULL, 0);
-    if(wpath_size < 0)
+    wchar_t *wpath = NULL;
+    if(!nd_windows_path_to_win32_utf16z(filename, &wpath))
         return FILE_LOCK_INVALID;
-
-    wchar_t *wpath = mallocz(wpath_size);
-    if(cygwin_conv_path(CCP_POSIX_TO_WIN_W, filename, wpath, wpath_size) != 0) {
-        freez(wpath);
-        return FILE_LOCK_INVALID;
-    }
 
     // Open existing file or create new one
     HANDLE hFile = CreateFileW(

@@ -311,7 +311,7 @@ static void rrd_functions_worker_globals_reader_main(void *arg) {
         if(unlikely(!buffered_reader_next_line(&wg->reader, wg->buffer))) {
             buffered_reader_ret_t ret = buffered_reader_read_timeout(
                 &wg->reader,
-                fileno((FILE *)stdin),
+                os_fileno((FILE *)stdin),
                 2 * 60 * MSEC_PER_SEC,
                 false
             );

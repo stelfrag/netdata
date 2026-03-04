@@ -11,7 +11,7 @@
 #define DYNCFG_RESP_ACCEPTED_DISABLED         298 // accepted, but is disabled
 #define DYNCFG_RESP_ACCEPTED_RESTART_REQUIRED 299 // accepted, but restart is required to apply it
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     DYNCFG_TYPE_SINGLE = 0,
     DYNCFG_TYPE_TEMPLATE,
     DYNCFG_TYPE_JOB,
@@ -19,7 +19,7 @@ typedef enum __attribute__((packed)) {
 DYNCFG_TYPE dyncfg_type2id(const char *type);
 const char *dyncfg_id2type(DYNCFG_TYPE type);
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     DYNCFG_SOURCE_TYPE_INTERNAL = 0,
     DYNCFG_SOURCE_TYPE_STOCK,
     DYNCFG_SOURCE_TYPE_USER,
@@ -29,7 +29,7 @@ typedef enum __attribute__((packed)) {
 DYNCFG_SOURCE_TYPE dyncfg_source_type2id(const char *source_type);
 const char *dyncfg_id2source_type(DYNCFG_SOURCE_TYPE source_type);
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     DYNCFG_STATUS_NONE = 0,
     DYNCFG_STATUS_ACCEPTED,     // the plugin has accepted the configuration
     DYNCFG_STATUS_RUNNING,      // the plugin runs the accepted configuration
@@ -41,7 +41,7 @@ typedef enum __attribute__((packed)) {
 DYNCFG_STATUS dyncfg_status2id(const char *status);
 const char *dyncfg_id2status(DYNCFG_STATUS status);
 
-typedef enum __attribute__((packed)) {
+typedef enum ND_ATTR_PACKED {
     DYNCFG_CMD_NONE         = 0,
     DYNCFG_CMD_GET          = (1 << 0),
     DYNCFG_CMD_SCHEMA       = (1 << 1),

@@ -314,11 +314,16 @@ static bool dictionary_free_all_resources(DICTIONARY *dict, size_t *mem, bool fo
 netdata_mutex_t dictionaries_waiting_to_be_destroyed_mutex;
 static DICTIONARY *dictionaries_waiting_to_be_destroyed = NULL;
 
-static void __attribute__((constructor)) init_mutex(void) {
+static void destroy_mutex(void);
+
+static void init_mutex(void) {
+    FUNCTION_RUN_ONCE();
+
     netdata_mutex_init(&dictionaries_waiting_to_be_destroyed_mutex);
+    atexit(destroy_mutex);
 }
 
-static void __attribute__((destructor)) destroy_mutex(void) {
+static void destroy_mutex(void) {
     netdata_mutex_destroy(&dictionaries_waiting_to_be_destroyed_mutex);
 }
 
@@ -327,6 +332,8 @@ DEFINE_JUDYL_TYPED(STACKTRACE, size_t);
 #endif
 
 static void dictionary_queue_for_destruction(DICTIONARY *dict) {
+    init_mutex();
+
     if(is_dictionary_destroyed(dict))
         return;
 
@@ -342,6 +349,8 @@ static void dictionary_queue_for_destruction(DICTIONARY *dict) {
 }
 
 size_t dictionary_destroy_delayed_count(void) {
+    init_mutex();
+
     netdata_mutex_lock(&dictionaries_waiting_to_be_destroyed_mutex);
 
     size_t count = 0;
@@ -356,6 +365,8 @@ size_t dictionary_destroy_delayed_count(void) {
 
 size_t cleanup_destroyed_dictionaries(bool shutdown __maybe_unused)
 {
+    init_mutex();
+
     if (netdata_mutex_trylock(&dictionaries_waiting_to_be_destroyed_mutex) != 0)
         return 0;
 

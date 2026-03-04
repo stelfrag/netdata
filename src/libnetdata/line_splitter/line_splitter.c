@@ -88,7 +88,9 @@ bool isspace_map_config[256] = {};
 bool isspace_map_group_by_label[256] = {};
 bool isspace_dyncfg_id_map[256] = {};
 
-__attribute__((constructor)) void initialize_is_space_arrays(void) {
+void line_splitter_init_maps(void) {
+    FUNCTION_RUN_ONCE();
+
     for(int c = 0; c < 256 ; c++) {
         isspace_map_whitespace[c] = isspace_whitespace((char) c);
         isspace_map_pluginsd[c] = isspace_pluginsd((char) c);

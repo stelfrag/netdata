@@ -381,7 +381,9 @@ procfile *procfile_readall(procfile *ff) {
 }
 
 static PF_CHAR_TYPE procfile_default_separators[256];
-__attribute__((constructor)) void procfile_initialize_default_separators(void) {
+void procfile_initialize_default_separators(void) {
+    FUNCTION_RUN_ONCE();
+
     int i = 256;
     while(i--) {
         if(unlikely(i == '\n' || i == '\r'))
@@ -397,6 +399,8 @@ __attribute__((constructor)) void procfile_initialize_default_separators(void) {
 
 NOINLINE
 static void procfile_set_separators(procfile *ff, const char *separators) {
+    procfile_initialize_default_separators();
+
     // set the separators
     if(unlikely(!separators))
         separators = " \t=|";
