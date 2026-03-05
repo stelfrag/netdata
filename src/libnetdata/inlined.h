@@ -583,7 +583,7 @@ static bool sanitize_command_argument_string(char *dst, const char *src, size_t 
 
 ALWAYS_INLINE
 static int nd_open_readonly_cloexec(const char *filename) {
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
     return _open(filename, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
 #else
     return open(filename, O_RDONLY | O_CLOEXEC, 0666);
@@ -592,7 +592,7 @@ static int nd_open_readonly_cloexec(const char *filename) {
 
 ALWAYS_INLINE
 static ssize_t nd_read_fd(int fd, void *buf, size_t count) {
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
     return _read(fd, buf, (unsigned int)count);
 #else
     return read(fd, buf, count);
@@ -601,7 +601,7 @@ static ssize_t nd_read_fd(int fd, void *buf, size_t count) {
 
 ALWAYS_INLINE
 static int nd_close_fd(int fd) {
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
     return _close(fd);
 #else
     return close(fd);
@@ -613,7 +613,7 @@ static int nd_fstat_fd_size(int fd, size_t *file_size) {
     if(!file_size)
         return -1;
 
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
     struct _stat64 st;
     if(_fstat64(fd, &st) == -1)
         return -1;

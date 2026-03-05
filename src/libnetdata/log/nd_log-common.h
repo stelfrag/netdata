@@ -5,6 +5,14 @@
 
 #include <syslog.h>
 
+#ifndef ND_ATTR_PACKED
+#if defined(__GNUC__) || defined(__clang__)
+#define ND_ATTR_PACKED __attribute__((packed))
+#else
+#define ND_ATTR_PACKED
+#endif
+#endif
+
 typedef enum ND_ATTR_PACKED {
     NDLS_UNSET = 0,   // internal use only
     NDLS_ACCESS,      // access.log

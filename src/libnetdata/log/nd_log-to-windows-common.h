@@ -3,6 +3,14 @@
 #ifndef NETDATA_ND_LOG_TO_WINDOWS_COMMON_H
 #define NETDATA_ND_LOG_TO_WINDOWS_COMMON_H
 
+#ifndef ND_ATTR_PACKED
+#if defined(__GNUC__) || defined(__clang__)
+#define ND_ATTR_PACKED __attribute__((packed))
+#else
+#define ND_ATTR_PACKED
+#endif
+#endif
+
 // Helper macro to create wide string literals
 #define WIDEN2(x) L ## x
 #define WIDEN(x) WIDEN2(x)

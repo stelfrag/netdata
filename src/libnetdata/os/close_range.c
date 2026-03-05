@@ -2,12 +2,12 @@
 
 #include "../libnetdata.h"
 
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
 #include <io.h>
 #endif
 
 static int fd_is_valid(int fd) {
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
     intptr_t h = _get_osfhandle(fd);
     return h != (intptr_t)-1;
 #else
@@ -17,7 +17,7 @@ static int fd_is_valid(int fd) {
 }
 
 static void setcloexec(int fd) {
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
     intptr_t h = _get_osfhandle(fd);
     if(h == (intptr_t)-1)
         return;
@@ -37,7 +37,7 @@ int os_get_fd_open_max(void) {
         return fd_open_max;
 
     if(fd_open_max == CLOSE_RANGE_FD_MAX || fd_open_max == -1) {
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
         fd_open_max = _getmaxstdio();
 #else
         struct rlimit rl;
@@ -92,7 +92,7 @@ void os_close_range(int first, int last, int flags) {
             if(flags & CLOSE_RANGE_CLOEXEC)
                 setcloexec(fd);
             else
-#if defined(OS_WINDOWS)
+#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
                 (void)_close(fd);
 #else
                 (void)close(fd);
