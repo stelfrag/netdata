@@ -127,7 +127,7 @@ static struct proc_module {
      .cleanup = NULL},
     {.name = "PerflibThermalZone",
      .dim = "PerflibThermalZone",
-     .enabled = CONFIG_BOOLEAN_NO,
+     .enabled = CONFIG_BOOLEAN_YES,
      .update_every = 5 * UPDATE_EVERY_MIN,
      .func = do_PerflibThermalZone,
      .rd = NULL,

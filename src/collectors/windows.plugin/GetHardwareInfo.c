@@ -8,6 +8,9 @@
 static const char *srv_name = "NetdataDriver";
 static const char *drv_path = "%SystemRoot%\\system32\\netdata_driver.sys";
 
+#define MSR_TEMPERATURE_TARGET 0x1A2
+static ULONG global_tjmax = 100;
+
 struct cpu_data {
     RRDDIM *rd_cpu_temp;
 
@@ -188,10 +191,13 @@ static collected_number netdata_intel_cpu_temp(MSR_REQUEST *req)
     if (!req)
         return INVALID_TEMP;
 
-    const ULONG TJMAX = 100;
+    // Check "Reading Valid" bit (bit 31 of MSR 0x19C)
+    if (!(req->low & (1u << 31)))
+        return INVALID_TEMP;
+
     ULONG digital_readout = (req->low >> 16) & 0x7F; // bits [22:16]
 
-    collected_number temp = (collected_number)(TJMAX - digital_readout);
+    collected_number temp = (collected_number)(global_tjmax - digital_readout);
 
     if (temp < 0 || temp > 150)
         return INVALID_TEMP;
@@ -199,6 +205,10 @@ static collected_number netdata_intel_cpu_temp(MSR_REQUEST *req)
     return temp;
 }
 
+// AMD MSR 0x19C reads return garbage — AMD does not use this Intel-specific MSR.
+// AMD CPU temperature is provided by PerflibThermalZone instead.
+// Kept commented out for potential future use with a proper AMD thermal MSR.
+#if 0
 static collected_number netdata_amd_cpu_temp(MSR_REQUEST *req)
 {
     if (!req)
@@ -212,6 +222,7 @@ static collected_number netdata_amd_cpu_temp(MSR_REQUEST *req)
 
     return temp;
 }
+#endif
 
 void netdata_collect_cpu_chart()
 {
@@ -244,10 +255,18 @@ void netdata_collect_cpu_chart()
             } else {
                 cpus[cpu].cpu_temp = cpus[cpu].last_valid_temp;
                 cpus[cpu].read_errors++;
+                if (cpus[cpu].read_errors == MAX_CONSECUTIVE_ERRORS)
+                    nd_log(NDLS_COLLECTORS, NDLP_WARNING,
+                           "GetHardwareInfo: CPU %zu returned %d consecutive invalid temperature readings",
+                           cpu, cpus[cpu].read_errors);
             }
         } else {
             cpus[cpu].cpu_temp = cpus[cpu].last_valid_temp;
             cpus[cpu].read_errors++;
+            if (cpus[cpu].read_errors == MAX_CONSECUTIVE_ERRORS)
+                nd_log(NDLS_COLLECTORS, NDLP_WARNING,
+                       "GetHardwareInfo: CPU %zu MSR read failed %d consecutive times",
+                       cpu, cpus[cpu].read_errors);
         }
     }
     LeaveCriticalSection(&cpus_lock);
@@ -265,6 +284,29 @@ static void get_hardware_info_thread(void *ptr __maybe_unused)
     }
 }
 
+static void netdata_read_tjmax()
+{
+    if (msr_device == INVALID_HANDLE_VALUE)
+        return;
+
+    MSR_REQUEST req = {MSR_TEMPERATURE_TARGET, 0, 0, 0}; // read from CPU 0
+    if (!netdata_read_msr(&req)) {
+        nd_log(NDLS_COLLECTORS, NDLP_WARNING,
+               "GetHardwareInfo: failed to read MSR 0x1A2 (Temperature Target), using default Tjmax=%lu", global_tjmax);
+        return;
+    }
+
+    ULONG tjmax = (req.low >> 16) & 0xFF; // bits [23:16]
+    if (tjmax >= 50 && tjmax <= 130) {
+        global_tjmax = tjmax;
+        nd_log(NDLS_COLLECTORS, NDLP_INFO, "GetHardwareInfo: read Tjmax=%lu from MSR 0x1A2", global_tjmax);
+    } else {
+        nd_log(NDLS_COLLECTORS, NDLP_WARNING,
+               "GetHardwareInfo: MSR 0x1A2 returned Tjmax=%lu (out of range [50-130]), using default Tjmax=%lu",
+               tjmax, global_tjmax);
+    }
+}
+
 static void netdata_detect_cpu()
 {
     SYSTEM_INFO sysInfo;
@@ -272,6 +314,8 @@ static void netdata_detect_cpu()
 
     WORD test = sysInfo.wProcessorArchitecture;
     if (test != PROCESSOR_ARCHITECTURE_AMD64 && test != PROCESSOR_ARCHITECTURE_IA64) {
+        nd_log(NDLS_COLLECTORS, NDLP_INFO,
+               "GetHardwareInfo: unsupported processor architecture %u", (unsigned)test);
         return;
     }
 
@@ -284,10 +328,19 @@ static void netdata_detect_cpu()
     memcpy(&vendorID[8], &cpuInfo[2], 4);
     vendorID[12] = '\0';
 
-    if (!strcmp(vendorID, "GenuineIntel"))
+    if (!strcmp(vendorID, "GenuineIntel")) {
+        nd_log(NDLS_COLLECTORS, NDLP_INFO, "GetHardwareInfo: detected Intel CPU");
         temperature_fcnt = netdata_intel_cpu_temp;
-    else if (!strcmp(vendorID, "AuthenticAMD"))
-        temperature_fcnt = netdata_amd_cpu_temp;
+    } else if (!strcmp(vendorID, "AuthenticAMD")) {
+        nd_log(NDLS_COLLECTORS, NDLP_INFO,
+               "GetHardwareInfo: detected AMD CPU — MSR-based temperature not supported, "
+               "use PerflibThermalZone instead");
+        // Don't set temperature_fcnt — this will cause initialize() to return -1,
+        // disabling GetHardwareInfo on AMD. PerflibThermalZone handles AMD temps.
+    } else {
+        nd_log(NDLS_COLLECTORS, NDLP_INFO,
+               "GetHardwareInfo: unknown CPU vendor '%s'", vendorID);
+    }
 }
 
 static int initialize()
@@ -314,11 +367,6 @@ static int initialize()
     InitializeCriticalSection(&device_lock);
     device_lock_initialized = true;
 
-    netdata_detect_cpu();
-    if (!temperature_fcnt) {
-        return -1;
-    }
-
     if (netdata_install_driver()) {
         return -1;
     }
@@ -326,6 +374,20 @@ static int initialize()
     if (netdata_start_driver()) {
         return -1;
     }
+
+    msr_device = netdata_open_device();
+    if (msr_device == INVALID_HANDLE_VALUE) {
+        nd_log(NDLS_COLLECTORS, NDLP_ERR,
+               "GetHardwareInfo: cannot open MSR device — disabling MSR-based temperature monitoring");
+        return -1;
+    }
+
+    netdata_detect_cpu();
+    if (!temperature_fcnt) {
+        return -1;
+    }
+
+    netdata_read_tjmax();
 
     ncpus = os_get_system_cpus();
     cpus = callocz(ncpus, sizeof(struct cpu_data));

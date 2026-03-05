@@ -61,15 +61,21 @@ NTSTATUS NetdataMsrDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ PIRP 
             if (req->cpu >= maxCpus) {
                 status = STATUS_INVALID_PARAMETER;
             } else {
-                KAFFINITY cpuMask = 1ull << req->cpu;
-                KAFFINITY oldMask = KeSetSystemAffinityThreadEx(cpuMask);
+                // Use GROUP_AFFINITY to support >64 CPUs across processor groups.
+                // Each group holds up to 64 processors.
+                GROUP_AFFINITY newAffinity = {0};
+                GROUP_AFFINITY oldAffinity = {0};
+                newAffinity.Group = (USHORT)(req->cpu / 64);
+                newAffinity.Mask = 1ull << (req->cpu % 64);
+
+                KeSetSystemGroupAffinityThread(&newAffinity, &oldAffinity);
 
                 ULONGLONG value = __readmsr(req->msr);
                 req->low = (ULONG)(value & 0xFFFFFFFF);
                 req->high = (ULONG)(value >> 32);
                 information = sizeof(MSR_REQUEST);
 
-                KeRevertToUserAffinityThreadEx(oldMask);
+                KeRevertToUserGroupAffinityThread(&oldAffinity);
             }
         }
     } else {

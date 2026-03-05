@@ -59,9 +59,15 @@ size_t os_get_system_cpus_cached(bool cache) {
 
 #elif defined(OS_WINDOWS)
 
-    SYSTEM_INFO sysInfo;
-    GetSystemInfo(&sysInfo);
-    p = sysInfo.dwNumberOfProcessors;
+    // GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) returns the total number
+    // of active processors across all processor groups, supporting >64 CPUs.
+    // GetSystemInfo() is limited to a single processor group (max 64).
+    p = (long)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if(p < 1) {
+        SYSTEM_INFO sysInfo;
+        GetSystemInfo(&sysInfo);
+        p = sysInfo.dwNumberOfProcessors;
+    }
     if(p < 1) goto error;
 
 #else
