@@ -42,6 +42,15 @@ static HANDLE svc_stop_event_handle = nullptr;
 
 static ND_THREAD *cleanup_thread = nullptr;
 
+static void log_windows_backend_startup(const char *scope)
+{
+    const char *backend = nd_windows_backend_name();
+    if(!backend || !*backend)
+        backend = "unknown";
+
+    netdata_service_log("%s Windows compat backend: %s", scope, backend);
+}
+
 static bool ReportSvcStatus(DWORD dwCurrentState, DWORD dwWin32ExitCode, DWORD dwWaitHint, DWORD dwControlsAccepted)
 {
     static DWORD dwCheckPoint = 1;
@@ -196,6 +205,7 @@ void WINAPI ServiceMain(DWORD argc, LPSTR* argv)
     }
 
     // Run the agent
+    log_windows_backend_startup("ServiceMain()");
     netdata_service_log("Running the agent...");
     netdata_main(argc, argv);
 
@@ -244,6 +254,8 @@ int main(int argc, char *argv[])
     if (!update_path()) {
         return 1;
     }
+
+    log_windows_backend_startup("winsvc main()");
 
     if (tty)
     {

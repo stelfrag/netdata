@@ -49,25 +49,11 @@ bool ip_to_hostname(const char *ip, char *dst, size_t dst_len) {
 // various library calls
 
 bool fd_is_socket(int fd) {
-    int type;
-    socklen_t len = sizeof(type);
-    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &len) == -1)
-        return false;
-
-    return true;
+    return os_is_socket_fd(fd);
 }
 
 int sock_close_fd(int fd) {
-#if defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2)
-    int rc = closesocket((SOCKET)fd);
-    if(rc == SOCKET_ERROR) {
-        errno = EINVAL;
-        return -1;
-    }
-    return 0;
-#else
-    return close(fd);
-#endif
+    return os_close_maybe_socket(fd);
 }
 
 #if defined(POLLRDHUP) && 0 // ktsaou: disabled because the recv() method is faster (1 syscall vs multiple by poll())

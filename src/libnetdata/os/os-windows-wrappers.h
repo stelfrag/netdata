@@ -34,6 +34,9 @@ int os_set_fd_blocking(int fd);
 int os_kill_pid(pid_t pid, int sig);
 int os_open_write_trunc_create(const char *path, int mode);
 int os_poll_fds(struct pollfd *fds, nfds_t nfds, int timeout_ms);
+bool os_is_socket_fd(int fd);
+int os_close_maybe_socket(int fd);
+int os_wait_readable_fd(int fd, int timeout_ms);
 ssize_t os_read(int fd, void *buf, size_t count);
 ssize_t os_write(int fd, const void *buf, size_t count);
 int os_close(int fd);
@@ -62,6 +65,30 @@ static inline int os_open_write_trunc_create(const char *path, int mode) {
 
 static inline int os_poll_fds(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
     return poll(fds, nfds, timeout_ms);
+}
+
+static inline bool os_is_socket_fd(int fd) {
+    int type = 0;
+    socklen_t len = sizeof(type);
+    return getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &len) == 0;
+}
+
+static inline int os_close_maybe_socket(int fd) {
+    return close(fd);
+}
+
+static inline int os_wait_readable_fd(int fd, int timeout_ms) {
+    struct pollfd pfd = {
+        .fd = fd,
+        .events = POLLIN | POLLERR | POLLHUP | POLLNVAL,
+        .revents = 0,
+    };
+
+    int ret = poll(&pfd, 1, timeout_ms);
+    if(ret <= 0)
+        return ret;
+
+    return (pfd.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) ? 1 : 0;
 }
 
 #endif // OS_WINDOWS

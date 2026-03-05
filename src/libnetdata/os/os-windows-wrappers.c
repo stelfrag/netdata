@@ -202,7 +202,7 @@ int os_fileno(FILE *stream) {
         return -1;
     }
 
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return fileno(stream);
 #else
     return _fileno(stream);
@@ -214,7 +214,7 @@ int os_stream_isatty(FILE *stream) {
     if(fd == -1)
         return 0;
 
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return isatty(fd);
 #else
     return _isatty(fd);
@@ -227,7 +227,7 @@ int os_pipe(int pipefd[2]) {
         return -1;
     }
 
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return pipe(pipefd);
 #else
     return _pipe(pipefd, 4096, _O_BINARY);
@@ -274,7 +274,7 @@ int os_open_write_trunc_create(const char *path, int mode) {
         return -1;
     }
 
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
 #else
     return _open(path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY | _O_NOINHERIT, mode);
@@ -282,7 +282,7 @@ int os_open_write_trunc_create(const char *path, int mode) {
 }
 
 int os_poll_fds(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return poll(fds, nfds, timeout_ms);
 #else
     if(!fds && nfds) {
@@ -328,8 +328,116 @@ int os_poll_fds(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
 #endif
 }
 
+bool os_is_socket_fd(int fd) {
+    if(fd < 0)
+        return false;
+
+#if defined(OS_WINDOWS_MSYS2)
+    int type = 0;
+    socklen_t len = sizeof(type);
+    return getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &len) == 0;
+#else
+    int type = 0;
+    int len = (int)sizeof(type);
+    return getsockopt((SOCKET)fd, SOL_SOCKET, SO_TYPE, (char *)&type, &len) == 0;
+#endif
+}
+
+int os_close_maybe_socket(int fd) {
+    if(fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+#if defined(OS_WINDOWS_MSYS2)
+    return close(fd);
+#else
+    if(os_is_socket_fd(fd)) {
+        int rc = closesocket((SOCKET)fd);
+        if(rc == SOCKET_ERROR) {
+            errno = EINVAL;
+            return -1;
+        }
+        return 0;
+    }
+
+    return _close(fd);
+#endif
+}
+
+int os_wait_readable_fd(int fd, int timeout_ms) {
+    if(fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+#if defined(OS_WINDOWS_MSYS2)
+    struct pollfd pfd = {
+        .fd = fd,
+        .events = POLLIN | POLLERR | POLLHUP | POLLNVAL,
+        .revents = 0,
+    };
+
+    int ret = poll(&pfd, 1, timeout_ms);
+    if(ret <= 0)
+        return ret;
+
+    return (pfd.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) ? 1 : 0;
+#else
+    if(os_is_socket_fd(fd)) {
+        WSAPOLLFD pfd = {
+            .fd = (SOCKET)fd,
+            .events = POLLIN | POLLERR | POLLHUP | POLLNVAL,
+            .revents = 0,
+        };
+
+        int ret = WSAPoll(&pfd, 1, timeout_ms);
+        if(ret <= 0)
+            return ret;
+
+        return (pfd.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) ? 1 : 0;
+    }
+
+    intptr_t osfh = _get_osfhandle(fd);
+    if(osfh == -1) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    HANDLE h = (HANDLE)osfh;
+    DWORD ftype = GetFileType(h);
+    if(ftype != FILE_TYPE_PIPE)
+        return 1;
+
+    ULONGLONG deadline_ms = (timeout_ms < 0) ? 0 : GetTickCount64() + (ULONGLONG)timeout_ms;
+    while(true) {
+        DWORD available = 0;
+        BOOL ok = PeekNamedPipe(h, NULL, 0, NULL, &available, NULL);
+        if(ok && available > 0)
+            return 1;
+
+        if(!ok) {
+            DWORD err = GetLastError();
+            if(err == ERROR_BROKEN_PIPE)
+                return 1;
+
+            errno = EINVAL;
+            return -1;
+        }
+
+        if(timeout_ms == 0)
+            return 0;
+
+        if(timeout_ms > 0 && GetTickCount64() >= deadline_ms)
+            return 0;
+
+        sleep_usec(10 * USEC_PER_MS);
+    }
+#endif
+}
+
 ssize_t os_read(int fd, void *buf, size_t count) {
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return read(fd, buf, count);
 #else
     return _read(fd, buf, (unsigned int)count);
@@ -337,7 +445,7 @@ ssize_t os_read(int fd, void *buf, size_t count) {
 }
 
 ssize_t os_write(int fd, const void *buf, size_t count) {
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return write(fd, buf, count);
 #else
     return _write(fd, buf, (unsigned int)count);
@@ -345,7 +453,7 @@ ssize_t os_write(int fd, const void *buf, size_t count) {
 }
 
 int os_close(int fd) {
-#if defined(OS_WINDOWS_MSYS2) && !defined(NETDATA_WINDOWS_FORCE_NATIVE_BACKEND)
+#if defined(OS_WINDOWS_MSYS2)
     return close(fd);
 #else
     return _close(fd);
