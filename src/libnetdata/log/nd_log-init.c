@@ -200,7 +200,7 @@ void nd_log_open(struct nd_log_source *e, ND_LOG_SOURCES source) {
 
         case NDLM_DEVNULL:
         case NDLM_FILE: {
-            int fd = open(e->filename, O_WRONLY | O_APPEND | O_CREAT, 0664);
+            int fd = os_open_write_append_create(e->filename, 0664);
             if(fd == -1) {
                 if(e->fd != STDOUT_FILENO && e->fd != STDERR_FILENO) {
                     e->fd = STDERR_FILENO;
@@ -220,7 +220,7 @@ void nd_log_open(struct nd_log_source *e, ND_LOG_SOURCES source) {
 
                         // we have dup2() fd, so we can close the one we opened
                         if(fd != STDOUT_FILENO && fd != STDERR_FILENO)
-                            close(fd);
+                            os_close(fd);
                     }
                     else
                         e->fd = fd;
@@ -240,7 +240,7 @@ void nd_log_open(struct nd_log_source *e, ND_LOG_SOURCES source) {
                     netdata_log_error("Cannot fdopen() fd %d ('%s')", e->fd, e->filename);
 
                     if(e->fd != STDOUT_FILENO && e->fd != STDERR_FILENO)
-                        close(e->fd);
+                        os_close(e->fd);
 
                     e->fp = stderr;
                     e->fd = STDERR_FILENO;
@@ -258,13 +258,13 @@ void nd_log_open(struct nd_log_source *e, ND_LOG_SOURCES source) {
 // --------------------------------------------------------------------------------------------------------------------
 
 void nd_log_stdin_init(int fd, const char *filename) {
-    int f = open(filename, O_WRONLY | O_APPEND | O_CREAT, 0664);
+    int f = os_open_write_append_create(filename, 0664);
     if(f == -1)
         return;
 
     if(f != fd) {
-        dup2(f, fd);
-        close(f);
+        os_dup2(f, fd);
+        os_close(f);
     }
 }
 
@@ -310,7 +310,7 @@ void nd_log_reopen_log_files_for_spawn_server(const char *name) {
     }
 
     if(nd_log.journal_direct.initialized) {
-        close(nd_log.journal_direct.fd);
+        os_close(nd_log.journal_direct.fd);
         nd_log.journal_direct.fd = -1;
         nd_log.journal_direct.initialized = false;
     }

@@ -215,8 +215,8 @@ static void oom_score_adj(void) {
     if(fd != -1) {
         snprintfz(buf, sizeof(buf) - 1, "%d", (int)wanted_score);
         ssize_t len = strlen(buf);
-        if(len > 0 && write(fd, buf, (size_t)len) == len) written = 1;
-        close(fd);
+        if(len > 0 && os_write(fd, buf, (size_t)len) == len) written = 1;
+        os_close(fd);
 
         if(written) {
             if(read_single_signed_number_file("/proc/self/oom_score_adj", &final_score))
@@ -463,14 +463,11 @@ int become_daemon(int dont_fork, const char *user) {
 
     int pidfd = -1;
     if(pidfile && *pidfile) {
-        pidfd = open(pidfile, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+        pidfd = os_open_write_trunc_create(pidfile, 0644);
         if(pidfd >= 0) {
-            if(ftruncate(pidfd, 0) != 0)
-                netdata_log_error("Cannot truncate pidfile '%s'.", pidfile);
-
             char b[100];
             sprintf(b, "%d\n", getpid());
-            ssize_t i = write(pidfd, b, strlen(b));
+            ssize_t i = os_write(pidfd, b, strlen(b));
             if(i <= 0)
                 netdata_log_error("Cannot write pidfile '%s'.", pidfile);
         }
@@ -504,7 +501,7 @@ int become_daemon(int dont_fork, const char *user) {
 
     daemon_status_file_startup_step("startup(become daemon - done)");
     if(pidfd != -1)
-        close(pidfd);
+        os_close(pidfd);
 
     return(0);
 }

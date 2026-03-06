@@ -1416,15 +1416,15 @@ static inline void local_sockets_send_to_parent(struct local_socket_state *ls, c
 //            n->inode, n->net_ns_inode, ls->proc_self_net_ns_inode, ls->ns_state.net_ns_pid);
     }
 
-    if(write(fd, n, sizeof(*n)) != sizeof(*n))
+    if(os_write(fd, n, sizeof(*n)) != sizeof(*n))
         local_sockets_log(ls, "failed to write local socket to pipe");
 
     size_t len = n->cmdline ? string_strlen(n->cmdline) + 1 : 0;
-    if(write(fd, &len, sizeof(len)) != sizeof(len))
+    if(os_write(fd, &len, sizeof(len)) != sizeof(len))
         local_sockets_log(ls, "failed to write cmdline length to pipe");
 
     if(len)
-        if(write(fd, string2str(n->cmdline), len) != (ssize_t)len)
+        if(os_write(fd, string2str(n->cmdline), len) != (ssize_t)len)
             local_sockets_log(ls, "failed to write cmdline to pipe");
 }
 
@@ -1468,7 +1468,7 @@ static inline int local_sockets_spawn_server_callback(SPAWN_REQUEST *request) {
     }
 
     // close the custom fd
-    close(request->fds[3]); request->fds[3] = -1;
+    os_close(request->fds[3]); request->fds[3] = -1;
 
     // read all sockets from /proc
     local_sockets_read_all_system_sockets(&ls);
@@ -1489,7 +1489,7 @@ static inline bool local_sockets_get_namespace_sockets_with_pid(LS_STATE *ls, st
     snprintfz(filename, sizeof(filename), "%s/proc/%d/ns/net", ls->config.host_prefix, ps->pid);
 
     // verify the pid is in the target namespace
-    int fd = open(filename, O_RDONLY | O_CLOEXEC);
+    int fd = nd_open_readonly_cloexec(filename);
     if (fd == -1) {
         local_sockets_log(ls, "cannot open file '%s'", filename);
         if(ls->config.report)
@@ -1499,7 +1499,7 @@ static inline bool local_sockets_get_namespace_sockets_with_pid(LS_STATE *ls, st
 
     struct stat statbuf;
     if (fstat(fd, &statbuf) == -1) {
-        close(fd);
+        os_close(fd);
         local_sockets_log(ls, "failed to get file statistics for '%s'", filename);
         if(ls->config.report)
             __atomic_add_fetch(&ls->stats.namespaces_absent, 1, __ATOMIC_RELAXED);
@@ -1507,7 +1507,7 @@ static inline bool local_sockets_get_namespace_sockets_with_pid(LS_STATE *ls, st
     }
 
     if (statbuf.st_ino != ps->net_ns_inode) {
-        close(fd);
+        os_close(fd);
         local_sockets_log(ls, "pid %d is not in the wanted network namespace", ps->pid);
         if(ls->config.report)
             __atomic_add_fetch(&ls->stats.namespaces_invalid, 1, __ATOMIC_RELAXED);
@@ -1515,7 +1515,7 @@ static inline bool local_sockets_get_namespace_sockets_with_pid(LS_STATE *ls, st
     }
 
     if(ls->spawn_server == NULL) {
-        close(fd);
+        os_close(fd);
         local_sockets_log(ls, "spawn server is not available");
         if(ls->config.report)
             __atomic_add_fetch(&ls->stats.namespaces_forks_failed, 1, __ATOMIC_RELAXED);
@@ -1530,7 +1530,7 @@ static inline bool local_sockets_get_namespace_sockets_with_pid(LS_STATE *ls, st
     req.ns_state.net_ns_inode = ps->net_ns_inode;
 
     SPAWN_INSTANCE *si = spawn_server_exec(ls->spawn_server, STDERR_FILENO, fd, NULL, &req, sizeof(req), SPAWN_INSTANCE_TYPE_CALLBACK);
-    close(fd); fd = -1;
+    os_close(fd); fd = -1;
 
     if(ls->config.report)
         __atomic_add_fetch(&ls->stats.namespaces_forks_attempted, 1, __ATOMIC_RELAXED);
@@ -1546,14 +1546,14 @@ static inline bool local_sockets_get_namespace_sockets_with_pid(LS_STATE *ls, st
 
     size_t received = 0;
     struct local_socket buf;
-    while(read(spawn_server_instance_read_fd(si), &buf, sizeof(buf)) == sizeof(buf)) {
+    while(nd_read_fd(spawn_server_instance_read_fd(si), &buf, sizeof(buf)) == sizeof(buf)) {
         size_t len = 0;
-        if(read(spawn_server_instance_read_fd(si), &len, sizeof(len)) != sizeof(len))
+        if(nd_read_fd(spawn_server_instance_read_fd(si), &len, sizeof(len)) != sizeof(len))
             local_sockets_log(ls, "failed to read cmdline length from pipe");
 
         if(len) {
             char cmdline[len + 1];
-            if(read(spawn_server_instance_read_fd(si), cmdline, len) != (ssize_t)len)
+            if(nd_read_fd(spawn_server_instance_read_fd(si), cmdline, len) != (ssize_t)len)
                 local_sockets_log(ls, "failed to read cmdline from pipe");
             else {
                 cmdline[len] = '\0';
@@ -1697,7 +1697,7 @@ static inline bool local_sockets_namespaces_from_proc_with_pid(LS_STATE *ls, str
     snprintfz(filename, sizeof(filename), "%s/proc/%d/ns/net", ls->config.host_prefix, ps->pid);
 
     // verify the pid is in the target namespace
-    int fd = open(filename, O_RDONLY | O_CLOEXEC);
+    int fd = nd_open_readonly_cloexec(filename);
     if (fd == -1) {
         local_sockets_log(ls, "cannot open file '%s'", filename);
         if(ls->config.report)
@@ -1707,7 +1707,7 @@ static inline bool local_sockets_namespaces_from_proc_with_pid(LS_STATE *ls, str
 
     struct stat statbuf;
     if (fstat(fd, &statbuf) == -1) {
-        close(fd);
+        os_close(fd);
         local_sockets_log(ls, "failed to get file statistics for '%s'", filename);
         if(ls->config.report)
             __atomic_add_fetch(&ls->stats.namespaces_absent, 1, __ATOMIC_RELAXED);
@@ -1715,7 +1715,7 @@ static inline bool local_sockets_namespaces_from_proc_with_pid(LS_STATE *ls, str
     }
 
     if (statbuf.st_ino != ps->net_ns_inode) {
-        close(fd);
+        os_close(fd);
         local_sockets_log(ls, "pid %d is not in the wanted network namespace", ps->pid);
         if(ls->config.report)
             __atomic_add_fetch(&ls->stats.namespaces_invalid, 1, __ATOMIC_RELAXED);

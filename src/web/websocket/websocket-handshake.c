@@ -10,12 +10,11 @@
 #if defined(OS_WINDOWS)
 #define ws_pipe os_pipe
 #define ws_close os_close
-#define ws_set_nonblocking(fd) (sock_setnonblock((fd), true) != -1)
 #else
 #define ws_pipe pipe
 #define ws_close close
-#define ws_set_nonblocking(fd) (fcntl((fd), F_SETFL, O_NONBLOCK) != -1)
 #endif
+#define ws_set_nonblocking(fd) (sock_setnonblock((fd), true) != -1)
 
 // Global array of WebSocket threads
 WEBSOCKET_THREAD websocket_threads[WEBSOCKET_MAX_THREADS];

@@ -9,8 +9,9 @@
 #define ss_read os_read
 #define ss_write os_write
 #define ss_pipe os_pipe
-#define ss_poll os_poll_fds
+#define ss_poll os_wait_fds_events
 #define ss_kill os_kill_pid
+#define ss_dup2 os_dup2
 #else
 #define ss_close close
 #define ss_read read
@@ -18,6 +19,7 @@
 #define ss_pipe pipe
 #define ss_poll poll
 #define ss_kill kill
+#define ss_dup2 dup2
 #endif
 
 
@@ -365,19 +367,19 @@ static bool spawn_server_run_callback(SPAWN_SERVER *server __maybe_unused, SPAWN
         int custom_fd = rq->fds[3]; (void)custom_fd;
 
         // change stdio fds to the ones in the request
-        if (dup2(stdin_fd, STDIN_FILENO) == -1) {
+        if (ss_dup2(stdin_fd, STDIN_FILENO) == -1) {
             nd_log(NDLS_COLLECTORS, NDLP_ERR,
                    "SPAWN SERVER: cannot dup2(%d) stdin of request No %zu: %s",
                    stdin_fd, rq->request_id, rq->cmdline);
             exit(EXIT_FAILURE);
         }
-        if (dup2(stdout_fd, STDOUT_FILENO) == -1) {
+        if (ss_dup2(stdout_fd, STDOUT_FILENO) == -1) {
             nd_log(NDLS_COLLECTORS, NDLP_ERR,
                    "SPAWN SERVER: cannot dup2(%d) stdin of request No %zu: %s",
                    stdout_fd, rq->request_id, rq->cmdline);
             exit(EXIT_FAILURE);
         }
-        if (dup2(stderr_fd, STDERR_FILENO) == -1) {
+        if (ss_dup2(stderr_fd, STDERR_FILENO) == -1) {
             nd_log(NDLS_COLLECTORS, NDLP_ERR,
                    "SPAWN SERVER: cannot dup2(%d) stderr of request No %zu: %s",
                    stderr_fd, rq->request_id, rq->cmdline);
@@ -1011,14 +1013,14 @@ static void replace_stdio_with_dev_null() {
     }
 
     // Redirect stdin (fd 0)
-    if (dup2(dev_null_fd, STDIN_FILENO) == -1) {
+    if (ss_dup2(dev_null_fd, STDIN_FILENO) == -1) {
         // nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN SERVER: Failed to redirect stdin to /dev/null: %s", strerror(errno));
         ss_close(dev_null_fd);
         return;
     }
 
     // Redirect stdout (fd 1)
-    if (dup2(dev_null_fd, STDOUT_FILENO) == -1) {
+    if (ss_dup2(dev_null_fd, STDOUT_FILENO) == -1) {
         // nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN SERVER: Failed to redirect stdout to /dev/null: %s", strerror(errno));
         ss_close(dev_null_fd);
         return;
@@ -1100,7 +1102,7 @@ SPAWN_SERVER* spawn_server_create(SPAWN_SERVER_OPTIONS options, const char *name
         replace_stdio_with_dev_null();
 
         if(nd_log_collectors_fd() != STDERR_FILENO)
-            dup2(nd_log_collectors_fd(), STDERR_FILENO);
+            ss_dup2(nd_log_collectors_fd(), STDERR_FILENO);
 
         int fds_to_keep[] = {
             server->sock,

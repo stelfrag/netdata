@@ -32,11 +32,16 @@ pid_t nd_windows_process_id_to_pid_t(DWORD process_id);
 int os_pipe(int pipefd[2]);
 int os_set_fd_blocking(int fd);
 int os_kill_pid(pid_t pid, int sig);
+int os_dup2(int oldfd, int newfd);
 int os_open_write_trunc_create(const char *path, int mode);
+int os_open_write_append_create(const char *path, int mode);
 int os_poll_fds(struct pollfd *fds, nfds_t nfds, int timeout_ms);
+int os_wait_fds_events(struct pollfd *fds, nfds_t nfds, int timeout_ms);
 bool os_is_socket_fd(int fd);
 int os_close_maybe_socket(int fd);
 int os_wait_readable_fd(int fd, int timeout_ms);
+ssize_t os_socket_recv(int fd, void *buf, size_t count);
+ssize_t os_socket_send(int fd, const void *buf, size_t count);
 ssize_t os_read(int fd, void *buf, size_t count);
 ssize_t os_write(int fd, const void *buf, size_t count);
 int os_close(int fd);
@@ -63,7 +68,19 @@ static inline int os_open_write_trunc_create(const char *path, int mode) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
 }
 
+static inline int os_dup2(int oldfd, int newfd) {
+    return dup2(oldfd, newfd);
+}
+
+static inline int os_open_write_append_create(const char *path, int mode) {
+    return open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, mode);
+}
+
 static inline int os_poll_fds(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
+    return poll(fds, nfds, timeout_ms);
+}
+
+static inline int os_wait_fds_events(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
     return poll(fds, nfds, timeout_ms);
 }
 
@@ -89,6 +106,26 @@ static inline int os_wait_readable_fd(int fd, int timeout_ms) {
         return ret;
 
     return (pfd.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) ? 1 : 0;
+}
+
+static inline ssize_t os_socket_recv(int fd, void *buf, size_t count) {
+    return recv(fd, buf, count, 0);
+}
+
+static inline ssize_t os_socket_send(int fd, const void *buf, size_t count) {
+    return send(fd, buf, count, 0);
+}
+
+static inline ssize_t os_read(int fd, void *buf, size_t count) {
+    return read(fd, buf, count);
+}
+
+static inline ssize_t os_write(int fd, const void *buf, size_t count) {
+    return write(fd, buf, count);
+}
+
+static inline int os_close(int fd) {
+    return close(fd);
 }
 
 #endif // OS_WINDOWS

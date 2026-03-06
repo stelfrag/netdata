@@ -23,7 +23,7 @@ static bool mcp_api_key_generate_and_save(void) {
     snprintf(path, sizeof(path), "%s/%s", netdata_configured_varlib_dir, MCP_DEV_PREVIEW_API_KEY_FILENAME);
     
     // Open file with O_CREAT | O_EXCL to ensure we don't overwrite
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = os_open_write_trunc_create(path, 0600);
     if (fd == -1) {
         netdata_log_error("MCP: Failed to create API key file %s: %s", 
                          path, strerror(errno));
@@ -34,15 +34,15 @@ static bool mcp_api_key_generate_and_save(void) {
     char buffer[MCP_DEV_PREVIEW_API_KEY_LENGTH + 2]; // +1 for newline, +1 for null
     snprintf(buffer, sizeof(buffer), "%s\n", mcp_dev_preview_api_key);
     
-    ssize_t written = write(fd, buffer, MCP_DEV_PREVIEW_API_KEY_LENGTH + 1); // +1 for newline
+    ssize_t written = os_write(fd, buffer, MCP_DEV_PREVIEW_API_KEY_LENGTH + 1); // +1 for newline
     if (written != (ssize_t)(MCP_DEV_PREVIEW_API_KEY_LENGTH + 1)) {
         netdata_log_error("MCP: Failed to write API key to file: %s", strerror(errno));
-        close(fd);
+        os_close(fd);
         unlink(path);
         return false;
     }
     
-    close(fd);
+    os_close(fd);
     
     // Ensure file permissions are correct (only owner can read/write)
     if (chmod(path, 0600) == -1) {
@@ -60,7 +60,7 @@ static bool mcp_api_key_load(void) {
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", netdata_configured_varlib_dir, MCP_DEV_PREVIEW_API_KEY_FILENAME);
     
-    int fd = open(path, O_RDONLY);
+    int fd = nd_open_readonly_cloexec(path);
     if (fd == -1) {
         if (errno == ENOENT) {
             // File doesn't exist, this is expected on first run
@@ -72,8 +72,8 @@ static bool mcp_api_key_load(void) {
     }
     
     char buffer[MCP_DEV_PREVIEW_API_KEY_LENGTH + 2]; // +1 for potential newline, +1 for null
-    ssize_t bytes_read = read(fd, buffer, sizeof(buffer) - 1);
-    close(fd);
+    ssize_t bytes_read = nd_read_fd(fd, buffer, sizeof(buffer) - 1);
+    nd_close_fd(fd);
     
     if (bytes_read < MCP_DEV_PREVIEW_API_KEY_LENGTH || bytes_read > MCP_DEV_PREVIEW_API_KEY_LENGTH + 1) {
         netdata_log_error("MCP: Invalid API key file size: expected %d or %d bytes, got %zd", 

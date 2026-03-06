@@ -268,6 +268,19 @@ int os_kill_pid(pid_t pid, int sig) {
 #endif
 }
 
+int os_dup2(int oldfd, int newfd) {
+    if(oldfd < 0 || newfd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+#if defined(OS_WINDOWS_MSYS2)
+    return dup2(oldfd, newfd);
+#else
+    return _dup2(oldfd, newfd);
+#endif
+}
+
 int os_open_write_trunc_create(const char *path, int mode) {
     if(!path) {
         errno = EINVAL;
@@ -278,6 +291,19 @@ int os_open_write_trunc_create(const char *path, int mode) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
 #else
     return _open(path, _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY | _O_NOINHERIT, mode);
+#endif
+}
+
+int os_open_write_append_create(const char *path, int mode) {
+    if(!path) {
+        errno = EINVAL;
+        return -1;
+    }
+
+#if defined(OS_WINDOWS_MSYS2)
+    return open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, mode);
+#else
+    return _open(path, _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY | _O_NOINHERIT, mode);
 #endif
 }
 
@@ -325,6 +351,80 @@ int os_poll_fds(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
 
     freez(wfds);
     return ret;
+#endif
+}
+
+int os_wait_fds_events(struct pollfd *fds, nfds_t nfds, int timeout_ms) {
+#if defined(OS_WINDOWS_MSYS2)
+    return poll(fds, nfds, timeout_ms);
+#else
+    if(!fds && nfds) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if(nfds == 0) {
+        if(timeout_ms > 0)
+            sleep_usec((usec_t)timeout_ms * USEC_PER_MS);
+        return 0;
+    }
+
+    for(nfds_t i = 0; i < nfds; i++)
+        fds[i].revents = 0;
+
+    ULONGLONG deadline_ms = (timeout_ms < 0) ? 0 : GetTickCount64() + (ULONGLONG)timeout_ms;
+    while(true) {
+        int ready = 0;
+
+        for(nfds_t i = 0; i < nfds; i++) {
+            if(fds[i].fd < 0)
+                continue;
+
+            short revents = 0;
+            bool is_socket = os_is_socket_fd(fds[i].fd);
+
+            if(is_socket) {
+                WSAPOLLFD wfd = {
+                    .fd = (SOCKET)fds[i].fd,
+                    .events = fds[i].events,
+                    .revents = 0,
+                };
+
+                int rc = WSAPoll(&wfd, 1, 0);
+                if(rc > 0)
+                    revents |= (short)wfd.revents;
+                else if(rc < 0)
+                    revents |= POLLERR;
+            }
+            else {
+                if(fds[i].events & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) {
+                    int rc = os_wait_readable_fd(fds[i].fd, 0);
+                    if(rc > 0)
+                        revents |= POLLIN;
+                    else if(rc < 0)
+                        revents |= POLLERR;
+                }
+
+                if(fds[i].events & POLLOUT)
+                    revents |= POLLOUT;
+            }
+
+            fds[i].revents = revents;
+            if(revents)
+                ready++;
+        }
+
+        if(ready > 0)
+            return ready;
+
+        if(timeout_ms == 0)
+            return 0;
+
+        if(timeout_ms > 0 && GetTickCount64() >= deadline_ms)
+            return 0;
+
+        sleep_usec(10 * USEC_PER_MS);
+    }
 #endif
 }
 
@@ -433,6 +533,47 @@ int os_wait_readable_fd(int fd, int timeout_ms) {
 
         sleep_usec(10 * USEC_PER_MS);
     }
+#endif
+}
+
+static int map_wsa_to_errno(int wsa_err) {
+    switch(wsa_err) {
+        case WSAEINTR:
+            return EINTR;
+        case WSAEWOULDBLOCK:
+            return EAGAIN;
+        case WSAECONNRESET:
+            return ECONNRESET;
+        case WSAETIMEDOUT:
+            return ETIMEDOUT;
+        default:
+            return EIO;
+    }
+}
+
+ssize_t os_socket_recv(int fd, void *buf, size_t count) {
+#if defined(OS_WINDOWS_MSYS2)
+    return recv(fd, buf, count, 0);
+#else
+    int rc = recv((SOCKET)fd, (char *)buf, (int)count, 0);
+    if(rc == SOCKET_ERROR) {
+        errno = map_wsa_to_errno(WSAGetLastError());
+        return -1;
+    }
+    return (ssize_t)rc;
+#endif
+}
+
+ssize_t os_socket_send(int fd, const void *buf, size_t count) {
+#if defined(OS_WINDOWS_MSYS2)
+    return send(fd, buf, count, 0);
+#else
+    int rc = send((SOCKET)fd, (const char *)buf, (int)count, 0);
+    if(rc == SOCKET_ERROR) {
+        errno = map_wsa_to_errno(WSAGetLastError());
+        return -1;
+    }
+    return (ssize_t)rc;
 #endif
 }
 

@@ -49,34 +49,21 @@ static int lf_wait_readable(struct pollfd *pfds, nfds_t nfds, int timeout_ms) {
     int elapsed_ms = 0;
     const int slice_ms = 20;
 
-    while(elapsed_ms <= timeout_ms) {
+    while(timeout_ms < 0 || elapsed_ms <= timeout_ms) {
         int ready = 0;
 
         for(nfds_t i = 0; i < nfds; i++) {
             if(pfds[i].fd < 0)
                 continue;
 
-            HANDLE h = (HANDLE)_get_osfhandle(pfds[i].fd);
-            if(h == INVALID_HANDLE_VALUE) {
-                pfds[i].revents |= POLLNVAL;
+            int rc = os_wait_readable_fd(pfds[i].fd, 0);
+            if(rc < 0) {
+                pfds[i].revents |= POLLERR;
                 ready++;
                 continue;
             }
-
-            DWORD bytes_available = 0;
-            if(PeekNamedPipe(h, NULL, 0, NULL, &bytes_available, NULL)) {
-                if(bytes_available > 0) {
-                    pfds[i].revents |= POLLIN;
-                    ready++;
-                }
-            }
-            else {
-                DWORD err = GetLastError();
-                if(err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED || err == ERROR_NO_DATA)
-                    pfds[i].revents |= POLLHUP;
-                else
-                    pfds[i].revents |= POLLERR;
-
+            else if(rc > 0) {
+                pfds[i].revents |= POLLIN;
                 ready++;
             }
         }
@@ -84,10 +71,13 @@ static int lf_wait_readable(struct pollfd *pfds, nfds_t nfds, int timeout_ms) {
         if(ready > 0)
             return ready;
 
-        if(timeout_ms == 0 || elapsed_ms >= timeout_ms)
+        if(timeout_ms == 0 || (timeout_ms > 0 && elapsed_ms >= timeout_ms))
             return 0;
 
-        int sleep_ms = (timeout_ms - elapsed_ms < slice_ms) ? (timeout_ms - elapsed_ms) : slice_ms;
+        int sleep_ms = slice_ms;
+        if(timeout_ms > 0 && timeout_ms - elapsed_ms < slice_ms)
+            sleep_ms = timeout_ms - elapsed_ms;
+
         if(sleep_ms <= 0)
             return 0;
 
@@ -142,7 +132,7 @@ LOG_FORWARDER *log_forwarder_start(void) {
         return NULL;
     }
 
-    // Native Windows backend uses PeekNamedPipe() in lf_wait_readable(), so no fcntl-based nonblocking setup is required.
+    // Native Windows backend uses os_wait_readable_fd() in lf_wait_readable(), so no fcntl-based nonblocking setup is required.
 #if !(defined(OS_WINDOWS) && !defined(OS_WINDOWS_MSYS2))
     // make sure read() will not block on this pipe
     if(sock_setnonblock(lf->pipe_fds[PIPE_READ], true) != 1)

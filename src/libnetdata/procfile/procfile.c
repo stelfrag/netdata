@@ -163,7 +163,7 @@ void procfile_close(procfile *ff) {
     procfile_lines_free(ff->lines);
     procfile_words_free(ff->words);
 
-    if(likely(ff->fd != -1)) close(ff->fd);
+    if(likely(ff->fd != -1)) nd_close_fd(ff->fd);
     freez(ff);
 }
 
@@ -316,7 +316,7 @@ procfile *procfile_readall(procfile *ff) {
 
         // netdata_log_info("Reading file '%s', from position %zd with length %zd", procfile_filename(ff), s, (ssize_t)(ff->size - s));
         ff->stats.reads++;
-        r = read(ff->fd, &ff->data[s], ff->size - s);
+        r = nd_read_fd(ff->fd, &ff->data[s], ff->size - s);
         if(unlikely(r == -1)) {
             if(unlikely(!(ff->flags & PROCFILE_FLAG_NO_ERROR_ON_FILE_IO))) collector_error(PF_PREFIX ": Cannot read from file '%s' on fd %d", procfile_filename(ff), ff->fd);
             else if(unlikely(ff->flags & PROCFILE_FLAG_ERROR_ON_ERROR_LOG))
@@ -507,7 +507,7 @@ procfile *procfile_reopen(procfile *ff, const char *filename, const char *separa
 
     if(likely(ff->fd != -1)) {
         // netdata_log_info("PROCFILE: closing fd %d", ff->fd);
-        close(ff->fd);
+        nd_close_fd(ff->fd);
     }
 
     ff->fd = open(filename, procfile_open_flags, 0666);

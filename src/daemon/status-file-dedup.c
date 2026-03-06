@@ -109,13 +109,13 @@ static bool status_file_dedup_load_and_parse(const char *filename, void *data __
     // IMPORTANT: NO LOCKS OR ALLOCATIONS HERE, THIS FUNCTION IS CALLED FROM SIGNAL HANDLERS
     // THIS FUNCTION MUST USE ONLY ASYNC-SIGNAL-SAFE OPERATIONS
 
-    int fp = open(filename, O_RDONLY);
+    int fp = nd_open_readonly_cloexec(filename);
     if(fp == -1)
         goto failed;
 
     memset(&dedup, 0, sizeof(dedup));
-    ssize_t r = read(fp, &dedup, sizeof(dedup));
-    close(fp);
+    ssize_t r = nd_read_fd(fp, &dedup, sizeof(dedup));
+    nd_close_fd(fp);
 
     if(r != sizeof(dedup))
         goto failed;

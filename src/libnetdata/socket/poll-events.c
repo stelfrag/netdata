@@ -273,8 +273,7 @@ static int poll_process_new_tcp_connection(POLLINFO *pi, time_t now) {
 
 #ifndef SOCK_NONBLOCK
     if (nfd > 0) {
-        int flags = fcntl(nfd, F_GETFL);
-        (void)fcntl(nfd, F_SETFL, flags| O_NONBLOCK);
+        (void)sock_setnonblock(nfd, true);
     }
 #endif
 

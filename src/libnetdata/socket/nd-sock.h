@@ -86,7 +86,7 @@ static ssize_t nd_sock_read(ND_SOCK *s, void *buf, size_t num, size_t retries) {
         if (nd_sock_is_ssl(s))
             rc = netdata_ssl_read(&s->ssl, buf, num);
         else
-            rc = read(s->fd, buf, num);
+            rc = os_socket_recv(s->fd, buf, num);
     }
     while(rc <= 0 && (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR) && retries--);
 
@@ -101,7 +101,7 @@ static ssize_t nd_sock_write(ND_SOCK *s, const void *buf, size_t num, size_t ret
         if (nd_sock_is_ssl(s))
             rc = netdata_ssl_write(&s->ssl, buf, num);
         else
-            rc = write(s->fd, buf, num);
+            rc = os_socket_send(s->fd, buf, num);
     }
     while(rc <= 0 && (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR) && retries--);
 

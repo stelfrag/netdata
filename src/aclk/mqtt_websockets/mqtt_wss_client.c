@@ -17,6 +17,22 @@
 #define POLLFD_SOCKET  0
 #define POLLFD_PIPE    1
 
+#if defined(OS_WINDOWS)
+#define mws_fd_close os_close
+#define mws_fd_read os_read
+#define mws_fd_write os_write
+#define mws_sock_close os_close_maybe_socket
+#define mws_sock_read os_socket_recv
+#define mws_sock_write os_socket_send
+#else
+#define mws_fd_close close
+#define mws_fd_read read
+#define mws_fd_write write
+#define mws_sock_close close
+#define mws_sock_read read
+#define mws_sock_write write
+#endif
+
 #define PING_TIMEOUT    (60)  //Expect a ping response within this time (seconds)
 time_t ping_timeout = 0;
 
@@ -159,7 +175,9 @@ mqtt_wss_client mqtt_wss_new(
         goto fail_1;
     }
 
-#ifdef __APPLE__
+#if defined(OS_WINDOWS)
+    if (os_pipe(client->write_notif_pipe)) {
+#elif defined(__APPLE__)
     if (pipe(client->write_notif_pipe)) {
 #else
     if (pipe2(client->write_notif_pipe, O_CLOEXEC /*| O_DIRECT*/)) {
@@ -201,8 +219,8 @@ void mqtt_wss_destroy(mqtt_wss_client client)
 {
     mqtt_ng_destroy(client->mqtt);
 
-    close(client->write_notif_pipe[PIPE_WRITE_END]);
-    close(client->write_notif_pipe[PIPE_READ_END]);
+    mws_fd_close(client->write_notif_pipe[PIPE_WRITE_END]);
+    mws_fd_close(client->write_notif_pipe[PIPE_READ_END]);
 
     ws_client_destroy(client->ws_client);
 
@@ -227,7 +245,7 @@ void mqtt_wss_destroy(mqtt_wss_client client)
         SSL_CTX_free(client->ssl_ctx);
 
     if (client->sockfd > 0)
-        close(client->sockfd);
+        mws_sock_close(client->sockfd);
 
     freez(client);
 }
@@ -331,20 +349,16 @@ static int http_parse_reply(rbuf_t buf)
 static int http_proxy_connect(mqtt_wss_client client)
 {
     int rc;
-    struct pollfd poll_fd;
     rbuf_t r_buf = rbuf_create(4096);
     if (!r_buf)
         return 1;
     size_t r_buf_linear_insert_capacity;
 
-    poll_fd.fd = client->sockfd;
-    poll_fd.events = POLLIN;
-
     char *r_buf_ptr = rbuf_get_linear_insert_range(r_buf, &r_buf_linear_insert_capacity);
     snprintf(r_buf_ptr, r_buf_linear_insert_capacity,"%s %s:%d %s" HTTP_ENDLINE "Host: %s" HTTP_ENDLINE, PROXY_CONNECT,
              client->target_host, client->target_port, PROXY_HTTP, client->target_host);
 
-    if(write(client->sockfd, r_buf_ptr, strlen(r_buf_ptr)) <= 0) { ; }
+    if(mws_sock_write(client->sockfd, r_buf_ptr, strlen(r_buf_ptr)) <= 0) { ; }
 
     if (client->proxy_uname) {
         size_t pass_len = client->proxy_passwd ? strlen(client->proxy_passwd) : 0;
@@ -370,16 +384,16 @@ static int http_proxy_connect(mqtt_wss_client client)
         r_buf_ptr = rbuf_get_linear_insert_range(r_buf, &r_buf_linear_insert_capacity);
         snprintf(r_buf_ptr, r_buf_linear_insert_capacity,"Proxy-Authorization: Basic %s" HTTP_ENDLINE, creds_base64);
 
-        if(write(client->sockfd, r_buf_ptr, strlen(r_buf_ptr)) <= 0)  { ; }
+        if(mws_sock_write(client->sockfd, r_buf_ptr, strlen(r_buf_ptr)) <= 0)  { ; }
 
         freez(creds_base64);
     }
-    if(write(client->sockfd, HTTP_ENDLINE, strlen(HTTP_ENDLINE)) <= 0)  { ; }
+    if(mws_sock_write(client->sockfd, HTTP_ENDLINE, strlen(HTTP_ENDLINE)) <= 0)  { ; }
 
     // read until you find CRLF, CRLF (HTTP HDR end)
     // or ring buffer is full
     // or timeout
-    while ((rc = poll(&poll_fd, 1, 1000)) >= 0) {
+    while ((rc = os_wait_readable_fd(client->sockfd, 1000)) >= 0) {
         if (!rc) {
             nd_log(NDLS_DAEMON, NDLP_ERR, "http_proxy timeout waiting reply from proxy server");
             rc = 2;
@@ -391,7 +405,7 @@ static int http_proxy_connect(mqtt_wss_client client)
             rc = 3;
             goto cleanup;
         }
-        if ((rc = read(client->sockfd, r_buf_ptr, r_buf_linear_insert_capacity)) < 0) {
+        if ((rc = mws_sock_read(client->sockfd, r_buf_ptr, r_buf_linear_insert_capacity)) < 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) {
                 continue;
             }
@@ -408,7 +422,7 @@ static int http_proxy_connect(mqtt_wss_client client)
             goto cleanup;
         }
     }
-    nd_log(NDLS_DAEMON, NDLP_ERR, "proxy negotiation poll error \"%s\"", strerror(errno));
+    nd_log(NDLS_DAEMON, NDLP_ERR, "proxy negotiation wait error \"%s\"", strerror(errno));
     rc = 5;
 cleanup:
     rbuf_free(r_buf);
@@ -474,7 +488,7 @@ int mqtt_wss_connect(
     client->ssl_flags = ssl_flags;
 
     if (client->sockfd > 0)
-        close(client->sockfd);
+        mws_sock_close(client->sockfd);
 
     char port_str[16];
     snprintf(port_str, sizeof(port_str) -1, "%d", client->port);
@@ -499,11 +513,8 @@ int mqtt_wss_connect(
 
     client->sockfd = fd;
 
-#ifndef SOCK_CLOEXEC
-    int flags = fcntl(client->sockfd, F_GETFD);
-    if (flags != -1)
-        (void) fcntl(client->sockfd, F_SETFD, flags| FD_CLOEXEC);
-#endif
+    if(sock_setcloexec(client->sockfd, true) == -1)
+        nd_log(NDLS_DAEMON, NDLP_WARNING, "Could not set FD_CLOEXEC on socket");
 
     int flag = 1;
     int result = setsockopt(client->sockfd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int));
@@ -512,7 +523,7 @@ int mqtt_wss_connect(
 
     client->poll_fds[POLLFD_SOCKET].fd = client->sockfd;
 
-    if (fcntl(client->sockfd, F_SETFL, fcntl(client->sockfd, F_GETFL, 0) | O_NONBLOCK) == -1) {
+    if (sock_setnonblock(client->sockfd, true) != 1) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "Error setting O_NONBLOCK to TCP socket. \"%s\"", strerror(errno));
         return -8;
     }
@@ -695,20 +706,20 @@ void mqtt_wss_disconnect(mqtt_wss_client client, int timeout_ms)
     // or timeout happens (unusual) in which case we close
     mqtt_wss_service_all(client, timeout_ms / 4);
 
-    close(client->sockfd);
+    mws_sock_close(client->sockfd);
     client->sockfd = -1;
 }
 
 static void mqtt_wss_wakeup(mqtt_wss_client client)
 {
-    if(write(client->write_notif_pipe[PIPE_WRITE_END], " ", 1) <= 0) { ; }
+    if(mws_fd_write(client->write_notif_pipe[PIPE_WRITE_END], " ", 1) <= 0) { ; }
 }
 
 #define THROWAWAY_BUF_SIZE 32
 char throwaway[THROWAWAY_BUF_SIZE];
 static void util_clear_pipe(int fd)
 {
-    if(read(fd, throwaway, THROWAWAY_BUF_SIZE) <= 0)  { ; }
+    if(mws_fd_read(fd, throwaway, THROWAWAY_BUF_SIZE) <= 0)  { ; }
 }
 
 static void set_socket_pollfds(mqtt_wss_client client, int ssl_ret) {
@@ -777,14 +788,14 @@ int mqtt_wss_service(mqtt_wss_client client, int timeout_ms)
 #endif
 
     worker_is_idle();
-    if ((ret = poll(client->poll_fds, 2, timeout_ms >= 0 ? timeout_ms : -1)) < 0) {
+    if ((ret = os_wait_fds_events(client->poll_fds, 2, timeout_ms >= 0 ? timeout_ms : -1)) < 0) {
         worker_is_busy(WORKER_ACLK_POLL_ERROR);
 
         if (errno == EINTR) {
-            nd_log(NDLS_DAEMON, NDLP_WARNING, "poll interrupted by EINTR");
+            nd_log(NDLS_DAEMON, NDLP_WARNING, "wait interrupted by EINTR");
             return MQTT_WSS_OK;
         }
-        nd_log(NDLS_DAEMON, NDLP_ERR, "poll error \"%s\"", strerror(errno));
+        nd_log(NDLS_DAEMON, NDLP_ERR, "wait error \"%s\"", strerror(errno));
         return MQTT_WSS_ERR_POLL_FAILED;
     }
     worker_is_busy(WORKER_ACLK_POLL_OK);

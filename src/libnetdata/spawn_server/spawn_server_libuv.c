@@ -133,12 +133,12 @@ static SPAWN_INSTANCE *spawn_process_with_libuv(uv_loop_t *loop, int stderr_fd, 
     int stdin_pipe[2] = { -1, -1 };
     int stdout_pipe[2] = { -1, -1 };
 
-    if (pipe(stdin_pipe) == -1) {
+    if (os_pipe(stdin_pipe) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN SERVER: stdin pipe() failed");
         goto cleanup;
     }
 
-    if (pipe(stdout_pipe) == -1) {
+    if (os_pipe(stdout_pipe) == -1) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN SERVER: stdout pipe() failed");
         goto cleanup;
     }
@@ -194,18 +194,18 @@ static SPAWN_INSTANCE *spawn_process_with_libuv(uv_loop_t *loop, int stderr_fd, 
            "SPAWN SERVER: process created with pid %d", si->child_pid);
 
     // close the child sides of the pipes
-    close(stdin_pipe[PIPE_READ]);
+    os_close(stdin_pipe[PIPE_READ]);
     si->write_fd = stdin_pipe[PIPE_WRITE];
     si->read_fd = stdout_pipe[PIPE_READ];
-    close(stdout_pipe[PIPE_WRITE]);
+    os_close(stdout_pipe[PIPE_WRITE]);
 
     return si;
 
 cleanup:
-    if(stdin_pipe[PIPE_READ] != -1) close(stdin_pipe[PIPE_READ]);
-    if(stdin_pipe[PIPE_WRITE] != -1) close(stdin_pipe[PIPE_WRITE]);
-    if(stdout_pipe[PIPE_READ] != -1) close(stdout_pipe[PIPE_READ]);
-    if(stdout_pipe[PIPE_WRITE] != -1) close(stdout_pipe[PIPE_WRITE]);
+    if(stdin_pipe[PIPE_READ] != -1) os_close(stdin_pipe[PIPE_READ]);
+    if(stdin_pipe[PIPE_WRITE] != -1) os_close(stdin_pipe[PIPE_WRITE]);
+    if(stdout_pipe[PIPE_READ] != -1) os_close(stdout_pipe[PIPE_READ]);
+    if(stdout_pipe[PIPE_WRITE] != -1) os_close(stdout_pipe[PIPE_WRITE]);
     if(si) {
         if(si_sem_init)
             uv_sem_destroy(&si->sem);
@@ -356,8 +356,8 @@ int spawn_server_exec_kill(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *
     if(!si) return -1;
 
     // close all pipe descriptors to force the child to exit
-    if(si->read_fd != -1) { close(si->read_fd); si->read_fd = -1; }
-    if(si->write_fd != -1) { close(si->write_fd); si->write_fd = -1; }
+    if(si->read_fd != -1) { os_close(si->read_fd); si->read_fd = -1; }
+    if(si->write_fd != -1) { os_close(si->write_fd); si->write_fd = -1; }
 
     if (uv_process_kill(&si->process, SIGTERM)) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "SPAWN PARENT: uv_process_kill() failed");
@@ -371,8 +371,8 @@ int spawn_server_exec_wait(SPAWN_SERVER *server __maybe_unused, SPAWN_INSTANCE *
     if (!si) return -1;
 
     // close all pipe descriptors to force the child to exit
-    if(si->read_fd != -1) { close(si->read_fd); si->read_fd = -1; }
-    if(si->write_fd != -1) { close(si->write_fd); si->write_fd = -1; }
+    if(si->read_fd != -1) { os_close(si->read_fd); si->read_fd = -1; }
+    if(si->write_fd != -1) { os_close(si->write_fd); si->write_fd = -1; }
 
     // Wait for the process to exit
     uv_sem_wait(&si->sem);

@@ -101,7 +101,7 @@ void nd_signal_handler(int signo, siginfo_t *info, void *context __maybe_unused)
             len = strcatz(b, len, nd_thread_tag_async_safe(), sizeof(b));
             len = strcatz(b, len, "!\n", sizeof(b));
 
-            if(write(STDERR_FILENO, b, strlen(b)) == -1) {
+            if(os_write(STDERR_FILENO, b, strlen(b)) == -1) {
                 // nothing to do - we cannot write but there is no way to complain about it
                 ;
             }
@@ -303,7 +303,7 @@ void nd_process_signals(void) {
             last_update_mt += save_every_ut;
         }
 
-        if(poll(NULL, 0, 13 * MSEC_PER_SEC + 379) < 0) { ; }
+        if(os_poll_fds(NULL, 0, 13 * MSEC_PER_SEC + 379) < 0) { ; }
 
         process_triggered_signals();
     }

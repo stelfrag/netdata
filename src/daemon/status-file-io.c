@@ -138,8 +138,8 @@ static bool status_file_io_save_this(const char *directory, const char *filename
     memcpy(&temp[pos], tid_str, tid_len); pos += tid_len;
     temp[pos] = '\0';
 
-    // Open file with O_WRONLY, O_CREAT, and O_TRUNC flags
-    int fd = open(temp, O_WRONLY | O_CREAT | O_TRUNC, 0664);
+    // Open file with write/create/truncate flags
+    int fd = os_open_write_trunc_create(temp, 0664);
     if (fd == -1)
         return false;
 
@@ -147,13 +147,13 @@ static bool status_file_io_save_this(const char *directory, const char *filename
     size_t total_written = 0;
 
     while (total_written < size) {
-        ssize_t bytes_written = write(fd, data + total_written, size - total_written);
+        ssize_t bytes_written = os_write(fd, data + total_written, size - total_written);
 
         if (bytes_written <= 0) {
             if (errno == EINTR)
                 continue; /* Retry if interrupted by signal */
 
-            close(fd);
+            os_close(fd);
             unlink(temp);  /* Remove the temp file */
             return false;
         }
@@ -163,20 +163,20 @@ static bool status_file_io_save_this(const char *directory, const char *filename
 
     /* Fsync to ensure data is written to disk */
     if (fsync(fd) == -1) {
-        close(fd);
+        os_close(fd);
         unlink(temp);
         return false;
     }
 
     /* Set permissions using chmod() */
     if (fchmod(fd, 0664) != 0) {
-        close(fd);
+        os_close(fd);
         unlink(temp);
         return false;
     }
 
     /* Close file */
-    if (close(fd) == -1) {
+    if (os_close(fd) == -1) {
         unlink(temp);
         return false;
     }

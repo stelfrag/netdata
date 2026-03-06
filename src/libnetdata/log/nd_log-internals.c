@@ -812,7 +812,7 @@ bool nd_log_replace_existing_fd(struct nd_log_source *e, int new_fd) {
         return false;
 
     if(new_fd != e->fd) {
-        int t = dup2(new_fd, e->fd);
+        int t = os_dup2(new_fd, e->fd);
 
         bool ret = true;
         if (t == -1) {
@@ -820,7 +820,7 @@ bool nd_log_replace_existing_fd(struct nd_log_source *e, int new_fd) {
             ret = false;
         }
         else
-            close(new_fd);
+            os_close(new_fd);
 
         if(e->fd == STDOUT_FILENO)
             nd_log.std_output.initialized = true;

@@ -483,13 +483,13 @@ static int web_server_static_file(struct web_client *w, char *filename) {
     w->response.data->len = (size_t)statbuf.st_size;
 
     // open the file
-    int fd = open(web_filename, O_RDONLY | O_CLOEXEC);
+    int fd = nd_open_readonly_cloexec(web_filename);
 
     // read the file
-    if(fd != -1 && read(fd, w->response.data->buffer, statbuf.st_size) != statbuf.st_size) {
+    if(fd != -1 && nd_read_fd(fd, w->response.data->buffer, statbuf.st_size) != statbuf.st_size) {
         // cannot read the whole file
         nd_log(NDLS_DAEMON, NDLP_ERR, "Web server failed to read file '%s'", web_filename);
-        close(fd);
+        nd_close_fd(fd);
         fd = -1;
     }
 
@@ -514,7 +514,7 @@ static int web_server_static_file(struct web_client *w, char *filename) {
         }
     }
     else
-        close(fd);
+        nd_close_fd(fd);
 
     w->response.data->content_type = contenttype_for_filename(web_filename);
     netdata_log_debug(D_WEB_CLIENT_ACCESS, "%llu: Sending file '%s' (%"PRId64" bytes, fd %d).", w->id, web_filename, (int64_t)statbuf.st_size, w->fd);

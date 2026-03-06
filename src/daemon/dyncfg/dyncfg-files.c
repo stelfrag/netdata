@@ -229,28 +229,28 @@ void dyncfg_load_all(void) {
 // schemas loading
 
 static bool dyncfg_read_file_to_buffer(const char *filename, BUFFER *dst) {
-    int fd = open(filename, O_RDONLY | O_CLOEXEC, 0666);
+    int fd = nd_open_readonly_cloexec(filename);
     if(unlikely(fd == -1))
         return false;
 
     struct stat st = { 0 };
     if(fstat(fd, &st) != 0) {
-        close(fd);
+        nd_close_fd(fd);
         return false;
     }
 
     buffer_flush(dst);
     buffer_need_bytes(dst, st.st_size + 1); // +1 for the terminating zero
 
-    ssize_t r = read(fd, (char*)dst->buffer, st.st_size);
+    ssize_t r = nd_read_fd(fd, (char*)dst->buffer, st.st_size);
     if(unlikely(r == -1)) {
-        close(fd);
+        nd_close_fd(fd);
         return false;
     }
     dst->len = r;
     dst->buffer[dst->len] = '\0';
 
-    close(fd);
+    nd_close_fd(fd);
     return true;
 }
 

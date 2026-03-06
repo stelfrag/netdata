@@ -8,6 +8,16 @@
 
 #include "daemon/pulse/pulse.h"
 
+#if defined(OS_WINDOWS)
+#define https_sock_read os_socket_recv
+#define https_sock_write os_socket_send
+#define https_sock_close os_close_maybe_socket
+#else
+#define https_sock_read read
+#define https_sock_write write
+#define https_sock_close close
+#endif
+
 ENUM_STR_MAP_DEFINE(https_client_resp_t) = {
     {
         .id = HTTPS_CLIENT_RESP_OK,
@@ -504,7 +514,7 @@ static int socket_write_all(https_req_ctx_t *ctx, char *data, size_t data_len) {
     ctx->poll_fd.events = POLLOUT;
 
     do {
-        int ret = poll(&ctx->poll_fd, 1, POLL_TO_MS);
+        int ret = os_wait_fds_events(&ctx->poll_fd, 1, POLL_TO_MS);
         if (ret < 0) {
             netdata_log_error("ACLK: poll error");
             return 1;
@@ -517,7 +527,7 @@ static int socket_write_all(https_req_ctx_t *ctx, char *data, size_t data_len) {
             continue;
         }
 
-        ret = write(ctx->sock, &data[ctx->written], data_len - ctx->written);
+        ret = https_sock_write(ctx->sock, &data[ctx->written], data_len - ctx->written);
         if (ret > 0) {
             ctx->written += ret;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -534,7 +544,7 @@ static int ssl_write_all(https_req_ctx_t *ctx, char *data, size_t data_len) {
     ctx->poll_fd.events |= POLLOUT;
 
     do {
-        int ret = poll(&ctx->poll_fd, 1, POLL_TO_MS);
+        int ret = os_wait_fds_events(&ctx->poll_fd, 1, POLL_TO_MS);
         if (ret < 0) {
             netdata_log_error("ACLK: poll error");
             return 1;
@@ -583,7 +593,7 @@ static https_client_resp_t read_parse_response(https_req_ctx_t *ctx) {
 
     ctx->poll_fd.events = POLLIN;
     do {
-        ret = poll(&ctx->poll_fd, 1, POLL_TO_MS);
+        ret = os_wait_fds_events(&ctx->poll_fd, 1, POLL_TO_MS);
         if (ret < 0) {
             netdata_log_error("ACLK: poll error");
             return HTTPS_CLIENT_RESP_POLL_ERROR;
@@ -604,7 +614,7 @@ static https_client_resp_t read_parse_response(https_req_ctx_t *ctx) {
             if (ctx->ssl_ctx)
                 ret = SSL_read(ctx->ssl, ptr, size);
             else
-                ret = read(ctx->sock, ptr, size);
+                ret = https_sock_read(ctx->sock, ptr, size);
 
             if (ret > 0) {
                 rbuf_bump_head(ctx->buf_rx, ret);
@@ -819,7 +829,7 @@ https_client_resp_t https_request(https_req_t *request, https_req_response_t *re
         goto exit_buf_rx;
     }
 
-    if (fcntl(ctx->sock, F_SETFL, fcntl(ctx->sock, F_GETFL, 0) | O_NONBLOCK) == -1) {
+    if (sock_setnonblock(ctx->sock, true) != 1) {
         rc = HTTPS_CLIENT_RESP_NONBLOCK_FAILED;
         netdata_log_error("ACLK: error setting O_NONBLOCK to TCP socket.");
         goto exit_sock;
@@ -946,7 +956,7 @@ exit_SSL:
 exit_CTX:
     SSL_CTX_free(ctx->ssl_ctx);
 exit_sock:
-    close(ctx->sock);
+    https_sock_close(ctx->sock);
 exit_buf_rx:
     rbuf_free(ctx->buf_rx);
 exit_req_ctx:

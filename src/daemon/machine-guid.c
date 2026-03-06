@@ -58,38 +58,38 @@ static bool machine_guid_read_from_file(const char *filename, ND_MACHINE_GUID *h
     ND_MACHINE_GUID h;
     memset(&h, 0, sizeof(h));
 
-    int fd = open(filename, O_RDONLY | O_CLOEXEC);
+    int fd = nd_open_readonly_cloexec(filename);
     if (fd == -1) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "MACHINE_GUID: cannot open GUID file '%s' for reading", filename);
         return false;
     }
 
-    if (read(fd, h.txt, sizeof(h.txt) - 1) != sizeof(h.txt) - 1) {
+    if (nd_read_fd(fd, h.txt, sizeof(h.txt) - 1) != sizeof(h.txt) - 1) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "MACHINE_GUID: cannot read GUID file '%s'", filename);
-        close(fd);
+        nd_close_fd(fd);
         return false;
     }
     h.txt[sizeof(h.txt) - 1] = '\0';
 
     if (uuid_parse(h.txt, h.uuid.uuid) != 0) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "MACHINE_GUID: cannot parse GUID from file '%s'", filename);
-        close(fd);
+        nd_close_fd(fd);
         return false;
     }
 
     if (UUIDiszero(h.uuid)) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "MACHINE_GUID: GUID read from file '%s' is zero", filename);
-        close(fd);
+        nd_close_fd(fd);
         return false;
     }
 
     struct stat st;
     if (fstat(fd, &st) != 0) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "MACHINE_GUID: cannot stat the GUID file '%s'", filename);
-        close(fd);
+        nd_close_fd(fd);
         return false;
     }
-    close(fd);
+    nd_close_fd(fd);
 
     // Recreate the text version of it, ensuring lowercase format.
     uuid_unparse_lower(h.uuid.uuid, h.txt);
@@ -136,19 +136,19 @@ static bool machine_guid_write_to_file(const char *filename, ND_MACHINE_GUID *ho
     char tmp_filename[FILENAME_MAX];
     snprintf(tmp_filename, sizeof(tmp_filename), "%s.%zu", filename, __atomic_add_fetch(&save_id, 1, __ATOMIC_RELAXED));
 
-    int fd = open(tmp_filename, O_WRONLY | O_CREAT | O_TRUNC, 0444);
+    int fd = os_open_write_trunc_create(tmp_filename, 0444);
     if (fd == -1) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "MACHINE_GUID: cannot create the temporary GUID file '%s'", tmp_filename);
         return false;
     }
 
-    if (write(fd, h.txt, sizeof(h.txt) - 1) != sizeof(h.txt) - 1) {
+    if (os_write(fd, h.txt, sizeof(h.txt) - 1) != sizeof(h.txt) - 1) {
         nd_log(NDLS_DAEMON, NDLP_ERR, "MACHINE_GUID: cannot write GUID to the temporary GUID file '%s'", tmp_filename);
-        close(fd);
+        os_close(fd);
         return false;
     }
 
-    close(fd);
+    os_close(fd);
 
     struct timespec times[2] = {
         usec_to_timespec(h.last_modified_ut), // access time

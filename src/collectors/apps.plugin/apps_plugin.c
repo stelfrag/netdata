@@ -817,8 +817,8 @@ int main(int argc, char **argv) {
 
         netdata_mutex_lock(&apps_and_stdout_mutex);
 
-        struct pollfd pollfd = { .fd = fileno(stdout), .events = POLLERR };
-        if (unlikely(poll(&pollfd, 1, 0) < 0)) {
+        struct pollfd pollfd = { .fd = os_fileno(stdout), .events = POLLERR };
+        if (unlikely(os_wait_fds_events(&pollfd, 1, 0) < 0)) {
             netdata_mutex_unlock(&apps_and_stdout_mutex);
             fatal("Cannot check if a pipe is available");
         }
