@@ -149,8 +149,20 @@ static inline RRDHOST_INGEST_STATUS rrdhost_status_ingest(RRDHOST *host, RRDHOST
     uint32_t collected_metrics = UINT32_MAX;
     uint32_t replicating_instances = UINT32_MAX;
 
-    time_t since = MAX(host->stream.rcv.status.last_connected, host->stream.rcv.status.last_disconnected);
-    STREAM_HANDSHAKE reason = host->stream.rcv.status.reason;
+    time_t rcv_last_connected, rcv_last_disconnected;
+    uint32_t rcv_connections;
+    STREAM_HANDSHAKE reason;
+    {
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&host->stream.rcv.status.seqlock);
+            rcv_last_connected = host->stream.rcv.status.last_connected;
+            rcv_last_disconnected = host->stream.rcv.status.last_disconnected;
+            rcv_connections = host->stream.rcv.status.connections;
+            reason = host->stream.rcv.status.reason;
+        } while(seqlock_read_retry(&host->stream.rcv.status.seqlock, gen));
+    }
+    time_t since = MAX(rcv_last_connected, rcv_last_disconnected);
 
     if (online) {
         if (db_status == RRDHOST_DB_STATUS_INITIALIZING)
@@ -169,7 +181,7 @@ static inline RRDHOST_INGEST_STATUS rrdhost_status_ingest(RRDHOST *host, RRDHOST
             status = RRDHOST_INGEST_STATUS_ONLINE;
     }
     else {
-        if(!host->stream.rcv.status.connections)
+        if(!rcv_connections)
             status = RRDHOST_INGEST_STATUS_ARCHIVED;
         else
             status = RRDHOST_INGEST_STATUS_OFFLINE;
@@ -215,7 +227,7 @@ static inline RRDHOST_INGEST_STATUS rrdhost_status_ingest(RRDHOST *host, RRDHOST
         else
             s->ingest.type = RRDHOST_INGEST_TYPE_ARCHIVED;
 
-        s->ingest.id = host->stream.rcv.status.connections;
+        s->ingest.id = rcv_connections;
     }
 
     return status;
@@ -263,12 +275,17 @@ static void rrdhost_status_stream_internal(RRDHOST_STATUS *s) {
             s->stream.status = RRDHOST_STREAM_STATUS_OFFLINE;
             s->stream.hops = (int16_t)(s->ingest.hops + 1);
         }
-        s->stream.reason = host->stream.snd.status.reason;
-
         stream_sender_unlock(host->sender);
     }
 
-    s->stream.id = host->stream.snd.status.connections;
+    {
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&host->stream.snd.status.seqlock);
+            s->stream.reason = host->stream.snd.status.reason;
+            s->stream.id = host->stream.snd.status.connections;
+        } while(seqlock_read_retry(&host->stream.snd.status.seqlock, gen));
+    }
 
     if(!s->stream.since)
         s->stream.since = netdata_start_time;

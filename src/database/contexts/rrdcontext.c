@@ -318,8 +318,18 @@ bool rrdcontext_retention_match(RRDCONTEXT_ACQUIRED *rca, time_t after, time_t b
 
     RRDCONTEXT *rc = rrdcontext_acquired_value(rca);
 
+    time_t first_time_s, last_time_s;
+    {
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&rc->retention_seqlock);
+            first_time_s = rc->first_time_s;
+            last_time_s = rc->last_time_s;
+        } while(seqlock_read_retry(&rc->retention_seqlock, gen));
+    }
+
     if(rrd_flag_is_collected(rc))
-        return query_matches_retention(after, before, rc->first_time_s, before > rc->last_time_s ? before : rc->last_time_s, 1);
+        return query_matches_retention(after, before, first_time_s, before > last_time_s ? before : last_time_s, 1);
     else
-        return query_matches_retention(after, before, rc->first_time_s, rc->last_time_s, 1);
+        return query_matches_retention(after, before, first_time_s, last_time_s, 1);
 }

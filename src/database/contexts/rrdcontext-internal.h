@@ -271,6 +271,8 @@ typedef struct rrdcontext {
     SPINLOCK spinlock;
 
     RRD_FLAGS flags;
+
+    SEQLOCK retention_seqlock;
     time_t first_time_s;
     time_t last_time_s;
 

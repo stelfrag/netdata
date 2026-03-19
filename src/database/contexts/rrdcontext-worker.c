@@ -80,7 +80,7 @@ static void rrdhost_update_cached_retention(RRDHOST *host, time_t first_time_s, 
     if(unlikely(!host))
         return;
 
-    spinlock_lock(&host->retention.spinlock);
+    seqlock_write_begin(&host->retention.seqlock);
 
     time_t old_first_time_s = host->retention.first_time_s;
 
@@ -98,7 +98,7 @@ static void rrdhost_update_cached_retention(RRDHOST *host, time_t first_time_s, 
 
     bool stream_path_update_required = old_first_time_s != host->retention.first_time_s;
 
-    spinlock_unlock(&host->retention.spinlock);
+    seqlock_write_end(&host->retention.seqlock);
 
     if(stream_path_update_required)
         stream_path_retention_updated(host);
@@ -121,11 +121,19 @@ void rrdcontext_recalculate_host_retention(RRDHOST *host, RRD_FLAGS reason, bool
     dfe_start_read(host->rrdctx.contexts, rc) {
         rrdcontext_recalculate_context_retention(rc, reason, worker_jobs);
 
-        if(!first_time_s || (rc->first_time_s && rc->first_time_s < first_time_s))
-            first_time_s = rc->first_time_s;
+        time_t rc_first, rc_last;
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&rc->retention_seqlock);
+            rc_first = rc->first_time_s;
+            rc_last = rc->last_time_s;
+        } while(seqlock_read_retry(&rc->retention_seqlock, gen));
 
-        if(!last_time_s || rc->last_time_s > last_time_s)
-            last_time_s = rc->last_time_s;
+        if(!first_time_s || (rc_first && rc_first < first_time_s))
+            first_time_s = rc_first;
+
+        if(!last_time_s || rc_last > last_time_s)
+            last_time_s = rc_last;
     }
     dfe_done(rc);
 
@@ -736,6 +744,8 @@ bool rrdcontext_post_process_updates(RRDCONTEXT *rc, bool force, RRD_FLAGS reaso
     rrdcontext_lock(rc);
     rc->pp.executions++;
 
+    seqlock_write_begin(&rc->retention_seqlock);
+
     if(unlikely(!instances_active)) {
         // we had some instances, but they are gone now...
 
@@ -794,6 +804,8 @@ bool rrdcontext_post_process_updates(RRDCONTEXT *rc, bool force, RRD_FLAGS reaso
             rrd_flag_set_updated(rc, RRD_FLAG_UPDATE_REASON_CHANGED_METADATA);
         }
     }
+
+    seqlock_write_end(&rc->retention_seqlock);
 
     if(unlikely(rrd_flag_is_updated(rc))) {
         if(check_if_cloud_version_changed_unsafe(rc, false)) {

@@ -267,11 +267,21 @@ static ssize_t rrdcontext_to_json_v2_add_context(void *data, RRDCONTEXT_ACQUIRED
 
     RRDCONTEXT *rc = rrdcontext_acquired_value(rca);
 
-    if(ctl->window.enabled && !query_matches_retention(ctl->window.after, ctl->window.before, rc->first_time_s, (rc->flags & RRD_FLAG_COLLECTED) ? ctl->now : rc->last_time_s, 0))
+    time_t rc_first_time_s, rc_last_time_s;
+    {
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&rc->retention_seqlock);
+            rc_first_time_s = rc->first_time_s;
+            rc_last_time_s = rc->last_time_s;
+        } while(seqlock_read_retry(&rc->retention_seqlock, gen));
+    }
+
+    if(ctl->window.enabled && !query_matches_retention(ctl->window.after, ctl->window.before, rc_first_time_s, (rc->flags & RRD_FLAG_COLLECTED) ? ctl->now : rc_last_time_s, 0))
         return 0; // continue to next context
 
     struct fts_search_results search_results = {0};
-    
+
     if((ctl->mode & CONTEXTS_V2_SEARCH) && ctl->q.pattern) {
         rrdcontext_to_json_v2_full_text_search(ctl, rc, ctl->q.pattern, &search_results);
 
@@ -292,8 +302,8 @@ static ssize_t rrdcontext_to_json_v2_add_context(void *data, RRDCONTEXT_ACQUIRED
             .family = string_dup(rc->family),
             .units = string_dup(rc->units),
             .priority = rc->priority,
-            .first_time_s = rc->first_time_s,
-            .last_time_s = rc->last_time_s,
+            .first_time_s = rc_first_time_s,
+            .last_time_s = rc_last_time_s,
             .flags = rc->flags,
             .nodes = 1,
             .instances = dictionary_entries(rc->rrdinstances),
@@ -599,8 +609,14 @@ static ssize_t rrdcontext_to_json_v2_add_host(void *data, RRDHOST *host, bool qu
             host_matched = true;
     }
     else if(!host_matched && ctl->window.enabled) {
-        time_t first_time_s = host->retention.first_time_s;
-        time_t last_time_s = host->retention.last_time_s;
+        time_t first_time_s, last_time_s;
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&host->retention.seqlock);
+            first_time_s = host->retention.first_time_s;
+            last_time_s = host->retention.last_time_s;
+        } while(seqlock_read_retry(&host->retention.seqlock, gen));
+
         if(rrdhost_is_online(host))
             last_time_s = ctl->now; // if the host is online, use the current time as the last time
 

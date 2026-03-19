@@ -1110,7 +1110,15 @@ static int store_host_metadata(RRDHOST *host)
     SQLITE_BIND_FAIL(bind_fail, bind_text_null(res, ++param, rrdhost_program_version(host), 1));
     SQLITE_BIND_FAIL(bind_fail, sqlite3_bind_int64(res, ++param, host->rrd_history_entries));
     SQLITE_BIND_FAIL(bind_fail, sqlite3_bind_int(res, ++param, (int)host->health.enabled));
-    SQLITE_BIND_FAIL(bind_fail, sqlite3_bind_int64(res, ++param, (sqlite3_int64) host->stream.snd.status.last_connected));
+    {
+        time_t snd_last_connected;
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&host->stream.snd.status.seqlock);
+            snd_last_connected = host->stream.snd.status.last_connected;
+        } while(seqlock_read_retry(&host->stream.snd.status.seqlock, gen));
+        SQLITE_BIND_FAIL(bind_fail, sqlite3_bind_int64(res, ++param, (sqlite3_int64) snd_last_connected));
+    }
 
     int store_rc = sqlite3_step_monitored(res);
 

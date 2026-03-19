@@ -474,6 +474,10 @@ int netdata_main(int argc, char **argv) {
                             unittest_running = true;
                             return rwlocks_stress_test();
                         }
+                        else if(strcmp(optarg, "seqlockstest") == 0) {
+                            unittest_running = true;
+                            return seqlock_stress_test();
+                        }
                         else if(strcmp(optarg, "prd-array-stress") == 0) {
                             unittest_running = true;
                             return prd_array_stress_test();

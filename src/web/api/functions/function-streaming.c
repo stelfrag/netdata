@@ -166,9 +166,17 @@ int function_streaming(BUFFER *wb, const char *function __maybe_unused, BUFFER *
             // collection
 
             // InConnections
-            buffer_json_add_array_item_uint64(wb, s.host->stream.rcv.status.connections);
-            if(s.host->stream.rcv.status.connections > max_in_connections)
-                max_in_connections = s.host->stream.rcv.status.connections;
+            {
+                uint32_t in_connections;
+                uint64_t gen;
+                do {
+                    gen = seqlock_read_begin(&s.host->stream.rcv.status.seqlock);
+                    in_connections = s.host->stream.rcv.status.connections;
+                } while(seqlock_read_retry(&s.host->stream.rcv.status.seqlock, gen));
+                buffer_json_add_array_item_uint64(wb, in_connections);
+                if(in_connections > max_in_connections)
+                    max_in_connections = in_connections;
+            }
 
             if(s.ingest.since) {
                 uint64_t in_since = s.ingest.since * MSEC_PER_SEC;
@@ -216,9 +224,17 @@ int function_streaming(BUFFER *wb, const char *function __maybe_unused, BUFFER *
             // streaming
 
             // OutConnections
-            buffer_json_add_array_item_uint64(wb, s.host->stream.snd.status.connections);
-            if(s.host->stream.snd.status.connections > max_out_connections)
-                max_out_connections = s.host->stream.snd.status.connections;
+            {
+                uint32_t out_connections;
+                uint64_t gen;
+                do {
+                    gen = seqlock_read_begin(&s.host->stream.snd.status.seqlock);
+                    out_connections = s.host->stream.snd.status.connections;
+                } while(seqlock_read_retry(&s.host->stream.snd.status.seqlock, gen));
+                buffer_json_add_array_item_uint64(wb, out_connections);
+                if(out_connections > max_out_connections)
+                    max_out_connections = out_connections;
+            }
 
             if(s.stream.since) {
                 uint64_t out_since = s.stream.since * MSEC_PER_SEC;

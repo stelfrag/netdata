@@ -237,7 +237,9 @@ stream_connect_validate_first_response(RRDHOST *host, struct sender_state *s, ch
         stream_parent_set_host_reconnect_delay(
             host, STREAM_HANDSHAKE_SP_CONNECTED, stream_send.parents.reconnect_delay_s);
         s->capabilities = convert_stream_version_to_capabilities(version, host, true);
+        seqlock_write_begin(&s->host->stream.snd.status.seqlock);
         s->host->stream.snd.status.reason = (STREAM_HANDSHAKE)s->capabilities;
+        seqlock_write_end(&s->host->stream.snd.status.seqlock);
         return true;
     }
 

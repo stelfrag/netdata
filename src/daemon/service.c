@@ -161,17 +161,30 @@ static void svc_rrd_cleanup_obsolete_charts_from_all_hosts() {
         if (rrdhost_is_local(host) || IS_VIRTUAL_HOST_OS(host))
             continue;
 
-        rrdhost_receiver_lock(host);
-
         time_t now = now_realtime_sec();
 
-        if (!host->receiver &&
-            host->stream.rcv.status.last_connected == 0 &&
-            (host->stream.rcv.status.last_disconnected + rrdset_free_obsolete_time_s < now)) {
-            svc_rrdhost_obsolete_all_charts(host);
+        // seqlock pre-check: skip the expensive receiver_lock for most hosts
+        time_t rcv_last_connected, rcv_last_disconnected;
+        {
+            uint64_t gen;
+            do {
+                gen = seqlock_read_begin(&host->stream.rcv.status.seqlock);
+                rcv_last_connected = host->stream.rcv.status.last_connected;
+                rcv_last_disconnected = host->stream.rcv.status.last_disconnected;
+            } while(seqlock_read_retry(&host->stream.rcv.status.seqlock, gen));
         }
 
-        rrdhost_receiver_unlock(host);
+        if(rcv_last_connected == 0 &&
+           (rcv_last_disconnected + rrdset_free_obsolete_time_s < now)) {
+            // status fields match — take the lock and re-check with receiver pointer
+            rrdhost_receiver_lock(host);
+            if (!host->receiver &&
+                host->stream.rcv.status.last_connected == 0 &&
+                (host->stream.rcv.status.last_disconnected + rrdset_free_obsolete_time_s < now)) {
+                svc_rrdhost_obsolete_all_charts(host);
+            }
+            rrdhost_receiver_unlock(host);
+        }
     }
 
     rrd_rdunlock();
@@ -190,8 +203,17 @@ static void svc_rrdhost_cleanup_orphan_hosts(RRDHOST *protected_host) {
         if(!rrdhost_should_be_cleaned_up(host, protected_host, now))
             continue;
 
+        time_t ephemeral_last_disconnected;
+        {
+            uint64_t gen;
+            do {
+                gen = seqlock_read_begin(&host->stream.rcv.status.seqlock);
+                ephemeral_last_disconnected = host->stream.rcv.status.last_disconnected;
+            } while(seqlock_read_retry(&host->stream.rcv.status.seqlock, gen));
+        }
+
         bool delete = rrdhost_free_ephemeral_time_s &&
-                      now - host->stream.rcv.status.last_disconnected > rrdhost_free_ephemeral_time_s &&
+                      now - ephemeral_last_disconnected > rrdhost_free_ephemeral_time_s &&
                       rrdhost_option_check(host, RRDHOST_OPTION_EPHEMERAL_HOST);
 
         if (!delete && rrdhost_flag_check(host, RRDHOST_FLAG_ARCHIVED)) {

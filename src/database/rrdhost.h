@@ -194,6 +194,8 @@ struct rrdhost {
             } pluginsd_chart_slots;
 
             struct {
+                SEQLOCK seqlock;                    // protects consistent reads of the fields below
+
                 pid_t tid;
 
                 time_t last_connected;              // last time child connected (stored in db)
@@ -226,6 +228,8 @@ struct rrdhost {
             } pluginsd_chart_slots;
 
             struct {
+                SEQLOCK seqlock;                    // protects consistent reads of the fields below
+
                 pid_t tid;
 
                 time_t last_connected;              // the time the last sender was connected
@@ -322,7 +326,7 @@ struct rrdhost {
     } rrdctx;
 
     struct {
-        SPINLOCK spinlock;
+        SEQLOCK seqlock;
         time_t first_time_s;
         time_t last_time_s;
     } retention;
@@ -481,11 +485,13 @@ RRDHOST_TZ rrdhost_tz_get(RRDHOST *host);
 void rrdhost_tz_free(RRDHOST_TZ *tz);
 
 static inline void rrdhost_retention(RRDHOST *host, time_t now, bool online, time_t *from, time_t *to) {
-    time_t first_time_s = 0, last_time_s = 0;
-    spinlock_lock(&host->retention.spinlock);
-    first_time_s = host->retention.first_time_s;
-    last_time_s = host->retention.last_time_s;
-    spinlock_unlock(&host->retention.spinlock);
+    time_t first_time_s, last_time_s;
+    uint64_t gen;
+    do {
+        gen = seqlock_read_begin(&host->retention.seqlock);
+        first_time_s = host->retention.first_time_s;
+        last_time_s = host->retention.last_time_s;
+    } while(seqlock_read_retry(&host->retention.seqlock, gen));
 
     if(from)
         *from = first_time_s;

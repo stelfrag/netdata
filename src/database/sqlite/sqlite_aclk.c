@@ -173,11 +173,16 @@ static int create_host_callback(void *data, int argc, char **argv, char **column
     if (is_ephemeral)
         rrdhost_option_set(host, RRDHOST_OPTION_EPHEMERAL_HOST);
 
-    if (is_ephemeral)
+    if (is_ephemeral) {
+        seqlock_write_begin(&host->stream.rcv.status.seqlock);
         host->stream.rcv.status.last_disconnected = now_realtime_sec();
+        seqlock_write_end(&host->stream.rcv.status.seqlock);
+    }
 
     host->rrdlabels = sql_load_host_labels((nd_uuid_t *)argv[IDX_HOST_ID]);
+    seqlock_write_begin(&host->stream.snd.status.seqlock);
     host->stream.snd.status.last_connected = last_connected;
+    seqlock_write_end(&host->stream.snd.status.seqlock);
 
     pulse_host_status(host, 0, 0); // this will detect the receiver status
 

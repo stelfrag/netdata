@@ -32,6 +32,9 @@ static void rrdcontext_insert_callback(const DICTIONARY_ITEM *item __maybe_unuse
     // Add the context to the registry to track unique contexts
     rrdcontext_context_registry_add(rc->id);
 
+    spinlock_init(&rc->spinlock);
+    seqlock_init(&rc->retention_seqlock);
+
     if(rc->hub.version) {
         // we are loading data from the SQL database
 
@@ -63,8 +66,10 @@ static void rrdcontext_insert_callback(const DICTIONARY_ITEM *item __maybe_unuse
 
         rc->version      = rc->hub.version;
         rc->priority     = rc->hub.priority;
+        seqlock_write_begin(&rc->retention_seqlock);
         rc->first_time_s = (time_t)rc->hub.first_time_s;
         rc->last_time_s  = (time_t)rc->hub.last_time_s;
+        seqlock_write_end(&rc->retention_seqlock);
 
         if(rc->hub.deleted || !rc->hub.first_time_s)
             rrdcontext_set_deleted(rc, RRD_FLAG_NONE);
@@ -83,7 +88,6 @@ static void rrdcontext_insert_callback(const DICTIONARY_ITEM *item __maybe_unuse
     }
 
     rrdinstances_create_in_rrdcontext(rc);
-    spinlock_init(&rc->spinlock);
 
     // update the count of contexts
     __atomic_add_fetch(&rc->rrdhost->rrdctx.contexts_count, 1, __ATOMIC_RELAXED);

@@ -358,10 +358,15 @@ RRDHOST *rrdhost_create(
 
     spinlock_init(&host->receiver_lock);
     spinlock_init(&host->rrdhost_update_lock);
+    seqlock_init(&host->retention.seqlock);
+    seqlock_init(&host->stream.snd.status.seqlock);
+    seqlock_init(&host->stream.rcv.status.seqlock);
 
     if (likely(!archived)) {
         rrd_functions_host_init(host);
+        seqlock_write_begin(&host->stream.snd.status.seqlock);
         host->stream.snd.status.last_connected = now_realtime_sec();
+        seqlock_write_end(&host->stream.snd.status.seqlock);
         host->rrdlabels = rrdlabels_create();
         stream_sender_structures_init(host, stream, parents, api_key, send_charts_matching);
     }
@@ -608,7 +613,9 @@ static void rrdhost_update(RRDHOST *host
     if(!host->rrdvars)
         host->rrdvars = rrdvariables_create();
 
+    seqlock_write_begin(&host->stream.snd.status.seqlock);
     host->stream.snd.status.last_connected = now_realtime_sec();
+    seqlock_write_end(&host->stream.snd.status.seqlock);
 
     if (rrdhost_flag_check(host, RRDHOST_FLAG_ARCHIVED)) {
         rrdhost_flag_clear(host, RRDHOST_FLAG_ARCHIVED);
@@ -751,10 +758,18 @@ bool rrdhost_should_be_cleaned_up(RRDHOST *host, RRDHOST *protected_host, time_t
         && rrdhost_sender_replicating_charts(host) == 0
         && rrdhost_flag_check(host, RRDHOST_FLAG_ORPHAN)
         && !rrdhost_flag_check(host, RRDHOST_FLAG_PENDING_CONTEXT_LOAD | RRDHOST_FLAG_COLLECTOR_ONLINE)
-        && health_evloop_current_iteration() - rrdhost_health_evloop_last_iteration(host) > 10
-        && host->stream.rcv.status.last_disconnected
-        && host->stream.rcv.status.last_disconnected + rrdhost_cleanup_orphan_to_archive_time_s < now_s)
-        return true;
+        && health_evloop_current_iteration() - rrdhost_health_evloop_last_iteration(host) > 10) {
+
+        time_t last_disconnected;
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&host->stream.rcv.status.seqlock);
+            last_disconnected = host->stream.rcv.status.last_disconnected;
+        } while(seqlock_read_retry(&host->stream.rcv.status.seqlock, gen));
+
+        if(last_disconnected && last_disconnected + rrdhost_cleanup_orphan_to_archive_time_s < now_s)
+            return true;
+    }
 
     return false;
 }

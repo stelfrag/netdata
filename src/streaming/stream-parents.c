@@ -99,7 +99,9 @@ STREAM_HANDSHAKE stream_parent_get_disconnect_reason(STREAM_PARENT *d) {
 }
 
 void stream_parent_set_host_disconnect_reason(RRDHOST *host, STREAM_HANDSHAKE reason, time_t since) {
+    seqlock_write_begin(&host->stream.snd.status.seqlock);
     host->stream.snd.status.reason = reason;
+    seqlock_write_end(&host->stream.snd.status.seqlock);
     struct stream_parent *d = host->stream.snd.parents.current;
     if(!d) return;
     d->since_ut = since * USEC_PER_SEC;
@@ -138,7 +140,9 @@ void stream_parent_set_host_reconnect_delay(RRDHOST *host, STREAM_HANDSHAKE reas
 }
 
 static void stream_parent_set_connect_failure_reason(RRDHOST *host, STREAM_PARENT *d, STREAM_HANDSHAKE reason, time_t secs) {
+    seqlock_write_begin(&host->stream.snd.status.seqlock);
     host->stream.snd.status.reason = reason;
+    seqlock_write_end(&host->stream.snd.status.seqlock);
     pulse_host_status(host, PULSE_HOST_STATUS_SND_NO_DST_FAILED, reason);
     pulse_sender_connection_failed(d ? string2str(d->destination) : NULL, reason);
     stream_parent_set_reconnect_delay(d, reason, secs);
@@ -624,14 +628,18 @@ bool stream_parent_connect_to_one_unsafe(
 
         if (d->banned_temporarily_erroneous) {
             potential++;
+            seqlock_write_begin(&host->stream.snd.status.seqlock);
             host->stream.snd.status.reason = d->reason;
+            seqlock_write_end(&host->stream.snd.status.seqlock);
             continue;
         }
 
         if (d->postpone_until_ut > now_ut) {
             skipped_but_useful++;
             potential++;
+            seqlock_write_begin(&host->stream.snd.status.seqlock);
             host->stream.snd.status.reason = d->reason;
+            seqlock_write_end(&host->stream.snd.status.seqlock);
             nd_log(NDLS_DAEMON, NDLP_DEBUG,
                    "STREAM PARENTS '%s': skipping useful parent '%s': POSTPONED FOR %ld SECS MORE: %s",
                    rrdhost_hostname(host),
@@ -681,7 +689,9 @@ bool stream_parent_connect_to_one_unsafe(
                     pulse_sender_stream_info_failed(string2str(d->destination), d->reason);
                     skipped_but_useful++;
                     potential++;
+                    seqlock_write_begin(&host->stream.snd.status.seqlock);
                     host->stream.snd.status.reason = d->reason;
+                    seqlock_write_end(&host->stream.snd.status.seqlock);
                     nd_log(NDLS_DAEMON, NDLP_DEBUG,
                            "STREAM PARENTS '%s': skipping useful parent '%s': %s",
                            rrdhost_hostname(host), string2str(d->destination),
@@ -733,10 +743,14 @@ bool stream_parent_connect_to_one_unsafe(
                rrdhost_hostname(host), skipped_but_useful, skipped_not_useful, potential);
 
         if(!potential) {
+            seqlock_write_begin(&host->stream.snd.status.seqlock);
             if(host->stream.snd.status.reason != STREAM_HANDSHAKE_SP_NO_DESTINATION) {
                 host->stream.snd.status.reason = STREAM_HANDSHAKE_SP_NO_DESTINATION;
+                seqlock_write_end(&host->stream.snd.status.seqlock);
                 pulse_sender_connection_failed(NULL, host->stream.snd.status.reason);
             }
+            else
+                seqlock_write_end(&host->stream.snd.status.seqlock);
             pulse_host_status(host, PULSE_HOST_STATUS_SND_NO_DST, 0);
         }
 
@@ -829,7 +843,9 @@ bool stream_parent_connect_to_one_unsafe(
 
         if(nd_thread_signaled_to_cancel()) {
             sender_sock->error = ND_SOCK_ERR_THREAD_CANCELLED;
+            seqlock_write_begin(&host->stream.snd.status.seqlock);
             host->stream.snd.status.reason = STREAM_HANDSHAKE_DISCONNECT_SIGNALED_TO_STOP;
+            seqlock_write_end(&host->stream.snd.status.seqlock);
             pulse_host_status(host, PULSE_HOST_STATUS_SND_OFFLINE, host->stream.snd.status.reason);
             return false;
         }
@@ -871,13 +887,17 @@ bool stream_parent_connect_to_one_unsafe(
                    sender_sock->fd);
 
             sender_sock->error = ND_SOCK_ERR_NONE;
+            seqlock_write_begin(&host->stream.snd.status.seqlock);
             host->stream.snd.status.reason = STREAM_HANDSHAKE_SP_CONNECTED;
+            seqlock_write_end(&host->stream.snd.status.seqlock);
             pulse_host_status(host, PULSE_HOST_STATUS_SND_CONNECTING, host->stream.snd.status.reason);
             return true;
         }
         else {
             stream_parent_nd_sock_error_to_reason(d, sender_sock);
+            seqlock_write_begin(&host->stream.snd.status.seqlock);
             host->stream.snd.status.reason = d->reason;
+            seqlock_write_end(&host->stream.snd.status.seqlock);
             pulse_sender_connection_failed(string2str(d->destination), d->reason);
             pulse_host_status(host, PULSE_HOST_STATUS_SND_CONNECTING, host->stream.snd.status.reason);
             nd_log(NDLS_DAEMON, NDLP_DEBUG,

@@ -256,14 +256,21 @@ static inline int rrdcontext_to_json_callback(const DICTIONARY_ITEM *item, void 
     if(options & RRDCONTEXT_OPTION_DEEPSCAN)
         rrdcontext_recalculate_context_retention(rc, RRD_FLAG_NONE, false);
 
-    if(after && (!rc->last_time_s || after > rc->last_time_s))
+    time_t first_time_s, last_time_s;
+    {
+        uint64_t gen;
+        do {
+            gen = seqlock_read_begin(&rc->retention_seqlock);
+            first_time_s = rc->first_time_s;
+            last_time_s = rc->last_time_s;
+        } while(seqlock_read_retry(&rc->retention_seqlock, gen));
+    }
+
+    if(after && (!last_time_s || after > last_time_s))
         return 0;
 
-    if(before && (!rc->first_time_s || before < rc->first_time_s))
+    if(before && (!first_time_s || before < first_time_s))
         return 0;
-
-    time_t first_time_s = rc->first_time_s;
-    time_t last_time_s = rc->last_time_s;
     RRD_FLAGS flags = rrd_flags_get(rc);
 
     BUFFER *wb_instances = NULL;

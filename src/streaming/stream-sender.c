@@ -330,8 +330,10 @@ void stream_sender_move_queue_to_running_unsafe(struct stream_thread *sth) {
         s->thread.msg.session = os_random32();
         s->thread.msg.meta = &s->thread.meta;
 
+        seqlock_write_begin(&s->host->stream.snd.status.seqlock);
         __atomic_store_n(&s->host->stream.snd.status.tid, gettid_cached(), __ATOMIC_RELAXED);
         s->host->stream.snd.status.connections++;
+        seqlock_write_end(&s->host->stream.snd.status.seqlock);
         s->last_state_since_t = now_realtime_sec();
 
         s->replication.last_progress_ut = now_monotonic_usec();
@@ -443,7 +445,9 @@ static void stream_sender_move_running_to_connector_or_remove_internal(struct st
     s->thread.msg.session = 0;
     s->thread.msg.meta = NULL;
 
+    seqlock_write_begin(&s->host->stream.snd.status.seqlock);
     __atomic_store_n(&s->host->stream.snd.status.tid, 0, __ATOMIC_RELAXED);
+    seqlock_write_end(&s->host->stream.snd.status.seqlock);
     stream_sender_unlock(s);
 
     stream_sender_log_disconnection(sth, s, reason, receiver_reason);
