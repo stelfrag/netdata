@@ -52,6 +52,7 @@ static int api_v23_data_internal(RRDHOST *host __maybe_unused, struct web_client
     char *time_group_options = NULL;
     char *tier_str = NULL;
     char *cardinality_limit_str = NULL;
+    char *parallel_str = NULL;
     size_t tier = 0;
     size_t cardinality_limit = 0;
     RRDR_TIME_GROUPING time_group = RRDR_GROUPING_AVERAGE;
@@ -116,6 +117,7 @@ static int api_v23_data_internal(RRDHOST *host __maybe_unused, struct web_client
         else if(!strcmp(name, "time_resampling")) resampling_time_str = value;
         else if(!strcmp(name, "tier")) tier_str = value;
         else if(!strcmp(name, "cardinality_limit")) cardinality_limit_str = value;
+        else if(!strcmp(name, "parallel")) parallel_str = value;
         else if(!strcmp(name, "callback")) responseHandler = value;
         else if(!strcmp(name, "filename")) outFileName = value;
         else if(!strcmp(name, "tqx")) {
@@ -200,6 +202,13 @@ static int api_v23_data_internal(RRDHOST *host __maybe_unused, struct web_client
         cardinality_limit = str2ul(cardinality_limit_str);
     }
 
+    size_t parallel_threads = 0;
+    if(parallel_str && *parallel_str) {
+        parallel_threads = str2ul(parallel_str);
+        if(parallel_threads > 0)
+            options |= RRDR_OPTION_PARALLEL;
+    }
+
     time_t    before = (before_str && *before_str)?str2l(before_str):0;
     time_t    after  = (after_str  && *after_str) ?str2l(after_str):-600;
     size_t    points = (points_str && *points_str)?str2u(points_str):0;
@@ -236,6 +245,7 @@ static int api_v23_data_internal(RRDHOST *host __maybe_unused, struct web_client
         .priority = STORAGE_PRIORITY_NORMAL,
         .received_ut = received_ut,
         .cardinality_limit = cardinality_limit,
+        .parallel_threads = parallel_threads,
 
         .interrupt_callback = web_client_interrupt_callback,
         .interrupt_callback_data = w,

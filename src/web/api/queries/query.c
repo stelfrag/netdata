@@ -874,6 +874,9 @@ struct query_thread_context {
     RRDR *r_tmp;                    // the original r_tmp from the dispatcher
     bool is_group_by;               // true when r_tmp != r (v2 group-by active)
 
+    size_t thread_id;               // thread index (0 = runs in caller thread)
+    size_t total_threads;           // total number of parallel threads
+
     size_t *metric_ids;             // array of metric indices to process
     size_t metric_count;            // number of metrics assigned to this thread
 
@@ -887,13 +890,22 @@ struct query_thread_context {
     size_t local_dimensions_nonzero;
 
     // shared synchronization
-    SPINLOCK *group_by_lock;        // protects group-by merges and query_points merges
-    bool *shared_cancel;            // points to shared cancellation flag
+    SPINLOCK *slot_locks;           // per-slot locks for group-by merges (array of r->d locks)
+    SPINLOCK *query_points_lock;    // protects query_points merges (qi/qc/qn/qt)
+    bool *shared_cancel;            // points to shared cancellation flag (set atomically)
 };
 
 static void query_parallel_worker(void *arg) {
     struct query_thread_context *ctx = (struct query_thread_context *)arg;
     QUERY_TARGET *qt = ctx->qt;
+    usec_t worker_start_ut = now_monotonic_usec();
+
+    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+           "QUERY PARALLEL: thread %zu/%zu starting, assigned %zu metrics (ids %zu..%zu), points %zu",
+           ctx->thread_id, ctx->total_threads, ctx->metric_count,
+           ctx->metric_count ? ctx->metric_ids[0] : 0,
+           ctx->metric_count ? ctx->metric_ids[ctx->metric_count - 1] : 0,
+           qt->window.points);
 
     // create a thread-local RRDR with 1 dimension for time_grouping isolation
     ONEWAYALLOC *thr_owa = onewayalloc_create(0);
@@ -929,7 +941,7 @@ static void query_parallel_worker(void *arg) {
     ctx->local_dimensions_nonzero = 0;
 
     for(size_t i = 0; i < ctx->metric_count; i++) {
-        // check for cancellation
+        // check for cancellation (set by any thread that detects interrupt/timeout)
         if(__atomic_load_n(ctx->shared_cancel, __ATOMIC_RELAXED))
             break;
 
@@ -973,11 +985,12 @@ static void query_parallel_worker(void *arg) {
             qm->query_points = ops->query_point;
 
             if(ctx->is_group_by) {
-                // v2 group-by: merge into shared r under lock
-                spinlock_lock(ctx->group_by_lock);
-                rrd2rrdr_group_by_add_metric(ctx->r, qm->grouped_as.first_slot, thr_r, 0,
+                // v2 group-by: merge into shared r under per-slot lock
+                size_t slot = qm->grouped_as.first_slot;
+                spinlock_lock(&ctx->slot_locks[slot]);
+                rrd2rrdr_group_by_add_metric(ctx->r, slot, thr_r, 0,
                                              qt->request.group_by[0].aggregation, &qm->query_points, 0);
-                spinlock_unlock(ctx->group_by_lock);
+                spinlock_unlock(&ctx->slot_locks[slot]);
             }
             else {
                 // v1: copy results directly to the correct column in the shared r
@@ -992,7 +1005,8 @@ static void query_parallel_worker(void *arg) {
             }
 
             // accumulate stats from this query execution
-            ctx->local_db_points_read += ops->db_total_points_read;
+            size_t points_read = ops->db_total_points_read;
+            ctx->local_db_points_read += points_read;
             ctx->local_result_points_generated += thr_r->rows;
 
             rrd2rrdr_query_ops_release(ops);
@@ -1002,24 +1016,25 @@ static void query_parallel_worker(void *arg) {
             __atomic_add_fetch(&qc->metrics.queried, 1, __ATOMIC_RELAXED);
             __atomic_add_fetch(&qn->metrics.queried, 1, __ATOMIC_RELAXED);
 
-            qd->status |= QUERY_STATUS_QUERIED;
+            // qd->status is shared across metrics that map to the same dimension - use atomic OR
+            __atomic_fetch_or(&qd->status, QUERY_STATUS_QUERIED, __ATOMIC_RELAXED);
             qm->status |= RRDR_DIMENSION_QUERIED;
 
             if(qt->request.version >= 2) {
                 storage_point_make_positive(qm->query_points);
                 // multiple metrics may share the same qi/qc/qn, protect with lock
-                spinlock_lock(ctx->group_by_lock);
+                spinlock_lock(ctx->query_points_lock);
                 storage_point_merge_to(qi->query_points, qm->query_points);
                 storage_point_merge_to(qc->query_points, qm->query_points);
                 storage_point_merge_to(qn->query_points, qm->query_points);
                 storage_point_merge_to(qt->query_points, qm->query_points);
-                spinlock_unlock(ctx->group_by_lock);
+                spinlock_unlock(ctx->query_points_lock);
             }
 
             if(qm->status & RRDR_DIMENSION_NONZERO)
                 ctx->local_dimensions_nonzero++;
 
-            pulse_queries_rrdr_query_completed(1, ops->db_total_points_read, 0, qt->request.query_source);
+            pulse_queries_rrdr_query_completed(1, points_read, 0, qt->request.query_source);
 
             ctx->local_dimensions_used++;
         }
@@ -1028,12 +1043,37 @@ static void query_parallel_worker(void *arg) {
             __atomic_add_fetch(&qc->metrics.failed, 1, __ATOMIC_RELAXED);
             __atomic_add_fetch(&qn->metrics.failed, 1, __ATOMIC_RELAXED);
 
-            qd->status |= QUERY_STATUS_FAILED;
+            // qd->status is shared across metrics - use atomic OR
+            __atomic_fetch_or(&qd->status, QUERY_STATUS_FAILED, __ATOMIC_RELAXED);
             qm->status |= RRDR_DIMENSION_FAILED;
         }
 
         query_progress_done_step(qt->request.transaction, 1);
+
+        // check for interrupt callback or timeout, and signal cancellation to all threads
+        if(qt->request.interrupt_callback && qt->request.interrupt_callback(qt->request.interrupt_callback_data)) {
+            nd_log(NDLS_ACCESS, NDLP_NOTICE, "QUERY INTERRUPTED");
+            __atomic_store_n(ctx->shared_cancel, true, __ATOMIC_RELAXED);
+        }
+        else if(qt->request.timeout_ms) {
+            usec_t now_ut = now_monotonic_usec();
+            if(((NETDATA_DOUBLE)(now_ut - qt->timings.received_ut) / 1000.0) > (NETDATA_DOUBLE)qt->request.timeout_ms) {
+                nd_log(NDLS_ACCESS, NDLP_WARNING, "QUERY CANCELED RUNTIME EXCEEDED %0.2f ms (LIMIT %lld ms)",
+                       (NETDATA_DOUBLE)(now_ut - qt->timings.received_ut) / 1000.0, (long long)qt->request.timeout_ms);
+                __atomic_store_n(ctx->shared_cancel, true, __ATOMIC_RELAXED);
+            }
+        }
     }
+
+    usec_t worker_end_ut = now_monotonic_usec();
+    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+           "QUERY PARALLEL: thread %zu/%zu finished, queried %zu metrics (%zu nonzero), "
+           "db_points_read %zu, result_points %zu, duration %.2f ms%s",
+           ctx->thread_id, ctx->total_threads,
+           ctx->local_dimensions_used, ctx->local_dimensions_nonzero,
+           ctx->local_db_points_read, ctx->local_result_points_generated,
+           (NETDATA_DOUBLE)(worker_end_ut - worker_start_ut) / USEC_PER_MS,
+           __atomic_load_n(ctx->shared_cancel, __ATOMIC_RELAXED) ? " (CANCELLED)" : "");
 
     // free thread-local time grouping resources and RRDR
     thr_r->time_grouping.free(thr_r);
@@ -1047,18 +1087,31 @@ static void query_parallel_worker(void *arg) {
 
 static void rrd2rrdr_parallel(QUERY_TARGET *qt, RRDR *r_tmp, RRDR *r,
                               long *out_dimensions_used, long *out_dimensions_nonzero) {
-    size_t num_threads = MAX(netdata_conf_cpus() / 2, 2);
-    if(num_threads > 8) num_threads = 8;
-    if(num_threads > qt->query.used / 4) num_threads = qt->query.used / 4;
-    if(num_threads < 2) num_threads = 2;
+    size_t num_threads;
+    if(qt->request.parallel_threads > 1)
+        num_threads = qt->request.parallel_threads;
+    else {
+        num_threads = MAX(netdata_conf_cpus() / 2, 2);
+        if(num_threads > 8) num_threads = 8;
+        if(num_threads > qt->query.used / 4) num_threads = qt->query.used / 4;
+        if(num_threads < 2) num_threads = 2;
+    }
 
     bool is_group_by = (r_tmp != r);
     bool shared_cancel = false;
-    SPINLOCK group_by_lock = SPINLOCK_INITIALIZER;
+    SPINLOCK query_points_lock = SPINLOCK_INITIALIZER;
+
+    // allocate per-slot locks for group-by (one spinlock per grouped dimension)
+    SPINLOCK *slot_locks = NULL;
+    if(is_group_by && r->d) {
+        slot_locks = mallocz(r->d * sizeof(SPINLOCK));
+        for(size_t i = 0; i < r->d; i++)
+            spinlock_init(&slot_locks[i]);
+    }
 
     struct query_thread_context *contexts = callocz(num_threads, sizeof(struct query_thread_context));
 
-    // distribute metrics round-robin across threads for balanced load
+    // distribute metrics in contiguous blocks across threads
     size_t per_thread = qt->query.used / num_threads;
     size_t remainder = qt->query.used % num_threads;
     size_t **metric_id_arrays = callocz(num_threads, sizeof(size_t *));
@@ -1074,13 +1127,23 @@ static void rrd2rrdr_parallel(QUERY_TARGET *qt, RRDR *r_tmp, RRDR *r,
             .r = r,
             .r_tmp = r_tmp,
             .is_group_by = is_group_by,
+            .thread_id = t,
+            .total_threads = num_threads,
             .metric_ids = metric_id_arrays[t],
             .metric_count = count,
-            .group_by_lock = &group_by_lock,
+            .slot_locks = slot_locks,
+            .query_points_lock = &query_points_lock,
             .shared_cancel = &shared_cancel,
         };
         offset += count;
     }
+
+    usec_t dispatch_ut = now_monotonic_usec();
+
+    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+           "QUERY PARALLEL: dispatching %u metrics across %zu threads (%s), points %zu",
+           qt->query.used, num_threads, is_group_by ? "group-by" : "v1-direct",
+           qt->window.points);
 
     // launch worker threads (thread 0 runs in the current thread to avoid overhead)
     ND_THREAD **threads = callocz(num_threads - 1, sizeof(ND_THREAD *));
@@ -1093,8 +1156,22 @@ static void rrd2rrdr_parallel(QUERY_TARGET *qt, RRDR *r_tmp, RRDR *r,
     query_parallel_worker(&contexts[0]);
 
     // wait for all threads to complete
+    usec_t wait_start_ut = now_monotonic_usec();
+    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+           "QUERY PARALLEL: thread 0 done, waiting for %zu worker threads to finish",
+           num_threads - 1);
+
     for(size_t t = 1; t < num_threads; t++)
         nd_thread_join(threads[t - 1]);
+
+    usec_t wait_end_ut = now_monotonic_usec();
+    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+           "QUERY PARALLEL: all %zu threads joined, wait time %.2f ms",
+           num_threads, (NETDATA_DOUBLE)(wait_end_ut - wait_start_ut) / USEC_PER_MS);
+
+    // propagate cancellation to the result flags
+    if(shared_cancel)
+        r->view.flags |= RRDR_RESULT_FLAG_CANCEL;
 
     // merge results from all threads
     long dimensions_used = 0, dimensions_nonzero = 0;
@@ -1134,7 +1211,20 @@ static void rrd2rrdr_parallel(QUERY_TARGET *qt, RRDR *r_tmp, RRDR *r,
         r->rows = r_tmp->rows;
     }
 
+    usec_t merge_end_ut = now_monotonic_usec();
+    nd_log(NDLS_DAEMON, NDLP_DEBUG,
+           "QUERY PARALLEL: merge complete, %ld dimensions used (%ld nonzero), "
+           "total db_points_read %zu, total duration %.2f ms (dispatch %.2f ms, wait %.2f ms, merge %.2f ms)%s",
+           dimensions_used, dimensions_nonzero,
+           r_tmp->stats.db_points_read,
+           (NETDATA_DOUBLE)(merge_end_ut - dispatch_ut) / USEC_PER_MS,
+           (NETDATA_DOUBLE)(wait_start_ut - dispatch_ut) / USEC_PER_MS,
+           (NETDATA_DOUBLE)(wait_end_ut - wait_start_ut) / USEC_PER_MS,
+           (NETDATA_DOUBLE)(merge_end_ut - wait_end_ut) / USEC_PER_MS,
+           shared_cancel ? " (CANCELLED)" : "");
+
     // cleanup
+    freez(slot_locks);
     freez(threads);
     for(size_t t = 0; t < num_threads; t++)
         freez(metric_id_arrays[t]);
@@ -1357,7 +1447,18 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
 
     long dimensions_used = 0, dimensions_nonzero = 0;
 
-    if(qt->query.used >= QUERY_PARALLEL_MIN_METRICS && netdata_conf_cpus() >= 2) {
+    bool force_parallel = (qt->window.options & RRDR_OPTION_PARALLEL) && qt->request.parallel_threads != 1;
+    bool force_sequential = (qt->window.options & RRDR_OPTION_SEQUENTIAL) || qt->request.parallel_threads == 1;
+    bool use_parallel;
+
+    if(force_parallel && !force_sequential)
+        use_parallel = true;
+    else if(force_sequential)
+        use_parallel = false;
+    else
+        use_parallel = (qt->query.used >= QUERY_PARALLEL_MIN_METRICS && netdata_conf_cpus() >= 2);
+
+    if(use_parallel) {
         rrd2rrdr_parallel(qt, r_tmp, r, &dimensions_used, &dimensions_nonzero);
     }
     else {

@@ -305,6 +305,9 @@ typedef struct query_target_request {
     // limiting cardinality of summary lists
     size_t cardinality_limit;           // limit the number of items per category in summary
 
+    // parallel query execution
+    size_t parallel_threads;            // 0 = auto, >0 = explicit thread count for parallel queries
+
     usec_t received_ut;
 
     qt_interrupt_callback_t interrupt_callback;
