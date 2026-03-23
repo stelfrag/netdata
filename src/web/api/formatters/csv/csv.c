@@ -63,9 +63,6 @@ void rrdr2csv(RRDR *r, BUFFER *wb, uint32_t format, RRDR_OPTIONS options, const 
 
     // for each line in the array
     for(i = start; i != end ;i += step) {
-        NETDATA_DOUBLE *cn = &r->v[ i * r->d ];
-        RRDR_VALUE_FLAGS *co = &r->o[ i * r->d ];
-
         buffer_strcat(wb, betweenlines);
         buffer_strcat(wb, startline);
 
@@ -92,9 +89,10 @@ void rrdr2csv(RRDR *r, BUFFER *wb, uint32_t format, RRDR_OPTIONS options, const 
 
             buffer_strcat(wb, separator);
 
-            NETDATA_DOUBLE n = cn[c];
+            size_t idx = rrdr_line_dim_idx(r, i, c);
+            NETDATA_DOUBLE n = r->v[idx];
 
-            if(co[c] & RRDR_VALUE_EMPTY) {
+            if(r->o[idx] & RRDR_VALUE_EMPTY) {
                 if(options & RRDR_OPTION_NULL2ZERO)
                     buffer_strcat(wb, "0");
                 else

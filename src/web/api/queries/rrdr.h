@@ -66,15 +66,15 @@ typedef struct rrdresult {
     DICTIONARY **dl;          // array of d dimension labels - NOT ALLOCATED when RRDR is created
     STORAGE_POINT *dqp;       // array of d dimensions query points - NOT ALLOCATED when RRDR is created
     STORAGE_POINT *dview;     // array of d dimensions group by view - NOT ALLOCATED when RRDR is created
-    NETDATA_DOUBLE *vh;       // array of n x d hidden values, while grouping - NOT ALLOCATED when RRDR is created
+    NETDATA_DOUBLE *vh;       // column-major array d x n hidden values - NOT ALLOCATED when RRDR is created
 
     DICTIONARY *label_keys;
 
     time_t *t;                // array of n timestamps
-    NETDATA_DOUBLE *v;        // array n x d values
-    RRDR_VALUE_FLAGS *o;      // array n x d options for each value returned
-    NETDATA_DOUBLE *ar;       // array n x d of anomaly rates (0 - 100)
-    uint32_t *gbc;            // array n x d of group by count - NOT ALLOCATED when RRDR is created
+    NETDATA_DOUBLE *v;        // column-major array d x n values, indexed via rrdr_line_dim_idx()
+    RRDR_VALUE_FLAGS *o;      // column-major array d x n options, indexed via rrdr_line_dim_idx()
+    NETDATA_DOUBLE *ar;       // column-major array d x n anomaly rates (0 - 100)
+    uint32_t *gbc;            // column-major array d x n group by count - NOT ALLOCATED when RRDR is created
 
     struct {
         size_t group;         // how many collected values were grouped for each row - NEEDED BY GROUPING FUNCTIONS
@@ -132,6 +132,12 @@ typedef struct rrdresult {
         struct query_target *release_with_rrdr_qt;
     } internal;
 } RRDR;
+
+// Column-major indexing: each dimension's time-series is contiguous in memory.
+// This optimizes the write path (query execution fills one dimension at a time)
+// and enables lock-free parallel writes (each dimension is a separate memory region).
+// v[dim * n + row], o[dim * n + row], ar[dim * n + row], etc.
+#define rrdr_line_dim_idx(r, row, dim) ((dim) * (r)->n + (row))
 
 #define rrdr_rows(r) ((r)->rows)
 

@@ -8,10 +8,6 @@ inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all
     if(!r->d || !r->n || (size_t)i >= r->n)
         return NAN;
 
-    NETDATA_DOUBLE *cn = &r->v[ i * r->d ];
-    RRDR_VALUE_FLAGS *co = &r->o[ i * r->d ];
-    NETDATA_DOUBLE *ar = &r->ar[ i * r->d ];
-
     NETDATA_DOUBLE sum = 0, min = NAN, max = NAN, v = NAN;
     size_t dims = 0;
 
@@ -22,10 +18,12 @@ inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all
         if(unlikely(!rrdr_dimension_should_be_exposed(r->od[c], options)))
             continue;
 
-        if(unlikely((co[c] & RRDR_VALUE_EMPTY)))
+        size_t idx = rrdr_line_dim_idx(r, i, c);
+
+        if(unlikely((r->o[idx] & RRDR_VALUE_EMPTY)))
             continue;
 
-        NETDATA_DOUBLE n = cn[c];
+        NETDATA_DOUBLE n = r->v[idx];
 
         if(unlikely(!dims))
             min = max = n;
@@ -35,7 +33,7 @@ inline NETDATA_DOUBLE rrdr2value(RRDR *r, long i, RRDR_OPTIONS options, int *all
         if (n < min) min = n;
         if (n > max) max = n;
 
-        total_anomaly_rate += ar[c];
+        total_anomaly_rate += r->ar[idx];
 
         dims++;
     }

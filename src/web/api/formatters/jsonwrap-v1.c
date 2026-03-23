@@ -85,11 +85,10 @@ static inline size_t rrdr_dimension_view_latest_values(BUFFER *wb, const char *k
 
         i++;
 
-        NETDATA_DOUBLE *cn = &r->v[ (rrdr_rows(r) - 1) * r->d ];
-        RRDR_VALUE_FLAGS *co = &r->o[ (rrdr_rows(r) - 1) * r->d ];
-        NETDATA_DOUBLE n = cn[c];
+        size_t idx = rrdr_line_dim_idx(r, rrdr_rows(r) - 1, c);
+        NETDATA_DOUBLE n = r->v[idx];
 
-        if(co[c] & RRDR_VALUE_EMPTY) {
+        if(r->o[idx] & RRDR_VALUE_EMPTY) {
             if(options & RRDR_OPTION_NULL2ZERO)
                 buffer_json_add_array_item_double(wb, 0.0);
             else

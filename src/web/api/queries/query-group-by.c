@@ -675,18 +675,14 @@ RRDR *rrd2rrdr_group_by_initialize(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
         // make all values empty
         if(r->n && r->d) {
             for (size_t i = 0; i != r->n; i++) {
-                NETDATA_DOUBLE *cn = &r->v[i * r->d];
-                RRDR_VALUE_FLAGS *co = &r->o[i * r->d];
-                NETDATA_DOUBLE *ar = &r->ar[i * r->d];
-                NETDATA_DOUBLE *vh = r->vh ? &r->vh[i * r->d] : NULL;
-
                 for (size_t d = 0; d < r->d; d++) {
-                    cn[d] = NAN;
-                    ar[d] = 0.0;
-                    co[d] = RRDR_VALUE_EMPTY;
+                    size_t idx = rrdr_line_dim_idx(r, i, d);
+                    r->v[idx] = NAN;
+                    r->ar[idx] = 0.0;
+                    r->o[idx] = RRDR_VALUE_EMPTY;
 
-                    if (vh)
-                        vh[d] = NAN;
+                    if (r->vh)
+                        r->vh[idx] = NAN;
                 }
             }
         }
@@ -764,7 +760,7 @@ void rrd2rrdr_group_by_add_metric(RRDR *r_dst, size_t d_dst, RRDR *r_tmp, size_t
     // do the group_by
     for(size_t i = 0; i != rrdr_rows(r_tmp) ; i++) {
 
-        size_t idx_tmp = i * r_tmp->d + d_tmp;
+        size_t idx_tmp = rrdr_line_dim_idx(r_tmp, i, d_tmp);
         NETDATA_DOUBLE n_tmp = r_tmp->v[ idx_tmp ];
         RRDR_VALUE_FLAGS o_tmp = r_tmp->o[ idx_tmp ];
         NETDATA_DOUBLE ar_tmp = r_tmp->ar[ idx_tmp ];
@@ -772,7 +768,7 @@ void rrd2rrdr_group_by_add_metric(RRDR *r_dst, size_t d_dst, RRDR *r_tmp, size_t
         if(o_tmp & RRDR_VALUE_EMPTY)
             continue;
 
-        size_t idx_dst = i * r_dst->d + d_dst;
+        size_t idx_dst = rrdr_line_dim_idx(r_dst, i, d_dst);
         NETDATA_DOUBLE *cn = (hidden_dimension_on_percentage_of_group) ? &r_dst->vh[ idx_dst ] : &r_dst->v[ idx_dst ];
         RRDR_VALUE_FLAGS *co = &r_dst->o[ idx_dst ];
         NETDATA_DOUBLE *ar = &r_dst->ar[ idx_dst ];
@@ -837,7 +833,7 @@ void rrdr2rrdr_group_by_partial_trimming(RRDR *r) {
             if (unlikely(!(r->od[d] & RRDR_DIMENSION_QUERIED)))
                 continue;
 
-            row_gbc += r->gbc[ i * r->d + d ];
+            row_gbc += r->gbc[ rrdr_line_dim_idx(r, i, d) ];
         }
 
         // internal_error(true, "GBC of index %zd is %zu", i, row_gbc);
@@ -862,21 +858,19 @@ void rrdr2rrdr_group_by_calculate_percentage_of_group(RRDR *r) {
         return;
 
     for(size_t i = 0; i < r->n ;i++) {
-        NETDATA_DOUBLE *cn = &r->v[ i * r->d ];
-        NETDATA_DOUBLE *ch = &r->vh[ i * r->d ];
-
         for(size_t d = 0; d < r->d ;d++) {
-            NETDATA_DOUBLE n = cn[d];
-            NETDATA_DOUBLE h = ch[d];
+            size_t idx = rrdr_line_dim_idx(r, i, d);
+            NETDATA_DOUBLE n = r->v[idx];
+            NETDATA_DOUBLE h = r->vh[idx];
 
             if(isnan(n))
-                cn[d] = 0.0;
+                r->v[idx] = 0.0;
 
             else if(isnan(h))
-                cn[d] = 100.0;
+                r->v[idx] = 100.0;
 
             else
-                cn[d] = n * 100.0 / (n + h);
+                r->v[idx] = n * 100.0 / (n + h);
         }
     }
 }
@@ -890,18 +884,16 @@ void rrd2rrdr_convert_values_to_percentage_of_total(RRDR *r) {
     NETDATA_DOUBLE global_min = NAN, global_max = NAN;
 
     for(size_t i = 0; i != r->n ;i++) {
-        NETDATA_DOUBLE *cn = &r->v[ i * r->d ];
-        RRDR_VALUE_FLAGS *co = &r->o[ i * r->d ];
-
         NETDATA_DOUBLE total = 0;
         for (size_t d = 0; d < r->d; d++) {
             if (unlikely(!(r->od[d] & RRDR_DIMENSION_QUERIED)))
                 continue;
 
-            if(co[d] & RRDR_VALUE_EMPTY)
+            size_t idx = rrdr_line_dim_idx(r, i, d);
+            if(r->o[idx] & RRDR_VALUE_EMPTY)
                 continue;
 
-            total += cn[d];
+            total += r->v[idx];
         }
 
         if(total == 0.0)
@@ -911,11 +903,12 @@ void rrd2rrdr_convert_values_to_percentage_of_total(RRDR *r) {
             if (unlikely(!(r->od[d] & RRDR_DIMENSION_QUERIED)))
                 continue;
 
-            if(co[d] & RRDR_VALUE_EMPTY)
+            size_t idx = rrdr_line_dim_idx(r, i, d);
+            if(r->o[idx] & RRDR_VALUE_EMPTY)
                 continue;
 
-            NETDATA_DOUBLE n = cn[d];
-            n = cn[d] = n * 100.0 / total;
+            NETDATA_DOUBLE n = r->v[idx];
+            n = r->v[idx] = n * 100.0 / total;
 
             if(unlikely(!global_min_max_values++))
                 global_min = global_max = n;
@@ -944,7 +937,7 @@ void rrd2rrdr_convert_values_to_percentage_of_total(RRDR *r) {
         size_t count = 0;
         NETDATA_DOUBLE min = 0.0, max = 0.0, sum = 0.0, ars = 0.0;
         for(size_t i = 0; i != r->rows ;i++) { // we use r->rows to respect trimming
-            size_t idx = i * r->d + d;
+            size_t idx = rrdr_line_dim_idx(r, i, d);
 
             RRDR_VALUE_FLAGS o = r->o[ idx ];
 
@@ -1038,7 +1031,7 @@ RRDR *rrd2rrdr_group_by_finalize(RRDR *r_tmp) {
         size_t count = 0;
 
         for(size_t i = 0; i != r->n ;i++) {
-            size_t idx = i * r->d + d;
+            size_t idx = rrdr_line_dim_idx(r, i, d);
 
             NETDATA_DOUBLE *cn = &r->v[ idx ];
             RRDR_VALUE_FLAGS *co = &r->o[ idx ];
@@ -1186,11 +1179,11 @@ RRDR *rrd2rrdr_cardinality_limit(RRDR *r) {
         } else {
             // Fallback: calculate manually from values
             for(size_t i = 0; i < r->rows; i++) {
-                size_t idx = i * r->d + d;
-                
+                size_t idx = rrdr_line_dim_idx(r, i, d);
+
                 if(r->o[idx] & RRDR_VALUE_EMPTY)
                     continue;
-                    
+
                 NETDATA_DOUBLE value = r->v[idx];
                 if(!isnan(value))
                     contributions[d] += fabsndd(value);
@@ -1256,7 +1249,7 @@ RRDR *rrd2rrdr_cardinality_limit(RRDR *r) {
             // Initialize all values as empty
             for (size_t i = 0; i < new_r->n; i++) {
                 for (size_t d = 0; d < new_r->d; d++) {
-                    size_t idx = i * new_r->d + d;
+                    size_t idx = rrdr_line_dim_idx(new_r, i, d);
                     new_r->v[idx] = NAN;
                     new_r->ar[idx] = 0.0;
                     new_r->o[idx] = RRDR_VALUE_EMPTY;
@@ -1280,9 +1273,9 @@ RRDR *rrd2rrdr_cardinality_limit(RRDR *r) {
         
         // Copy data
         for (size_t row = 0; row < r->rows; row++) {
-            size_t src_idx = row * r->d + src_d;
-            size_t dst_idx = row * new_r->d + i;
-            
+            size_t src_idx = rrdr_line_dim_idx(r, row, src_d);
+            size_t dst_idx = rrdr_line_dim_idx(new_r, row, i);
+
             new_r->v[dst_idx] = r->v[src_idx];
             new_r->ar[dst_idx] = r->ar[src_idx];
             new_r->o[dst_idx] = r->o[src_idx];
@@ -1317,15 +1310,15 @@ RRDR *rrd2rrdr_cardinality_limit(RRDR *r) {
         size_t count = 0;
         
         for (size_t row = 0; row < r->rows; row++) {
-            size_t dst_idx = row * new_r->d + remaining_idx;
+            size_t dst_idx = rrdr_line_dim_idx(new_r, row, remaining_idx);
             NETDATA_DOUBLE aggregated_value = 0.0;
             NETDATA_DOUBLE aggregated_ar = 0.0;
             RRDR_VALUE_FLAGS aggregated_flags = RRDR_VALUE_NOTHING;
             bool has_values = false;
-            
+
             for (size_t i = kept_dimensions; i < queried_count; i++) {
                 size_t src_d = sorted_dims[i].dim_idx;
-                size_t src_idx = row * r->d + src_d;
+                size_t src_idx = rrdr_line_dim_idx(r, row, src_d);
                 
                 if(!(r->o[src_idx] & RRDR_VALUE_EMPTY)) {
                     NETDATA_DOUBLE value = r->v[src_idx];

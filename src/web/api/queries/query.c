@@ -6,13 +6,13 @@
 // helpers to find our way in RRDR
 
 ALWAYS_INLINE
-static RRDR_VALUE_FLAGS *UNUSED_FUNCTION(rrdr_line_options)(RRDR *r, long rrdr_line) {
-    return &r->o[ rrdr_line * r->d ];
+static RRDR_VALUE_FLAGS *UNUSED_FUNCTION(rrdr_line_options)(RRDR *r, long rrdr_line, size_t dim) {
+    return &r->o[ rrdr_line_dim_idx(r, rrdr_line, dim) ];
 }
 
 ALWAYS_INLINE
-static NETDATA_DOUBLE *UNUSED_FUNCTION(rrdr_line_values)(RRDR *r, long rrdr_line) {
-    return &r->v[ rrdr_line * r->d ];
+static NETDATA_DOUBLE *UNUSED_FUNCTION(rrdr_line_values)(RRDR *r, long rrdr_line, size_t dim) {
+    return &r->v[ rrdr_line_dim_idx(r, rrdr_line, dim) ];
 }
 
 ALWAYS_INLINE
@@ -381,7 +381,7 @@ NOT_INLINE_HOT static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr
             query_add_point_to_group(r, current_point, ops, add_flush);
 
             rrdr_line = rrdr_line_init(r, now_end_time, rrdr_line);
-            size_t rrdr_o_v_index = rrdr_line * r->d + dim_id_in_rrdr;
+            size_t rrdr_o_v_index = rrdr_line_dim_idx(r, rrdr_line, dim_id_in_rrdr);
 
             // find the place to store our values
             RRDR_VALUE_FLAGS *rrdr_value_options_ptr = &r->o[rrdr_o_v_index];
@@ -433,7 +433,7 @@ NOT_INLINE_HOT static void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr
     // fill the rest of the points with empty values
     while (points_added < points_wanted) {
         rrdr_line++;
-        size_t rrdr_o_v_index = rrdr_line * r->d + dim_id_in_rrdr;
+        size_t rrdr_o_v_index = rrdr_line_dim_idx(r, rrdr_line, dim_id_in_rrdr);
         r->o[rrdr_o_v_index] = RRDR_VALUE_EMPTY;
         r->v[rrdr_o_v_index] = 0.0;
         r->ar[rrdr_o_v_index] = 0.0;
@@ -996,7 +996,7 @@ static void query_parallel_worker(void *arg) {
                 // v1: copy results directly to the correct column in the shared r
                 // each metric has a unique column d, so no locking needed
                 for(size_t row = 0; row < thr_r->rows; row++) {
-                    size_t dst_idx = row * ctx->r->d + d;
+                    size_t dst_idx = rrdr_line_dim_idx(ctx->r, row, d);
                     ctx->r->v[dst_idx] = thr_r->v[row];
                     ctx->r->o[dst_idx] = thr_r->o[row];
                     ctx->r->ar[dst_idx] = thr_r->ar[row];

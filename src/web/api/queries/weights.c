@@ -1733,11 +1733,10 @@ static void rrdset_weights_multi_dimensional_value(struct query_weights_data *qw
             continue;
 
         long i = 0; // only one row
-        NETDATA_DOUBLE *cn = &r->v[ i * r->d ];
-        NETDATA_DOUBLE *ar = &r->ar[ i * r->d ];
+        size_t idx = rrdr_line_dim_idx(r, i, d);
 
-        qv.value = cn[d];
-        qv.anomaly_rate = ar[d];
+        qv.value = r->v[idx];
+        qv.anomaly_rate = r->ar[idx];
         storage_point_merge_to(qv.sp, r->internal.qt->query.array[d].query_points);
 
         if(netdata_double_isnumber(qv.value)) {

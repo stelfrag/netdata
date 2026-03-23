@@ -30,9 +30,6 @@ static void rrdr_dump(RRDR *r)
 
     // for each line in the array
     for(i = 0; i < r->rows ;i++) {
-        NETDATA_DOUBLE *cn = &r->v[ i * r->d ];
-        RRDR_DIMENSION_FLAGS *co = &r->o[ i * r->d ];
-
         // print the id and the timestamp of the line
         fprintf(stderr, "%ld %ld ", i + 1, r->t[i]);
 
@@ -41,15 +38,16 @@ static void rrdr_dump(RRDR *r)
             if(unlikely(r->od[c] & RRDR_DIMENSION_HIDDEN)) continue;
             if(unlikely(!(r->od[c] & RRDR_DIMENSION_NONZERO))) continue;
 
-            if(co[c] & RRDR_EMPTY)
+            size_t idx = rrdr_line_dim_idx(r, i, c);
+            if(r->o[idx] & RRDR_EMPTY)
                 fprintf(stderr, "null ");
             else
                 fprintf(stderr, NETDATA_DOUBLE_FORMAT " %s%s%s%s "
-                    , cn[c]
-                    , (co[c] & RRDR_EMPTY)?"E":" "
-                    , (co[c] & RRDR_RESET)?"R":" "
-                    , (co[c] & RRDR_DIMENSION_HIDDEN)?"H":" "
-                    , (co[c] & RRDR_DIMENSION_NONZERO)?"N":" "
+                    , r->v[idx]
+                    , (r->o[idx] & RRDR_EMPTY)?"E":" "
+                    , (r->o[idx] & RRDR_RESET)?"R":" "
+                    , (r->od[c] & RRDR_DIMENSION_HIDDEN)?"H":" "
+                    , (r->od[c] & RRDR_DIMENSION_NONZERO)?"N":" "
                     );
         }
 
