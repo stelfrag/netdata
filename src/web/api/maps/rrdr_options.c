@@ -54,8 +54,10 @@ static struct {
     , {"long-keys"         , 0    , RRDR_OPTION_LONG_JSON_KEYS}
     , {"mcp-info"          , 0    , RRDR_OPTION_MCP_INFO}
     , {"rfc3339"           , 0    , RRDR_OPTION_RFC3339}
+#ifdef NETDATA_ENABLE_PARALLEL_QUERIES
     , {"parallel"          , 0    , RRDR_OPTION_PARALLEL}
     , {"sequential"        , 0    , RRDR_OPTION_SEQUENTIAL}
+#endif
     , {NULL                , 0    , 0}
 };
 

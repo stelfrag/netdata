@@ -864,6 +864,8 @@ RRDR *rrd2rrdr_legacy(
 // ----------------------------------------------------------------------------
 // parallel query execution
 
+#ifdef NETDATA_ENABLE_PARALLEL_QUERIES
+
 #define QUERY_PARALLEL_MIN_METRICS 8
 
 // per-thread context for parallel metric execution
@@ -1235,6 +1237,8 @@ static void rrd2rrdr_parallel(QUERY_TARGET *qt, RRDR *r_tmp, RRDR *r,
     *out_dimensions_nonzero = dimensions_nonzero;
 }
 
+#endif // NETDATA_ENABLE_PARALLEL_QUERIES
+
 // sequential execution path (the original implementation)
 static void rrd2rrdr_sequential(ONEWAYALLOC *owa, QUERY_TARGET *qt, RRDR *r_tmp, RRDR *r,
                                 long *out_dimensions_used, long *out_dimensions_nonzero) {
@@ -1447,6 +1451,7 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
 
     long dimensions_used = 0, dimensions_nonzero = 0;
 
+#ifdef NETDATA_ENABLE_PARALLEL_QUERIES
     bool force_parallel = (qt->window.options & RRDR_OPTION_PARALLEL) && qt->request.parallel_threads != 1;
     bool force_sequential = (qt->window.options & RRDR_OPTION_SEQUENTIAL) || qt->request.parallel_threads == 1;
     bool use_parallel;
@@ -1456,7 +1461,7 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
     else if(force_sequential)
         use_parallel = false;
     else
-        use_parallel = (qt->query.used >= QUERY_PARALLEL_MIN_METRICS && netdata_conf_cpus() >= 2);
+        use_parallel = false; // auto-detect disabled; only explicit &parallel=N enables it
 
     if(use_parallel) {
         rrd2rrdr_parallel(qt, r_tmp, r, &dimensions_used, &dimensions_nonzero);
@@ -1464,6 +1469,9 @@ RRDR *rrd2rrdr(ONEWAYALLOC *owa, QUERY_TARGET *qt) {
     else {
         rrd2rrdr_sequential(owa, qt, r_tmp, r, &dimensions_used, &dimensions_nonzero);
     }
+#else
+    rrd2rrdr_sequential(owa, qt, r_tmp, r, &dimensions_used, &dimensions_nonzero);
+#endif
 
     // free all resources used by the grouping method
     r_tmp->time_grouping.free(r_tmp);
