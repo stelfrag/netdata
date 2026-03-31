@@ -2,6 +2,7 @@
 
 #include "ml_event_loop.h"
 #include "ml_public.h"
+#include "streaming/stream-control.h"
 
 // Forward declarations to avoid including C++ headers
 // We only need these specific config values
@@ -386,6 +387,9 @@ static void timer_cb(uv_timer_t *handle)
     schedule_move_due_to_pending(config);
 
     size_t pending_count = config->queue_depth;
+
+    if (!stream_control_ml_should_be_running())
+        return;
 
     // If there are pending dimensions, trigger a batch execution
     if (pending_count > 0) {

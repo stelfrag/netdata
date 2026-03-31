@@ -22,6 +22,8 @@ static void __attribute__((destructor)) destroy_mutex(void) {
     netdata_mutex_destroy(&db_mutex);
 }
 
+static void ml_dimension_activate_kmeans_unsafe(ml_dimension_t *dim, const ml_kmeans_inlined_t &kmeans);
+
 static inline size_t ml_dimension_smoothing_window(const ml_dimension_t *dim)
 {
     unsigned chart_update_every = dim->rd->rrdset->update_every;
@@ -590,8 +592,8 @@ ml_dimension_deserialize_kmeans(const char *json_str)
         return true;
     }
 
-    // Hold the spinlock while checking training_in_progress and writing kmeans
-    // to avoid a data race with the detection thread reading kmeans concurrently.
+    // Hold the spinlock while checking training_in_progress so we don't race
+    // with an active retrain for this dimension.
     spinlock_lock(&Dim->slock);
     if (Dim->training_in_progress) {
         spinlock_unlock(&Dim->slock);
@@ -600,9 +602,8 @@ ml_dimension_deserialize_kmeans(const char *json_str)
         return true;
     }
 
-    Dim->kmeans = inlined_km;
+    ml_dimension_activate_kmeans_unsafe(Dim, inlined_km);
     spinlock_unlock(&Dim->slock);
-
     pulse_ml_models_received();
 
     json_object_put(root);
@@ -636,18 +637,10 @@ static void ml_dimension_stream_kmeans(ml_worker_t *worker, const ml_dimension_t
     pulse_ml_models_sent();
 }
 
-static void ml_dimension_update_models(ml_worker_t *worker, ml_dimension_t *dim)
+// dim->slock must be held by the caller.
+static void ml_dimension_activate_kmeans_unsafe(ml_dimension_t *dim, const ml_kmeans_inlined_t &kmeans)
 {
-    worker_is_busy(WORKER_TRAIN_UPDATE_MODELS);
-
-    spinlock_lock(&dim->slock);
-
-    ml_host_t *host = (ml_host_t *) dim->rd->rrdset->rrdhost->ml_host;
-    if (!host || !host->ml_running) {
-        dim->training_in_progress = false;
-        spinlock_unlock(&dim->slock);
-        return;
-    }
+    dim->kmeans = kmeans;
 
     if (dim->km_contexts.size() < Cfg.num_models_to_use) {
         dim->km_contexts.emplace_back(dim->kmeans);
@@ -673,9 +666,26 @@ static void ml_dimension_update_models(ml_worker_t *worker, ml_dimension_t *dim)
 
     dim->mt = METRIC_TYPE_CONSTANT;
     dim->ts = TRAINING_STATUS_TRAINED;
-
     dim->suppression_anomaly_counter = 0;
     dim->suppression_window_counter = 0;
+    dim->training_in_progress = false;
+}
+
+static void ml_dimension_update_models(ml_worker_t *worker, ml_dimension_t *dim)
+{
+    worker_is_busy(WORKER_TRAIN_UPDATE_MODELS);
+
+    ml_host_t *host = (ml_host_t *) dim->rd->rrdset->rrdhost->ml_host;
+    if (!host || !host->ml_running) {
+        spinlock_lock(&dim->slock);
+        dim->training_in_progress = false;
+        spinlock_unlock(&dim->slock);
+        return;
+    }
+
+    spinlock_lock(&dim->slock);
+    ml_kmeans_inlined_t current_kmeans(dim->kmeans);
+    ml_dimension_activate_kmeans_unsafe(dim, current_kmeans);
 
     // Add the newly generated model to the list of pending models to flush
     ml_model_info_t model_info;
@@ -685,10 +695,6 @@ static void ml_dimension_update_models(ml_worker_t *worker, ml_dimension_t *dim)
     worker->pending_model_info.push_back(model_info);
 
     ml_dimension_stream_kmeans(worker, dim);
-
-    // Clear the training in progress flag
-    dim->training_in_progress = false;
-
     spinlock_unlock(&dim->slock);
 }
 
@@ -1153,4 +1159,3 @@ void ml_flush_pending_models(ml_worker_t *worker) {
 
     worker->pending_model_info.clear();
 }
-

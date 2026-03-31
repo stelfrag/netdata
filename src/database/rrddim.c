@@ -47,7 +47,7 @@ RRDDIM_ACQUIRED *rrddim_find_and_acquire_by_uuid(UUIDMAP_ID uuid) {
     if (!uuid)
         return NULL;
 
-    RRDHOST *host = NULL;
+    char machine_guid[GUID_LEN + 1] = "";
     STRING *chart_id_copy = NULL;
     STRING *dim_id_copy = NULL;
 
@@ -59,16 +59,23 @@ RRDDIM_ACQUIRED *rrddim_find_and_acquire_by_uuid(UUIDMAP_ID uuid) {
 
     if (rd && rd->rrdset && rd->rrdset->rrdhost && rd->rrdset->id && rd->id) {
         // While we hold the spinlock the dimension is still registered, so
-        // the RRDDIM, its RRDSET, and the RRDHOST are all alive.  Copy the
+        // the RRDDIM, its RRDSET, and the RRDHOST are all alive.  Copy stable
         // identifiers we need to safely re-acquire them outside the spinlock.
-        host = rd->rrdset->rrdhost;
+        strncpyz(machine_guid, rd->rrdset->rrdhost->machine_guid, sizeof(machine_guid) - 1);
         chart_id_copy = string_dup(rd->rrdset->id);
         dim_id_copy = string_dup(rd->id);
     }
 
     spinlock_unlock(&uuid_to_rrddim_spinlock);
 
-    if (!host || !chart_id_copy || !dim_id_copy) {
+    if (!machine_guid[0] || !chart_id_copy || !dim_id_copy) {
+        string_freez(chart_id_copy);
+        string_freez(dim_id_copy);
+        return NULL;
+    }
+
+    RRDHOST_ACQUIRED *rha = rrdhost_find_and_acquire(machine_guid);
+    if (!rha) {
         string_freez(chart_id_copy);
         string_freez(dim_id_copy);
         return NULL;
@@ -82,8 +89,10 @@ RRDDIM_ACQUIRED *rrddim_find_and_acquire_by_uuid(UUIDMAP_ID uuid) {
     // Lock ordering is safe: we do NOT hold uuid_to_rrddim_spinlock here,
     // so there is no inversion with the delete callback path
     // (dict_lock → rrddim_delete_callback → uuid_spinlock).
-    RRDSET_ACQUIRED *rsa = rrdset_find_and_acquire(host, string2str(chart_id_copy), true);
+    RRDHOST *host = rrdhost_acquired_to_rrdhost(rha);
+    RRDSET_ACQUIRED *rsa = host ? rrdset_find_and_acquire(host, string2str(chart_id_copy), true) : NULL;
     string_freez(chart_id_copy);
+    rrdhost_acquired_release(rha);
 
     if (!rsa) {
         string_freez(dim_id_copy);
