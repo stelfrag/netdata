@@ -95,12 +95,12 @@ void health_load_config_defaults(void) {
     {
         size_t cpus = netdata_conf_cpus();
         size_t default_workers = MIN(4, cpus);
-        size_t configured = (size_t)inicfg_get_number(&netdata_config, CONFIG_SECTION_HEALTH,
-                                                       "concurrent health workers", (long)default_workers);
+        long configured = inicfg_get_number(&netdata_config, CONFIG_SECTION_HEALTH,
+                                            "concurrent health workers", (long)default_workers);
         // Clamp to [1, cpus]
         if (configured < 1) configured = 1;
-        if (configured > cpus) configured = cpus;
-        health_globals.config.max_concurrent_workers = configured;
+        if ((size_t)configured > cpus) configured = (long)cpus;
+        health_globals.config.max_concurrent_workers = (size_t)configured;
     }
 
     health_globals.config.default_recipient =

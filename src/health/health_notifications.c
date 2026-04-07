@@ -65,7 +65,7 @@ void wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_u
         ae = alarm_notifications_in_progress;
         spinlock_unlock(&alarm_notifications_spinlock);
 
-        if (!ae || unlikely(health_should_stop()))
+        if (!ae)
             break;
 
         health_alarm_wait_for_execution(ae);

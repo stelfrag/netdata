@@ -7,7 +7,6 @@
 
 // Forward declaration for sqlite3_stmt (to avoid including sqlite3.h)
 struct sqlite3_stmt;
-typedef struct sqlite3_stmt sqlite3_stmt;
 
 // Default/fallback for max concurrent workers (actual value from config)
 #define HEALTH_DEFAULT_CONCURRENT_WORKERS 4
@@ -35,19 +34,19 @@ struct health_stmt_set {
     bool in_use;
 
     // Prepared statements for alert queue processing (sqlite_aclk_alert.c)
-    sqlite3_stmt *stmt_process_alert_pending_queue;
-    sqlite3_stmt *stmt_insert_alert_to_submit_queue;
-    sqlite3_stmt *stmt_update_alert_version_transition;
-    sqlite3_stmt *stmt_cloud_status_matches;
-    sqlite3_stmt *stmt_delete_alert_from_pending_queue;
-    sqlite3_stmt *stmt_is_event_from_alert_variable_config;
+    struct sqlite3_stmt *stmt_process_alert_pending_queue;
+    struct sqlite3_stmt *stmt_insert_alert_to_submit_queue;
+    struct sqlite3_stmt *stmt_update_alert_version_transition;
+    struct sqlite3_stmt *stmt_cloud_status_matches;
+    struct sqlite3_stmt *stmt_delete_alert_from_pending_queue;
+    struct sqlite3_stmt *stmt_is_event_from_alert_variable_config;
 
     // Prepared statements for health log operations (sqlite_health.c)
-    sqlite3_stmt *stmt_health_log_update;
-    sqlite3_stmt *stmt_health_log_insert;
-    sqlite3_stmt *stmt_health_log_insert_detail;
-    sqlite3_stmt *stmt_alert_queue_insert;
-    sqlite3_stmt *stmt_health_get_last_executed_event;
+    struct sqlite3_stmt *stmt_health_log_update;
+    struct sqlite3_stmt *stmt_health_log_insert;
+    struct sqlite3_stmt *stmt_health_log_insert_detail;
+    struct sqlite3_stmt *stmt_alert_queue_insert;
+    struct sqlite3_stmt *stmt_health_get_last_executed_event;
 };
 
 // Forward declaration
