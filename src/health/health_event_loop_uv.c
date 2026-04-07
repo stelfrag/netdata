@@ -562,12 +562,12 @@ static void health_process_timer_tick(struct health_event_loop_config *config) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Prepared statement finalization
 
-static void health_finalize_all_statements(struct health_event_loop_config *config) {
+static void health_finalize_all_statements(struct health_event_loop_config *config, bool finalize_worker_pool) {
     // Finalize main loop statements (used for alert saves)
     health_stmt_set_finalize(&config->main_loop_stmts);
 
     // Finalize worker pool statements
-    if (!config->stmt_pool)
+    if (!finalize_worker_pool || !config->stmt_pool)
         return;
 
     for (size_t i = 0; i < config->max_concurrent_workers; i++) {
@@ -808,9 +808,10 @@ static void health_event_loop(void *arg) {
         loop_count--;
     }
 
-    if (__atomic_load_n(&config->active_workers, __ATOMIC_RELAXED) > 0) {
+    size_t active_workers = __atomic_load_n(&config->active_workers, __ATOMIC_RELAXED);
+    if (active_workers > 0) {
         nd_log(NDLS_DAEMON, NDLP_WARNING, "HEALTH: %zu workers still active at shutdown",
-               __atomic_load_n(&config->active_workers, __ATOMIC_RELAXED));
+               active_workers);
     }
 
     // Drain any remaining commands from the queue.  This picks up
@@ -863,8 +864,9 @@ static void health_event_loop(void *arg) {
     if (rc != 0)
         nd_log(NDLS_DAEMON, NDLP_WARNING, "HEALTH: uv_loop_close returned %d", rc);
 
-    // Finalize all prepared statements in the pool
-    health_finalize_all_statements(config);
+    // If workers are still running, leaking the worker statement pool is safer
+    // than finalizing statements that may still be in use during process exit.
+    health_finalize_all_statements(config, active_workers == 0);
 
     // Release command pool
     release_cmd_pool(&config->cmd_pool);

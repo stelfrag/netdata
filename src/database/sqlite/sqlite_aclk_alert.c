@@ -774,7 +774,7 @@ bool alert_hash_has_transitioned(nd_uuid_t *hash_id)
     sqlite3_stmt *res = NULL;
 
     if (!PREPARE_STATEMENT(db_meta, SQL_SELECT_ALERT_HASH_CLOUD, &res))
-        return false;
+        return true;
 
     int param = 0;
 
