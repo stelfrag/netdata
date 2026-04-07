@@ -242,6 +242,27 @@ static void health_process_pending_deletions(struct health_event_loop_config *co
     worker_is_idle();
 }
 
+static void health_track_pending_deletion(struct health_event_loop_config *config, ALARM_ENTRY *ae) {
+    Pvoid_t *Pvalue = JudyLIns(&config->ae_pending_deletion, ++config->ae_deletion_next_id, PJE0);
+    if (likely(Pvalue != PJERR)) {
+        *Pvalue = ae;
+        return;
+    }
+
+    // These entries have already been unlinked from the host's alarm log.
+    // If no save still references the entry, free it directly; otherwise we
+    // cannot safely continue because the entry would be lost without a valid
+    // deletion-tracking path.
+    if (!__atomic_load_n(&ae->pending_save_count, __ATOMIC_ACQUIRE)) {
+        nd_log(NDLS_DAEMON, NDLP_ERR,
+               "HEALTH: Failed to track alert entry for deletion, freeing it immediately");
+        health_alarm_entry_free_direct(ae);
+        return;
+    }
+
+    fatal("HEALTH: Failed to track alert entry for deletion with pending saves still in flight");
+}
+
 static void health_process_pending_alerts(struct health_event_loop_config *config) {
     struct health_pending_alerts *pending = config->pending_alerts;
     if (!pending || !pending->count)
@@ -611,11 +632,7 @@ static void health_drain_remaining_commands(struct health_event_loop_config *con
 
             case HEALTH_DELETE_ALERT_ENTRY: {
                 ALARM_ENTRY *ae = (ALARM_ENTRY *)cmd.param[0];
-                Pvoid_t *Pvalue = JudyLIns(&config->ae_pending_deletion, ++config->ae_deletion_next_id, PJE0);
-                if (Pvalue == PJERR)
-                    nd_log(NDLS_DAEMON, NDLP_ERR, "HEALTH: Failed to track alert entry for deletion");
-                else
-                    *Pvalue = ae;
+                health_track_pending_deletion(config, ae);
                 deleted++;
                 break;
             }
@@ -729,11 +746,7 @@ static void health_event_loop(void *arg) {
                     // Use counter as index (not pointer) to avoid use-after-free if
                     // memory is reused before deletion completes
                     ALARM_ENTRY *ae = (ALARM_ENTRY *)cmd.param[0];
-                    Pvoid_t *Pvalue = JudyLIns(&config->ae_pending_deletion, ++config->ae_deletion_next_id, PJE0);
-                    if (Pvalue == PJERR)
-                        nd_log(NDLS_DAEMON, NDLP_ERR, "HEALTH: Failed to track alert entry for deletion");
-                    else
-                        *Pvalue = ae;
+                    health_track_pending_deletion(config, ae);
                     break;
                 }
 
