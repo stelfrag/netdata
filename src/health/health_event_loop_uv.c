@@ -319,6 +319,7 @@ struct health_cleanup_work {
 };
 
 static void health_cleanup_work_cb(uv_work_t *req) {
+    UNUSED(req);
     register_libuv_worker_jobs();
     worker_is_busy(UV_EVENT_HEALTH_CLEANUP);
     nd_log(NDLS_DAEMON, NDLP_DEBUG, "HEALTH: Starting health log cleanup");
@@ -758,7 +759,7 @@ static void health_event_loop(void *arg) {
                     break;
 
                 default:
-                    nd_log(NDLS_DAEMON, NDLP_ERR, "HEALTH: Unknown opcode %d", opcode);
+                    nd_log(NDLS_DAEMON, NDLP_ERR, "HEALTH: Unknown opcode %u", opcode);
                     break;
             }
 
