@@ -60,10 +60,10 @@ cleanup:
         unlink_alarm_notify_in_progress(ae);
 }
 
-// Called only from the health event loop main thread during shutdown, after all
-// host-processing workers have completed.  Because no workers are active, no
-// concurrent enqueue/unlink can occur, making the lock-read-unlock-then-use
-// pattern on `ae` safe.
+// Called from the health event loop main thread when no host-processing workers
+// are active, both for normal per-batch notification barriers and during
+// shutdown. Because no workers are active, no concurrent enqueue/unlink can
+// occur, making the lock-read-unlock-then-use pattern on `ae` safe.
 void wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up(void) {
     ALARM_ENTRY *ae;
     while (true) {
