@@ -961,6 +961,7 @@ void health_event_loop_init(void)
     FUNCTION_RUN_ONCE();
 
     memset(&health_config, 0, sizeof(health_config));
+    health_notifications_init();
     completion_init(&health_config.start_stop_complete);
 
     health_config.thread = nd_thread_create(HEALTH_EVENT_LOOP_NAME, NETDATA_THREAD_OPTION_DEFAULT,

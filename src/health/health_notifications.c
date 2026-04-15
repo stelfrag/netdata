@@ -8,7 +8,7 @@
 // Protected by alarm_notifications_spinlock since multiple UV worker threads
 // can call enqueue/unlink concurrently via health_send_notification()
 static SPINLOCK alarm_notifications_spinlock = SPINLOCK_INITIALIZER;
-static SPINLOCK health_notification_dispatch_spinlock = SPINLOCK_INITIALIZER;
+static netdata_mutex_t health_notification_dispatch_mutex;
 static ALARM_ENTRY *alarm_notifications_in_progress = NULL;
 
 struct health_raised_summary {
@@ -22,10 +22,9 @@ struct health_raised_summary {
     } active_alerts;
 };
 
-bool health_alarm_try_claim_wait(ALARM_ENTRY *ae) {
-    bool expected = false;
-    return __atomic_compare_exchange_n(&ae->exec_wait_claimed, &expected, true, false,
-                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+void health_notifications_init(void) {
+    if (netdata_mutex_init(&health_notification_dispatch_mutex) != 0)
+        fatal("HEALTH: failed to initialize notification dispatch mutex");
 }
 
 void health_alarm_wait_for_execution(ALARM_ENTRY *ae) {
@@ -74,9 +73,6 @@ void wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_u
 
         if (!ae)
             break;
-
-        if (!health_alarm_try_claim_wait(ae))
-            continue;
 
         health_alarm_wait_for_execution(ae);
     }
@@ -356,7 +352,7 @@ static const char *health_raised_summary_my_expression_error(struct health_raise
 }
 
 void health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_raised_summary *hrm, struct health_stmt_set *stmts) {
-    spinlock_lock(&health_notification_dispatch_spinlock);
+    netdata_mutex_lock(&health_notification_dispatch_mutex);
 
     netdata_log_debug(D_HEALTH, "Health alarm '%s.%s' = " NETDATA_DOUBLE_FORMAT_AUTO " - changed status from %s to %s",
                       ae->chart?ae_chart_id(ae):"NOCHART", ae_name(ae),
@@ -501,11 +497,11 @@ void health_send_notification(RRDHOST *host, ALARM_ENTRY *ae, struct health_rais
     buffer_free(wb);
     freez(edit_command);
 
-    spinlock_unlock(&health_notification_dispatch_spinlock);
+    netdata_mutex_unlock(&health_notification_dispatch_mutex);
     return; //health_alarm_wait_for_execution
 done:
     health_alarm_log_save(host, ae, false, stmts);
-    spinlock_unlock(&health_notification_dispatch_spinlock);
+    netdata_mutex_unlock(&health_notification_dispatch_mutex);
 }
 
 bool health_alarm_log_get_global_id_and_transition_id_for_rrdcalc(RRDCALC *rc, usec_t *global_id, nd_uuid_t *transitions_id) {

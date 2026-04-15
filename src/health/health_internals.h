@@ -106,7 +106,7 @@ int health_readfile(const char *filename, void *data, bool stock_config);
 int health_parse_db_lookup(size_t line, const char *filename, char *string, struct rrd_alert_config *ac);
 void unlink_alarm_notify_in_progress(ALARM_ENTRY *ae);
 void wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up(void);
-bool health_alarm_try_claim_wait(ALARM_ENTRY *ae);
+void health_notifications_init(void);
 
 void health_alarm_wait_for_execution(ALARM_ENTRY *ae);
 
