@@ -655,7 +655,8 @@ void health_event_loop_for_host(RRDHOST *host, bool apply_hibernation_delay, tim
                 rc->run_flags |= RRDCALC_FLAG_RUN_ONCE;
                 health_send_notification(host, ae, hrm, stmts);
                 netdata_log_debug(D_HEALTH, "Notification sent for the repeating alarm %u.", ae->alarm_id);
-                health_alarm_wait_for_execution(ae);
+                if (health_alarm_try_claim_wait(ae))
+                    health_alarm_wait_for_execution(ae);
                 health_alarm_log_free_one_nochecks_nounlink(ae);
             }
         }

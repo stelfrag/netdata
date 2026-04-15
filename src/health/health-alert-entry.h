@@ -50,6 +50,7 @@ struct alarm_entry {
     uint32_t flags;
     int exec_code;
     int32_t pending_save_count;
+    bool exec_wait_claimed;
 
     int delay;
     time_t delay_up_to_timestamp;

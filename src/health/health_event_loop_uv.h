@@ -24,6 +24,7 @@ enum health_opcode {
     HEALTH_TIMER_TICK,           // Timer fired, check which hosts need processing
     HEALTH_SAVE_ALERT_TRANSITION,// Save an alert transition (param[0] = ae)
     HEALTH_DELETE_ALERT_ENTRY,   // Delete an alert entry when saves complete (param[0] = ae)
+    HEALTH_WAIT_NOTIFICATIONS,   // Wait for all in-flight notifications for the current batch
     HEALTH_SYNC_SHUTDOWN,        // Clean shutdown request
     HEALTH_MAX_ENUMERATIONS_DEFINED
 };
@@ -65,6 +66,9 @@ struct health_host_work {
 
     // Output: when this host should run again
     time_t host_next_run;
+
+    // Batch generation this host work belongs to
+    uint64_t batch_id;
 };
 
 // Pending alert list for batching saves
@@ -119,6 +123,14 @@ struct health_event_loop_config {
 
     // Round-robin host scan cursor to avoid starving hosts later in the dictionary.
     size_t next_host_scan_index;
+
+    // Per-tick batch barrier so notifications are drained before the next batch starts.
+    uint64_t current_batch_id;
+    size_t current_batch_hosts_queued;
+    size_t current_batch_hosts_completed;
+    bool current_batch_active;
+    bool current_batch_wait_enqueued;
+    bool current_batch_waiting_notifications;
 };
 
 // Initialize and start the health event loop

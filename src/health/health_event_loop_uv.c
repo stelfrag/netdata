@@ -197,6 +197,27 @@ static bool health_has_pending_work(struct health_event_loop_config *config) {
     return false;
 }
 
+static void health_schedule_notification_wait_if_batch_complete(struct health_event_loop_config *config,
+                                                                uint64_t batch_id) {
+    if (!config->current_batch_active || config->current_batch_wait_enqueued)
+        return;
+
+    if (batch_id != config->current_batch_id)
+        return;
+
+    if (__atomic_load_n(&config->active_workers, __ATOMIC_RELAXED) > 0)
+        return;
+
+    if (config->current_batch_hosts_completed < config->current_batch_hosts_queued)
+        return;
+
+    cmd_data_t cmd = { 0 };
+    cmd.opcode = HEALTH_WAIT_NOTIFICATIONS;
+
+    if (health_enq_cmd(&cmd, true))
+        config->current_batch_wait_enqueued = true;
+}
+
 static void health_process_pending_deletions(struct health_event_loop_config *config) {
     if (!config->ae_pending_deletion)
         return;
@@ -438,6 +459,7 @@ static void health_host_work_cb(uv_work_t *req) {
 static void health_host_after_work_cb(uv_work_t *req, int status) {
     struct health_host_work *work = req->data;
     struct health_event_loop_config *config = work->config;
+    uint64_t batch_id = work->batch_id;
 
     // Update host's next run time (atomic for visibility to main loop)
     __atomic_store_n(&work->host->health.next_run, work->host_next_run, __ATOMIC_RELEASE);
@@ -451,6 +473,11 @@ static void health_host_after_work_cb(uv_work_t *req, int status) {
     // Decrement active worker count
     __atomic_sub_fetch(&config->active_workers, 1, __ATOMIC_RELAXED);
 
+    if (config->current_batch_active && batch_id == config->current_batch_id)
+        config->current_batch_hosts_completed++;
+
+    health_schedule_notification_wait_if_batch_complete(config, batch_id);
+
     // Free the work item
     freez(work);
 
@@ -462,7 +489,7 @@ static void health_host_after_work_cb(uv_work_t *req, int status) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Host processing dispatch
 
-static void health_queue_host_work(struct health_event_loop_config *config, RRDHOST *host,
+static bool health_queue_host_work(struct health_event_loop_config *config, RRDHOST *host,
                                    time_t now, bool apply_hibernation_delay) {
     // Try to acquire a statement set
     struct health_stmt_set *stmts = health_stmt_set_acquire(config);
@@ -471,7 +498,7 @@ static void health_queue_host_work(struct health_event_loop_config *config, RRDH
         nd_log(NDLS_DAEMON, NDLP_DEBUG,
                "HEALTH: Statement pool exhausted (%zu workers active), host '%s' will be processed on next tick",
                __atomic_load_n(&config->active_workers, __ATOMIC_RELAXED), rrdhost_hostname(host));
-        return;
+        return false;
     }
 
     // Mark host as processing
@@ -486,6 +513,7 @@ static void health_queue_host_work(struct health_event_loop_config *config, RRDH
     work->now = now;
     work->apply_hibernation_delay = apply_hibernation_delay;
     work->host_next_run = now + health_globals.config.run_at_least_every_seconds;
+    work->batch_id = config->current_batch_id;
 
     // Increment active worker count
     __atomic_add_fetch(&config->active_workers, 1, __ATOMIC_RELAXED);
@@ -501,13 +529,19 @@ static void health_queue_host_work(struct health_event_loop_config *config, RRDH
         health_stmt_set_release(config, stmts);
         __atomic_sub_fetch(&config->active_workers, 1, __ATOMIC_RELAXED);
         freez(work);
+        return false;
     }
+
+    return true;
 }
 
 static void health_process_timer_tick(struct health_event_loop_config *config) {
     if (!stream_control_health_should_be_running()) {
         return;
     }
+
+    if (config->current_batch_active || config->current_batch_waiting_notifications)
+        return;
 
     time_t now = now_realtime_sec();
     bool apply_hibernation_delay = false;
@@ -540,7 +574,15 @@ static void health_process_timer_tick(struct health_event_loop_config *config) {
     size_t host_count = dictionary_entries(rrdhost_root_index);
     size_t start_index = host_count ? (config->next_host_scan_index % host_count) : 0;
     size_t next_start_index = start_index;
+    size_t queued_hosts = 0;
     bool saturated = false;
+
+    config->current_batch_id++;
+    config->current_batch_hosts_queued = 0;
+    config->current_batch_hosts_completed = 0;
+    config->current_batch_active = true;
+    config->current_batch_wait_enqueued = false;
+    config->current_batch_waiting_notifications = false;
 
     for (size_t pass = 0; pass < 2 && host_count; pass++) {
         RRDHOST *host;
@@ -569,7 +611,8 @@ static void health_process_timer_tick(struct health_event_loop_config *config) {
                 break;
             }
 
-            health_queue_host_work(config, host, now, apply_hibernation_delay);
+            if (health_queue_host_work(config, host, now, apply_hibernation_delay))
+                queued_hosts++;
         }
         dfe_done(host);
 
@@ -579,6 +622,14 @@ static void health_process_timer_tick(struct health_event_loop_config *config) {
 
     if (host_count)
         config->next_host_scan_index = next_start_index;
+
+    config->current_batch_hosts_queued = queued_hosts;
+
+    if (!queued_hosts) {
+        config->current_batch_active = false;
+        config->current_batch_wait_enqueued = false;
+        config->current_batch_waiting_notifications = false;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -750,6 +801,16 @@ static void health_event_loop(void *arg) {
                     health_track_pending_deletion(config, ae);
                     break;
                 }
+
+                case HEALTH_WAIT_NOTIFICATIONS:
+                    config->current_batch_waiting_notifications = true;
+                    worker_is_busy(WORKER_HEALTH_JOB_WAIT_EXEC);
+                    wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up();
+                    worker_is_idle();
+                    config->current_batch_active = false;
+                    config->current_batch_wait_enqueued = false;
+                    config->current_batch_waiting_notifications = false;
+                    break;
 
                 case HEALTH_SYNC_SHUTDOWN:
                     __atomic_store_n(&config->shutdown_requested, true, __ATOMIC_RELAXED);
