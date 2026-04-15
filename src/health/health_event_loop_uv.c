@@ -199,7 +199,7 @@ static bool health_has_pending_work(struct health_event_loop_config *config) {
 
 static void health_schedule_notification_wait_if_batch_complete(struct health_event_loop_config *config,
                                                                 uint64_t batch_id) {
-    if (!config->current_batch_active || config->current_batch_wait_enqueued)
+    if (!config->current_batch_active || config->current_batch_ready_to_wait)
         return;
 
     if (batch_id != config->current_batch_id)
@@ -211,11 +211,29 @@ static void health_schedule_notification_wait_if_batch_complete(struct health_ev
     if (config->current_batch_hosts_completed < config->current_batch_hosts_queued)
         return;
 
-    cmd_data_t cmd = { 0 };
-    cmd.opcode = HEALTH_WAIT_NOTIFICATIONS;
+    config->current_batch_ready_to_wait = true;
+}
 
-    if (health_enq_cmd(&cmd, true))
-        config->current_batch_wait_enqueued = true;
+static void health_wait_notifications_if_batch_ready(struct health_event_loop_config *config) {
+    if (!config->current_batch_active || config->current_batch_waiting_notifications ||
+        !config->current_batch_ready_to_wait)
+        return;
+
+    if (__atomic_load_n(&config->active_workers, __ATOMIC_RELAXED) > 0)
+        return;
+
+    if (config->current_batch_hosts_completed < config->current_batch_hosts_queued)
+        return;
+
+    config->current_batch_waiting_notifications = true;
+    config->current_batch_ready_to_wait = false;
+
+    worker_is_busy(WORKER_HEALTH_JOB_WAIT_EXEC);
+    wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up();
+    worker_is_idle();
+
+    config->current_batch_active = false;
+    config->current_batch_waiting_notifications = false;
 }
 
 static void health_process_pending_deletions(struct health_event_loop_config *config) {
@@ -581,7 +599,7 @@ static void health_process_timer_tick(struct health_event_loop_config *config) {
     config->current_batch_hosts_queued = 0;
     config->current_batch_hosts_completed = 0;
     config->current_batch_active = true;
-    config->current_batch_wait_enqueued = false;
+    config->current_batch_ready_to_wait = false;
     config->current_batch_waiting_notifications = false;
 
     for (size_t pass = 0; pass < 2 && host_count; pass++) {
@@ -627,7 +645,7 @@ static void health_process_timer_tick(struct health_event_loop_config *config) {
 
     if (!queued_hosts) {
         config->current_batch_active = false;
-        config->current_batch_wait_enqueued = false;
+        config->current_batch_ready_to_wait = false;
         config->current_batch_waiting_notifications = false;
     }
 }
@@ -654,7 +672,7 @@ static void health_finalize_all_statements(struct health_event_loop_config *conf
 // Shutdown helpers
 
 // Drain all remaining commands from the cmd_pool, collecting save/delete
-// entries so they can be processed before final teardown.  Commands other
+// entries so they can be processed before final teardown. Commands other
 // than SAVE/DELETE (e.g. stale TIMER_TICKs) are harmlessly discarded.
 static void health_drain_remaining_commands(struct health_event_loop_config *config) {
     size_t saved = 0, deleted = 0, discarded = 0;
@@ -802,16 +820,6 @@ static void health_event_loop(void *arg) {
                     break;
                 }
 
-                case HEALTH_WAIT_NOTIFICATIONS:
-                    config->current_batch_waiting_notifications = true;
-                    worker_is_busy(WORKER_HEALTH_JOB_WAIT_EXEC);
-                    wait_for_all_notifications_to_finish_before_allowing_health_to_be_cleaned_up();
-                    worker_is_idle();
-                    config->current_batch_active = false;
-                    config->current_batch_wait_enqueued = false;
-                    config->current_batch_waiting_notifications = false;
-                    break;
-
                 case HEALTH_SYNC_SHUTDOWN:
                     __atomic_store_n(&config->shutdown_requested, true, __ATOMIC_RELAXED);
                     if (!uv_is_closing((uv_handle_t *)&config->timer_req) &&
@@ -828,6 +836,8 @@ static void health_event_loop(void *arg) {
                 uv_run(loop, UV_RUN_NOWAIT);
 
         } while (opcode != HEALTH_NOOP);
+
+        health_wait_notifications_if_batch_ready(config);
 
         if (__atomic_load_n(&config->shutdown_requested, __ATOMIC_RELAXED)) {
             health_process_pending_alerts(config);
