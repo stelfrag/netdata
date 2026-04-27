@@ -2,6 +2,15 @@
 
 ### Merged Pull Requests:
 
+- Refactor(go.d/dyncfg): split job-name validation per domain ([#22247](https://github.com/netdata/netdata/issues/22247))
+- Ebpf.plugin: fix PID accounting shared-memory pool leak and 100% CPU spin ([#22232](https://github.com/netdata/netdata/issues/22232))
+- Fix(go.d/snmp): use snmpEngineTime as primary uptime source ([#22231](https://github.com/netdata/netdata/issues/22231))
+- Fix(go.d/powerstore): remove extra_details field ([#22291](https://github.com/netdata/netdata/issues/22291))
+
+## [2.10.2] - 2026-04-14
+
+### Merged Pull Requests:
+
 - Fix(go.d/dyncfg): remove wait-decision timeout and make handoff non-droppable ([#22201](https://github.com/netdata/netdata/issues/22201))
 - Fix(go.d/snmp): reduce default MaxOIDs to 20 and remove 32-bit counter fallback ([#22203](https://github.com/netdata/netdata/issues/22203))
 - Fix ZFS bugs (diskspace.plugin) ([#22188](https://github.com/netdata/netdata/issues/22188))
