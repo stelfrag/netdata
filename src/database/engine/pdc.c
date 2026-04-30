@@ -1178,7 +1178,8 @@ static bool epdl_populate_pages_from_extent_data(
         }
         else {
             if (RRDENG_COMPRESSION_NONE == header->compression_algorithm) {
-                if (unlikely(page_offset + vd.page_length > payload_length)) {
+                if (unlikely(vd.page_length > payload_length ||
+                             page_offset > payload_length - vd.page_length)) {
                     char log[200 + 1];
                     snprintfz(log, sizeof(log) - 1, "page %u (out of %u) offset %u + page length %zu, "
                                         "exceeds the payload size %" PRIu64,
@@ -1196,7 +1197,8 @@ static bool epdl_populate_pages_from_extent_data(
                 }
             }
             else {
-                if (unlikely(page_offset + vd.page_length > uncompressed_payload_length)) {
+                if (unlikely(vd.page_length > uncompressed_payload_length ||
+                             page_offset > uncompressed_payload_length - vd.page_length)) {
                     char log[200 + 1];
                     snprintfz(log, sizeof(log) - 1, "page %u (out of %u) offset %u + page length %zu, "
                                         "exceeds the uncompressed buffer size %u",
@@ -1304,7 +1306,7 @@ static inline void *datafile_extent_read(struct rrdengine_instance *ctx, uv_file
 
     uv_buf_t iov = uv_buf_init(buffer, real_io_size);
     int ret = uv_fs_read(NULL, &request, file, &iov, 1, (int64_t) BLOCK_TO_OFFSET(block), NULL);
-    if (unlikely(ret != (int)real_io_size)) {
+    if (unlikely(ret < 0 || (unsigned)ret != real_io_size)) {
         ctx_io_error(ctx);
         posix_memalign_freez(buffer);
         buffer = NULL;
