@@ -1288,9 +1288,10 @@ static bool epdl_populate_pages_from_extent_data(
 static inline void *datafile_extent_read(struct rrdengine_instance *ctx, uv_file file, uint32_t block, unsigned size_bytes)
 {
     if (unlikely(!rrdeng_valid_extent_disk_size(size_bytes))) {
-        nd_log(NDLS_DAEMON, NDLP_ERR,
-               "DBENGINE: refusing to read extent at offset %" PRIu64 " with invalid size %u",
-               BLOCK_TO_OFFSET(block), size_bytes);
+        nd_log_limit_static_global_var(erl, 1, 0);
+        nd_log_limit(&erl, NDLS_DAEMON, NDLP_ERR,
+                     "DBENGINE: refusing to read extent at offset %" PRIu64 " with invalid size %u",
+                     BLOCK_TO_OFFSET(block), size_bytes);
         ctx_io_error(ctx);
         return NULL;
     }
