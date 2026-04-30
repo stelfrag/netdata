@@ -99,7 +99,7 @@ static void rrd_functions_worker_globals_worker_main(void *arg) {
         // cannot land after we decide to sleep but before the thread blocks.
         while(!__atomic_load_n(&wg->workers_exit, __ATOMIC_RELAXED) && !nd_thread_signaled_to_cancel()) {
             dfe_start_write(wg->worker_queue, j) {
-                if(j->running || j->cancelled)
+                if(j->running || __atomic_load_n(&j->cancelled, __ATOMIC_RELAXED))
                     continue;
 
                 acquired = dictionary_acquired_item_dup(wg->worker_queue, j_dfe.item);
