@@ -81,6 +81,13 @@ var kernelReleaseRe = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)`)
 var redHatReleaseRe = regexp.MustCompile(`([0-9]+)\.([0-9]+)`)
 var netdataRuntimePrefix = "/opt/netdata"
 
+// netdataRuntimePath builds an install path from the compiled-in prefix. The
+// leading "/" is what keeps the result absolute for a native install, where the
+// build sets the prefix to the empty string.
+func netdataRuntimePath(path string) string {
+	return filepath.Join("/", netdataRuntimePrefix, path)
+}
+
 func KernelVersionFromRelease(release string) (uint32, error) {
 	release = strings.TrimSpace(release)
 	match := kernelReleaseRe.FindStringSubmatch(release)

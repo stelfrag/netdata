@@ -57,15 +57,8 @@ func loadCachestatConfigFiles() (cachestatConfigFile, bool, error) {
 }
 
 func cachestatConfigRoots() (userRoot, stockRoot string) {
-	userRoot = os.Getenv("NETDATA_USER_CONFIG_DIR")
-	if userRoot == "" {
-		userRoot = "/etc/netdata"
-	}
-
-	stockRoot = os.Getenv("NETDATA_STOCK_CONFIG_DIR")
-	if stockRoot == "" {
-		stockRoot = "/usr/lib/netdata/conf.d"
-	}
+	userRoot = secureGetenv("NETDATA_USER_CONFIG_DIR", netdataRuntimePath("etc/netdata"))
+	stockRoot = secureGetenv("NETDATA_STOCK_CONFIG_DIR", netdataRuntimePath("usr/lib/netdata/conf.d"))
 
 	return userRoot, stockRoot
 }
