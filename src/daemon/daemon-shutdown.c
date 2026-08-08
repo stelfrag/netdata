@@ -48,6 +48,7 @@ static bool shutdown_on_fatal(void) {
 #endif
 
 void web_client_cache_destroy(void);
+void function_data_query_shutdown(void);
 
 extern struct netdata_static_thread *static_threads;
 
@@ -248,6 +249,11 @@ static void netdata_cleanup_and_exit(EXIT_REASON reason, bool abnormal, bool exi
 
     service_wait_exit(SERVICE_CONTEXT, 5 * USEC_PER_SEC);
     watcher_step_complete(WATCHER_STEP_ID_STOP_CONTEXT_THREAD);
+
+    // Must run BEFORE web_client_cache_destroy(): the delegated-query workers
+    // borrow web clients from that cache for the duration of a query. This
+    // joins them, so no worker can be holding one when the cache goes away.
+    function_data_query_shutdown();
 
     web_client_cache_destroy();
     watcher_step_complete(WATCHER_STEP_ID_CLEAR_WEB_CLIENT_CACHE);

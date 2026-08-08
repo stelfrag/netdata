@@ -64,4 +64,29 @@ void global_functions_add(void) {
         "top",
         HTTP_ACCESS_ANONYMOUS_DATA,
         function_metrics_cardinality);
+
+    // Query delegation transport: a parent calls this on us when its own
+    // database cannot answer a query for this node.
+    //
+    // Registered with rrd_function_add() rather than rrd_function_add_inline()
+    // for two reasons:
+    //  - the inline callback signature does not expose rfe->user_access, and we
+    //    must run the delegated query under the ORIGINAL caller's access rather
+    //    than a hardcoded one;
+    //  - sync=false, because the handler only enqueues onto its own workers. It
+    //    must not run the query on the caller's thread, which for a request
+    //    arriving from a parent is this child's stream thread.
+    rrd_function_add(
+        localhost,
+        NULL,
+        RRDFUNCTIONS_DATA_QUERY,
+        60,
+        RRDFUNCTIONS_PRIORITY_DEFAULT,
+        RRDFUNCTIONS_VERSION_DEFAULT,
+        RRDFUNCTIONS_DATA_QUERY_HELP,
+        RRDFUNCTIONS_TAG_HIDDEN,
+        HTTP_ACCESS_ANONYMOUS_DATA,
+        false,
+        function_data_query,
+        NULL);
 }

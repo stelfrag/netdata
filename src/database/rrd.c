@@ -70,6 +70,11 @@ inline long align_entries_to_pagesize(RRD_DB_MODE mode, long entries) {
 
 void api_v1_management_init(void);
 
+// Declared locally for the same reason as api_v1_management_init(): including
+// web/api/functions/functions.h here would pull the web API headers into rrd.h's
+// include cycle. See src/web/api/functions/function-data-query.h.
+void function_data_query_init(void);
+
 // Thread-exit cleanup callbacks. Registered with libnetdata below;
 // called once per thread at exit time, in registration order. All
 // callbacks except rrdset_thread_rda_free are declared in their
@@ -177,6 +182,9 @@ int rrd_init(const char *hostname, struct rrdhost_system_info *system_info, bool
     if(!unittest)
         health_plugin_init();
 
+    // start the delegated-query workers before registering the function that
+    // feeds them, so a parent can never enqueue onto a pool that is not running
+    function_data_query_init();
     global_functions_add();
 
     if (likely(system_info)) {

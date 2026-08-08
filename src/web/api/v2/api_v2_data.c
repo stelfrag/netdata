@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "api_v2_calls.h"
+#include "web/api/queries/query-delegation.h"
 
 #define GROUP_BY_KEY_MAX_LENGTH 30
 static struct {
@@ -21,6 +22,10 @@ static int api_v23_data_internal(RRDHOST *host __maybe_unused, struct web_client
     usec_t received_ut = now_monotonic_usec();
 
     int ret = HTTP_RESP_BAD_REQUEST;
+
+    // Keep the query string intact for query delegation: the parse loop below
+    // destroys `url` in place via strsep_skip_consecutive_separators().
+    CLEAN_CHAR_P *original_query_string = strdupz(url ? url : "");
 
     buffer_flush(w->response.data);
 
@@ -272,6 +277,15 @@ static int api_v23_data_internal(RRDHOST *host __maybe_unused, struct web_client
         ret = w->response.code;
         goto cleanup;
     }
+
+    // Nothing in our database matches this query at all. Before answering with
+    // an empty result, see whether a child that is streaming to us can answer
+    // it. On any failure this returns false and we fall through to the normal
+    // (empty) local answer, so we are never worse off than without delegation.
+    if(qt->query.used == 0 &&
+        query_delegation_try(qt, w, version >= 3 ? "/api/v3/data" : "/api/v2/data",
+                             original_query_string, timeout, &ret))
+        goto cleanup;
 
     if(outFileName && *outFileName) {
         buffer_sprintf(w->response.header, "Content-Disposition: attachment; filename=\"%s\"\r\n", outFileName);

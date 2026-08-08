@@ -5,6 +5,7 @@
 
 #include "database/rrd.h"
 
+#include "function-data-query.h"
 #include "function-metrics-cardinality.h"
 #include "function-netdata-streaming.h"
 #include "function-topology-streaming.h"

@@ -1997,10 +1997,14 @@ set(STREAMING_PLUGIN_FILES
 )
 
 set(WEB_PLUGIN_FILES
+        src/web/api/functions/function-data-query.c
+        src/web/api/functions/function-data-query.h
         src/web/api/functions/function-metrics-cardinality.c
         src/web/api/functions/function-metrics-cardinality.h
         src/web/api/queries/backfill.c
         src/web/api/queries/backfill.h
+        src/web/api/queries/query-delegation.c
+        src/web/api/queries/query-delegation.h
         src/web/api/v3/api_v3_stream_info.c
         src/web/api/v3/api_v3_stream_path.c
         src/web/mcp/adapters/mcp-websocket.c
