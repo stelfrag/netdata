@@ -128,7 +128,12 @@ struct rrdset {
 
     rrd_ml_chart_t *ml_chart;
 
-    struct storage_alignment *smg[RRD_STORAGE_TIERS];
+    struct storage_alignment *smg[RRD_STORAGE_SLOTS];
+
+    // tier-0 offline spill store: latched once per rrdset_timed_done() from
+    // rrdhost_spill_should_be_active(), so every dimension of this chart makes
+    // the same decision for the whole iteration. Collector thread only.
+    bool spill_active;
 
     // ------------------------------------------------------------------------
     // linking to siblings and parents
@@ -341,6 +346,10 @@ time_t rrdset_last_entry_s(RRDSET *st);
 time_t rrdset_last_entry_s_of_tier(RRDSET *st, size_t tier);
 
 void rrdset_get_retention_of_tier_for_collected_chart(RRDSET *st, time_t *first_time_s, time_t *last_time_s, time_t now_s, size_t tier);
+
+// tier-0 retention as advertised to, and served for, a replicating parent:
+// the in-memory ring unioned with the tier-0 offline spill store.
+void rrdset_get_replication_retention_of_chart(RRDSET *st, time_t *first_time_s, time_t *last_time_s, time_t now_s);
 
 void rrdset_update_rrdlabels(RRDSET *st, RRDLABELS *new_rrdlabels);
 

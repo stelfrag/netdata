@@ -170,6 +170,9 @@ static void stream_sender_on_ready_to_dispatch(struct sender_state *s) {
     // set this flag before sending any data, or the data will not be sent
     rrdhost_flag_set(s->host, RRDHOST_FLAG_STREAM_SENDER_READY_4_METRICS);
 
+    // the tier-0 offline spill store keeps spilling until replication drains
+    rrdhost_spill_sender_became_ready(s->host);
+
     // send our global metadata to the parent
     stream_sender_send_custom_host_variables(s->host);
     stream_path_send_to_parent(s->host);
@@ -462,6 +465,11 @@ static void stream_sender_move_running_to_connector_or_remove_internal(struct st
 
     // clear this flag asap, to stop other threads from pushing metrics for this node
     rrdhost_flag_clear(s->host, RRDHOST_FLAG_STREAM_SENDER_CONNECTED | RRDHOST_FLAG_STREAM_SENDER_READY_4_METRICS);
+
+    // this is the authoritative loss-of-connection moment: every failure reason
+    // funnels through here, ahead of stream_sender_on_disconnect() which runs
+    // later on the connector thread
+    rrdhost_spill_sender_not_ready(s->host);
 
     // clear these asap, to make sender_commit() stop processing data for this host
     stream_sender_lock(s);

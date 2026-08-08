@@ -532,4 +532,12 @@ NOT_INLINE_HOT void rrd2rrdr_query_execute(RRDR *r, size_t dim_id_in_rrdr, QUERY
     r->stats.db_points_read += ops->db_total_points_read;
     for(size_t tr = 0; tr < nd_profile.storage_tiers; tr++)
         qt->db.tiers[tr].points += ops->db_points_read_per_tier[tr];
+
+    // Points served by the tier-0 offline spill store are counted as tier 0:
+    // they ARE tier-0-resolution samples, and the public "db_points_per_tier"
+    // arrays (/api/v1 jsonwrap, /api/v*/weights) are emitted with one element
+    // per configured tier. Adding an element would change that array's length
+    // for every consumer; dropping the points would under-report the query.
+    if(spill_enabled)
+        qt->db.tiers[0].points += ops->db_points_read_per_tier[rrd_spill_slot()];
 }

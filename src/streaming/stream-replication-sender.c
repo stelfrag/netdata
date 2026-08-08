@@ -96,6 +96,13 @@ struct replication_query {
     size_t points_generated;
 
     STORAGE_ENGINE_BACKEND backend;
+
+    // Which tier-0 store serves THIS window. A replication query opens one
+    // handle per dimension and cannot merge two stores, so each window is
+    // clamped to lie entirely within one of them; the parent walks forward
+    // across windows on its own (see replication_response_prepare).
+    bool from_spill;
+
     struct replication_request *rq;
 
     size_t alloc_size;              // bytes accounted in replication_buffers_allocated for this query
@@ -116,7 +123,8 @@ static struct replication_query *replication_query_prepare(
         bool query_enable_streaming,
         time_t wall_clock_time,
         STREAM_CAPABILITIES capabilities,
-        bool synchronous
+        bool synchronous,
+        bool from_spill
 ) {
     size_t dimensions = rrdset_number_of_dimensions(st);
     size_t alloc_size = sizeof(struct replication_query) + dimensions * sizeof(struct replication_dimension);
@@ -138,6 +146,7 @@ static struct replication_query *replication_query_prepare(
     q->query.before = query_before;
     q->query.enable_streaming = query_enable_streaming;
     q->query.capabilities = capabilities;
+    q->from_spill = from_spill;
 
     q->wall_clock_time = wall_clock_time;
 
@@ -166,7 +175,8 @@ static struct replication_query *replication_query_prepare(
         }
     }
 
-    q->backend = st->rrdhost->db[0].eng->seb;
+    size_t src_slot = q->from_spill ? rrd_spill_slot() : 0;
+    q->backend = st->rrdhost->db[src_slot].eng->seb;
 
     // prepare our array of dimensions
     size_t count = 0;
@@ -182,6 +192,13 @@ static struct replication_query *replication_query_prepare(
             break;
         }
 
+        // A dimension with no handle in the selected store has nothing to give
+        // for this window. Skipping it here (rather than opening a query on a
+        // NULL handle) keeps replication_query_execute()'s max_skip guard from
+        // burning its budget on it.
+        if (unlikely(!rd->tiers[src_slot].smh))
+            continue;
+
         struct replication_dimension *d = &q->data[rd_dfe.counter];
 
         d->dict = rd_dfe.dict;
@@ -191,7 +208,7 @@ static struct replication_query *replication_query_prepare(
         STORAGE_PRIORITY priority = (synchronous) ? STORAGE_PRIORITY_SYNCHRONOUS_FIRST : STORAGE_PRIORITY_LOW;
 
         stream_control_replication_query_started();
-        storage_engine_query_init(q->backend, rd->tiers[0].smh, &d->handle,
+        storage_engine_query_init(q->backend, rd->tiers[src_slot].smh, &d->handle,
                                   q->query.after, q->query.before, priority);
         d->enabled = true;
         d->skip = false;
@@ -310,6 +327,13 @@ static void replication_query_finalize(BUFFER *wb, struct replication_query *q, 
 
 static void replication_query_align_to_optimal_before(struct replication_query *q) {
     if(!q->query.execute || q->query.enable_streaming)
+        return;
+
+    // A spill-served window was deliberately clamped to end where the in-memory
+    // ring begins. Extending it to a dbengine page boundary (up to 1024 steps)
+    // would hand the parent points past that boundary, overlapping what the
+    // ring is about to serve in the next window.
+    if(q->from_spill)
         return;
 
     size_t dimensions = q->dimensions;
@@ -597,8 +621,8 @@ static struct replication_query *replication_response_prepare(
     }
 
     time_t db_first_entry = 0, db_last_entry = 0;
-    rrdset_get_retention_of_tier_for_collected_chart(
-        st, &db_first_entry, &db_last_entry, wall_clock_time, 0);
+    rrdset_get_replication_retention_of_chart(
+        st, &db_first_entry, &db_last_entry, wall_clock_time);
 
     if(query_after && query_before) {
         if (query_after < db_first_entry)
@@ -616,12 +640,49 @@ static struct replication_query *replication_response_prepare(
         }
     }
 
+    // Pick the single tier-0 store that serves this window.
+    //
+    // db_first_entry above spans the in-memory ring AND the offline spill store,
+    // so the parent can legitimately ask for a window that starts before the
+    // ring does. A replication query opens one handle per dimension and cannot
+    // merge two stores, so serve the pre-ring part from the spill and clamp the
+    // window to end where the ring begins. The parent then re-asks from
+    // r.gap.from = r.last_request.before and walks forward into the ring on its
+    // own - no protocol change, no merging.
+    bool from_spill = false;
+
+    if(spill_enabled && st->rrdhost->spill.enabled && query_after && query_before) {
+        time_t ring_first_entry = rrdset_first_entry_s_of_tier(st, 0);
+
+        if(ring_first_entry && query_after < ring_first_entry) {
+            from_spill = true;
+
+            time_t spill_before = ring_first_entry - st->update_every;
+            if(query_before > spill_before)
+                query_before = spill_before;
+
+            // A spill-served window never reaches the collected end of the
+            // chart, so it can never be the window that resumes live streaming.
+            query_enable_streaming = false;
+
+            if(query_after > query_before) {
+                // the ring starts within one step of the request - nothing for
+                // the spill to serve, fall back to the ring
+                from_spill = false;
+                query_before = MIN(requested_before, db_last_entry);
+                query_after = ring_first_entry;
+                if(query_after > query_before)
+                    SWAP(query_after, query_before);
+            }
+        }
+    }
+
     return replication_query_prepare(
             st,
             db_first_entry, db_last_entry,
             requested_after, requested_before, requested_enable_streaming,
             query_after, query_before, query_enable_streaming,
-            wall_clock_time, capabilities, synchronous);
+            wall_clock_time, capabilities, synchronous, from_spill);
 }
 
 static inline void replication_response_cancel_and_finalize(struct replication_query *q) {
@@ -672,7 +733,7 @@ bool replication_response_execute_finalize_and_send(struct replication_query *q,
     // get a fresh retention to send to the parent
     time_t wall_clock_time = now_realtime_sec();
     time_t db_first_entry, db_last_entry;
-    rrdset_get_retention_of_tier_for_collected_chart(st, &db_first_entry, &db_last_entry, wall_clock_time, 0);
+    rrdset_get_replication_retention_of_chart(st, &db_first_entry, &db_last_entry, wall_clock_time);
 
     // end with first/last entries we have, and the first start time and
     // last end time of the data we sent

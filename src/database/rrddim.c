@@ -43,6 +43,11 @@ static void *rrddim_alloc_db(size_t entries) {
 static void rrddim_reinitialize_collection(RRDDIM *rd) {
     RRDSET *st = rd->rrdset;
 
+    // Deliberately bounded to the real tiers, NOT rrd_storage_slots(): this runs
+    // whenever a collector re-declares an existing dimension, and would happily
+    // resurrect the offline spill store's collect handle while a parent is
+    // connected. The spill handle's lifetime belongs solely to the activation
+    // toggle in rrddim_store_metric().
     for(size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
         if (!rd->tiers[tier].sch)
             rd->tiers[tier].sch =
@@ -127,6 +132,33 @@ static void rrddim_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
             netdata_log_error("Failed to initialize the first db tier for chart '%s', dimension '%s", rrdset_name(st), rrddim_name(rd));
     }
 
+    // initialize the tier-0 offline spill slot
+    //
+    // Deliberately NOT metric_get_or_create(): that materializes a permanent MRG
+    // entry for every dimension, which a child whose parent never disconnects
+    // would pay for forever. Attach only when a previous session actually left
+    // retention behind, so that an outage spanning an agent restart is still
+    // advertised and replicable from the first second. The collector creates the
+    // handle on demand when spilling starts.
+    if(spill_enabled && host->db[rrd_spill_slot()].eng) {
+        size_t spill = rrd_spill_slot();
+        STORAGE_ENGINE *eng = host->db[spill].eng;
+
+        rd->tiers[spill].seb = eng->seb;
+        rd->tiers[spill].tier_grouping = 1;
+        spinlock_init(&rd->tiers[spill].spinlock);
+        storage_point_unset(rd->tiers[spill].virtual_point);
+        rd->tiers[spill].sch = NULL;
+
+        STORAGE_METRIC_HANDLE *smh = eng->api.metric_get_by_id(host->db[spill].si, rd->uuid);
+        if(smh && !storage_engine_oldest_time_s(eng->seb, smh)) {
+            // an empty MRG entry left over from a previous run - nothing to read
+            eng->api.metric_release(smh);
+            smh = NULL;
+        }
+        rd->tiers[spill].smh = smh;
+    }
+
     // initialize data collection for all tiers
     {
         size_t initialized = 0;
@@ -177,13 +209,19 @@ bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd) {
 
     size_t tiers_available = 0, tiers_said_no_retention = 0;
 
-    for(size_t tier = 0; tier < nd_profile.storage_tiers ;tier++) {
+    // rrd_storage_slots() so an active spill store is flushed and closed too -
+    // this is the path obsoletion, chart deletion and shutdown all funnel
+    // through, and a spill handle left open would never flush its hot page and
+    // would leak ctx->atomic.collectors_running.
+    for(size_t tier = 0; tier < rrd_storage_slots() ;tier++) {
         spinlock_lock(&rd->tiers[tier].spinlock);
 
         if(rd->tiers[tier].sch) {
             tiers_available++;
 
-            if(tier > 0)
+            // the spill slot collects at tier-0 resolution and has no
+            // virtual_point aggregation to flush
+            if(tier > 0 && !rrddim_tier_is_spill(tier))
                 store_metric_at_tier_flush_last_completed(rd, tier, &rd->tiers[tier]);
 
             if (storage_engine_store_finalize(rd->tiers[tier].sch))
@@ -197,6 +235,20 @@ bool rrddim_finalize_collection_and_check_retention(RRDDIM *rd) {
 
     // return true if the dimension has retention in the db
     return (!tiers_said_no_retention || tiers_available > tiers_said_no_retention);
+}
+
+// Whether the tier-0 offline spill store still holds data for this dimension.
+// Must be called while rd->tiers[spill].smh is still valid, i.e. before the
+// metric handles are released in rrddim_delete_callback().
+static bool rrddim_spill_has_retention(RRDDIM *rd) {
+    if(!spill_enabled)
+        return false;
+
+    size_t spill = rrd_spill_slot();
+    if(!rd->tiers[spill].smh)
+        return false;
+
+    return storage_engine_oldest_time_s(rd->tiers[spill].seb, rd->tiers[spill].smh) != 0;
 }
 
 static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, void *rrddim, void *rrdset) {
@@ -217,22 +269,30 @@ static void rrddim_delete_callback(const DICTIONARY_ITEM *item __maybe_unused, v
     // means "the db still has retention for this dimension".
     bool has_db_retention = rrddim_finalize_collection_and_check_retention(rd);
 
+    // Must be evaluated before the metric handles are released below.
+    bool spill_retention = rrddim_spill_has_retention(rd);
+
     // Delete the dimension's SQLite metadata when freeing it leaves no queryable
     // data behind:
     //   - dbengine: only when no on-disk retention remains;
-    //   - ram/alloc/none: all use the in-memory rrddim storage backend, so data
-    //     lives only in RAM and a freed dimension is always orphaned (the
-    //     retention check above misreports these modes as retained).
+    //   - ram/alloc/none: these use the in-memory rrddim storage backend, whose
+    //     rrddim_collect_finalize() always reports "retained", so has_db_retention
+    //     is meaningless for them - the RAM ring dies with the dimension.
+    //     BUT the tier-0 offline spill store can hold real dbengine retention
+    //     that outlives the freed dimension, and rrdcontext_find_dimension_uuid()
+    //     is the only way back to it after a restart. Dropping the row here would
+    //     orphan that data permanently.
     if ((rd->rrd_memory_mode == RRD_DB_MODE_DBENGINE && !has_db_retention) ||
-        rd->rrd_memory_mode == RRD_DB_MODE_RAM ||
-        rd->rrd_memory_mode == RRD_DB_MODE_ALLOC ||
-        rd->rrd_memory_mode == RRD_DB_MODE_NONE) {
+        ((rd->rrd_memory_mode == RRD_DB_MODE_RAM ||
+          rd->rrd_memory_mode == RRD_DB_MODE_ALLOC ||
+          rd->rrd_memory_mode == RRD_DB_MODE_NONE) && !spill_retention)) {
         metaqueue_delete_dimension_uuid(uuidmap_uuid_ptr(rd->uuid));
     }
 
     bool db_data_lifetime_transferred = false;
 
-    for(size_t tier = 0; tier < nd_profile.storage_tiers;tier++) {
+    // rrd_storage_slots() to release the spill store's metric handle too
+    for(size_t tier = 0; tier < rrd_storage_slots();tier++) {
         spinlock_lock(&rd->tiers[tier].spinlock);
         if(rd->tiers[tier].smh) {
             STORAGE_ENGINE *eng = host->db[tier].eng;
@@ -339,7 +399,16 @@ static void rrddim_react_callback(const DICTIONARY_ITEM *item __maybe_unused, vo
 }
 
 size_t rrddim_size(void) {
-    return sizeof(RRDDIM) + nd_profile.storage_tiers * sizeof(struct rrddim_tier);
+    // rd->tiers[] is a flexible array member sized once, at dictionary creation
+    // time (DICT_OPTION_FIXED_SIZE below). When the tier-0 offline spill store
+    // is enabled, every dimension carries one extra slot at index
+    // rrd_spill_slot(); when it is off, the slot does not exist at all and
+    // indexing it would run past the allocation.
+    //
+    // spill_enabled is fixed by netdata_conf_dbengine_init() before the first
+    // host is created, so this value never changes while dictionaries exist.
+    return sizeof(RRDDIM) +
+           (nd_profile.storage_tiers + (spill_enabled ? 1 : 0)) * sizeof(struct rrddim_tier);
 }
 
 void rrddim_index_init(RRDSET *st) {
@@ -479,7 +548,11 @@ time_t rrddim_last_entry_s_of_tier(RRDDIM *rd, size_t tier) {
     if(unlikely(!rd))
         return 0;
 
-    if(unlikely(tier >= nd_profile.storage_tiers || !rd->tiers[tier].smh))
+    // rrd_storage_slots() so the offline spill slot is addressable. These
+    // accessors keep RAW per-store semantics on purpose: ML calls them for
+    // tier 0 and then queries rd->tiers[0].smh directly, so a unioned answer
+    // would hand ML a window its handle cannot serve.
+    if(unlikely(tier >= rrd_storage_slots() || !rd->tiers[tier].smh))
         return 0;
 
     return storage_engine_latest_time_s(rd->tiers[tier].seb, rd->tiers[tier].smh);
@@ -492,7 +565,9 @@ time_t rrddim_last_entry_s(RRDDIM *rd) {
 
     time_t latest_time_s = rrddim_last_entry_s_of_tier(rd, 0);
 
-    for(size_t tier = 1; tier < nd_profile.storage_tiers;tier++) {
+    // rrd_storage_slots(): this IS the unioned accessor, so it spans the
+    // offline spill store as well
+    for(size_t tier = 1; tier < rrd_storage_slots();tier++) {
         if(unlikely(!rd->tiers[tier].smh)) continue;
 
         time_t t = rrddim_last_entry_s_of_tier(rd, tier);
@@ -507,7 +582,7 @@ time_t rrddim_first_entry_s_of_tier(RRDDIM *rd, size_t tier) {
     if(unlikely(!rd))
         return 0;
 
-    if(unlikely(tier >= nd_profile.storage_tiers || !rd->tiers[tier].smh))
+    if(unlikely(tier >= rrd_storage_slots() || !rd->tiers[tier].smh))
         return 0;
 
     return storage_engine_oldest_time_s(rd->tiers[tier].seb, rd->tiers[tier].smh);
@@ -519,7 +594,9 @@ time_t rrddim_first_entry_s(RRDDIM *rd) {
 
     time_t oldest_time_s = 0;
 
-    for(size_t tier = 0; tier < nd_profile.storage_tiers;tier++) {
+    // rrd_storage_slots(): this IS the unioned accessor, so it spans the
+    // offline spill store as well
+    for(size_t tier = 0; tier < rrd_storage_slots();tier++) {
         time_t t = rrddim_first_entry_s_of_tier(rd, tier);
         if(t != 0 && (oldest_time_s == 0 || t < oldest_time_s))
             oldest_time_s = t;

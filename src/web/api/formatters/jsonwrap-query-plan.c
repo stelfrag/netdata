@@ -17,7 +17,10 @@ void jsonwrap_query_metric_plan(BUFFER *wb, QUERY_METRIC *qm, RRDR_OPTIONS optio
     buffer_json_array_close(wb);
 
     buffer_json_member_add_array(wb, "tiers");
-    for (size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
+    // rrd_storage_slots(): without the spill row, a plan entry whose tier is the
+    // offline spill slot would have no matching entry here and the debug output
+    // would look inconsistent.
+    for (size_t tier = 0; tier < rrd_storage_slots(); tier++) {
         buffer_json_add_array_item_object(wb);
         buffer_json_member_add_uint64(wb, JSKEY(tier), tier);
         buffer_json_member_add_time_t_formatted(wb, JSKEY(first_entry), qm->tiers[tier].db_first_time_s, options & RRDR_OPTION_RFC3339);

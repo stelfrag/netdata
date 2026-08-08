@@ -148,7 +148,16 @@ typedef struct query_plan_entry {
     time_t before;
 } QUERY_PLAN_ENTRY;
 
-#define QUERY_PLANS_MAX (RRD_STORAGE_TIERS)
+// The exact upper bound on plan segments built by query_plan_build_entries():
+// 1 for the selected tier, 1 for the tier-0 offline spill head-fill, then the
+// head walk (storage_tiers - 1 - selected_tier) and the tail walk
+// (selected_tier) - which sum to storage_tiers - 1 regardless of the selection.
+// Total = storage_tiers + 1 = RRD_STORAGE_SLOTS.
+//
+// Do NOT tie this back to RRD_STORAGE_TIERS: the `qm->plan.used <
+// QUERY_PLANS_MAX` guards in query_plan_build_entries() silently drop
+// legitimate tiers once the array is full.
+#define QUERY_PLANS_MAX (RRD_STORAGE_SLOTS)
 
 typedef struct query_metrics_counts {   // counts the number of metrics related to an object
     size_t selected;                    // selected to be queried
@@ -222,7 +231,7 @@ typedef struct _query_metric {
         time_t db_last_time_s;          // the latest timestamp available for this tier
         time_t db_update_every_s;       // latest update every for this tier
         long weight;
-    } tiers[RRD_STORAGE_TIERS];
+    } tiers[RRD_STORAGE_SLOTS];         // [nd_profile.storage_tiers] is the offline spill slot
 
     struct {
         size_t used;
@@ -366,11 +375,11 @@ typedef struct query_target {
     } window;
 
     struct {
-        size_t queries[RRD_STORAGE_TIERS];
+        size_t queries[RRD_STORAGE_SLOTS];
         time_t first_time_s;                  // the combined first_time_t of all metrics in the query, across all tiers
         time_t last_time_s;                   // the combined last_time_T of all metrics in the query, across all tiers
         time_t minimum_latest_update_every_s; // the min update every of the metrics in the query
-        struct query_tier_statistics tiers[RRD_STORAGE_TIERS];
+        struct query_tier_statistics tiers[RRD_STORAGE_SLOTS];
     } db;
 
     struct {

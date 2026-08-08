@@ -159,8 +159,14 @@ void get_metric_retention_by_id(RRDHOST *host, UUIDMAP_ID id, time_t *min_first_
     *min_first_time_t = LONG_MAX;
     *max_last_time_t = 0;
 
-    for (size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
+    if(tier0_retention)
+        *tier0_retention = false;
+
+    // rrd_storage_slots() so an archived metric whose only tier-0-resolution
+    // data is in the offline spill store still reports retention
+    for (size_t tier = 0; tier < rrd_storage_slots(); tier++) {
         STORAGE_ENGINE *eng = host->db[tier].eng;
+        if(!eng) continue;
 
         time_t first_time_t = 0, last_time_t = 0;
         if (eng->api.metric_retention_by_id(host->db[tier].si, id, &first_time_t, &last_time_t)) {
@@ -171,8 +177,11 @@ void get_metric_retention_by_id(RRDHOST *host, UUIDMAP_ID id, time_t *min_first_
                 *max_last_time_t = last_time_t;
         }
 
-        if(tier == 0 && tier0_retention)
-            *tier0_retention = first_time_t || last_time_t;
+        // the spill store holds tier-0-resolution data, so it counts as tier-0
+        // retention: without this, RRD_FLAG_NO_TIER0_RETENTION would be set on a
+        // context whose only tier-0 data is spilled
+        if((tier == 0 || rrddim_tier_is_spill(tier)) && tier0_retention && (first_time_t || last_time_t))
+            *tier0_retention = true;
     }
 }
 

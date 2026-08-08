@@ -191,7 +191,17 @@ struct rrdhost {
         STORAGE_ENGINE *eng;                        // the storage engine API for this tier
         STORAGE_INSTANCE *si;                       // the db instance for this tier
         uint32_t tier_grouping;                     // tier 0 iterations aggregated on this tier
-    } db[RRD_STORAGE_TIERS];
+    } db[RRD_STORAGE_SLOTS];                        // [nd_profile.storage_tiers] is the offline spill slot
+
+    // tier-0 offline spill store state. The activation predicate
+    // (rrdhost_spill_should_be_active()) is a pure function of these two
+    // timestamps, the sender's READY_4_METRICS flag and the replicating-charts
+    // counter - there is no state machine to keep in sync.
+    struct {
+        bool enabled;                               // this host has a spill slot in db[rrd_spill_slot()]
+        time_t ready_since_s;                       // when the sender last became ready to send metrics
+        time_t not_ready_since_s;                   // when the sender last stopped being ready
+    } spill;
 
     struct rrdhost_system_info *system_info;        // information collected from the host environment
 

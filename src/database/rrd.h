@@ -101,6 +101,8 @@ static inline uint32_t get_uint32_id() {
 #include "streaming/stream-replication-tracking.h"
 #include "rrdhost-system-info.h"
 #include "daemon/common.h"
+// must come after daemon/common.h - needs [db].offline retention* from netdata-conf-db.h
+#include "rrd-spill.h"
 #include "web/api/queries/query.h"
 #include "web/api/queries/rrdr.h"
 #include "health/rrdvar.h"

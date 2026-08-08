@@ -110,7 +110,7 @@ bool stream_sender_send_rrdset_definition(BUFFER *wb, RRDSET *st) {
         time_t db_first_time_t, db_last_time_t;
 
         time_t now = now_realtime_sec();
-        rrdset_get_retention_of_tier_for_collected_chart(st, &db_first_time_t, &db_last_time_t, now, 0);
+        rrdset_get_replication_retention_of_chart(st, &db_first_time_t, &db_last_time_t, now);
 
         buffer_sprintf(wb, PLUGINSD_KEYWORD_CHART_DEFINITION_END " %llu %llu %llu\n",
                        (unsigned long long)db_first_time_t,

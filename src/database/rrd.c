@@ -103,16 +103,44 @@ int rrd_init(const char *hostname, struct rrdhost_system_info *system_info, bool
         dbengine_enabled = true;
     }
     else {
-        if (default_rrd_memory_mode == RRD_DB_MODE_DBENGINE || stream_conf_receiver_needs_dbengine()) {
+        // The tier-0 offline spill store needs dbengine up even though tier 0
+        // itself stays in an in-memory db mode. dbengine cannot be started
+        // later - rrdeng_dbengine_spawn() latches a static 'spawned' flag that
+        // is never cleared - so this is the only chance to bring it up.
+        //
+        // Require an actual streaming destination: on a standalone agent the
+        // "no parent connected" condition would be permanently true and the
+        // agent would silently become a dbengine agent for no benefit.
+        bool spill_needs_dbengine =
+            spill_conf_requested() &&
+            default_rrd_memory_mode != RRD_DB_MODE_DBENGINE &&
+            stream_send.enabled && stream_send.parents.destination;
+
+        if(spill_conf_requested() && !spill_needs_dbengine &&
+           default_rrd_memory_mode != RRD_DB_MODE_DBENGINE)
+            nd_log(NDLS_DAEMON, NDLP_WARNING,
+                   "[db].offline retention is enabled but this agent does not stream to a parent "
+                   "([stream].enabled and [stream].destination). The offline spill store is disabled - "
+                   "there would be no parent to replicate the spilled data to.");
+
+        if (default_rrd_memory_mode == RRD_DB_MODE_DBENGINE ||
+            stream_conf_receiver_needs_dbengine() ||
+            spill_needs_dbengine) {
             nd_log(NDLS_DAEMON, NDLP_DEBUG,
                    "DBENGINE: Initializing ...");
 
-            netdata_conf_dbengine_init(hostname);
+            netdata_conf_dbengine_init(hostname, spill_needs_dbengine);
         }
         else
             nd_profile.storage_tiers = 1;
 
         if (!dbengine_enabled) {
+            // No dbengine means no multidb_ctx[0], so there is nowhere to spill.
+            // netdata_conf_dbengine_init() should not have set this, but keep
+            // the invariant "spill_enabled implies multidb_ctx[0] is ready"
+            // locally provable rather than relying on the callee.
+            spill_enabled = false;
+
             if (nd_profile.storage_tiers > 1) {
                 nd_log(NDLS_DAEMON, NDLP_WARNING,
                        "dbengine is not enabled, but %zu tiers have been requested. Resetting tiers to 1",

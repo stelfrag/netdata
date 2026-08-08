@@ -336,6 +336,14 @@ static void rrdhost_set_replication_parameters(RRDHOST *host, RRD_DB_MODE memory
         default:
         case RRD_DB_MODE_ALLOC:
         case RRD_DB_MODE_RAM:
+            // This host's tier 0 is an in-memory ring, so it cannot serve a
+            // replication request older than the ring - EXCEPT when it also has
+            // a tier-0 offline spill store, whose whole purpose is to hold the
+            // outage window on disk. Capping to the ring there would ask this
+            // host's own children for less than it can actually keep.
+            if(spill_enabled && host->spill.enabled)
+                break;
+
             if(host->stream.replication.period > (time_t) host->rrd_history_entries * (time_t) host->rrd_update_every)
                 host->stream.replication.period = (time_t) host->rrd_history_entries * (time_t) host->rrd_update_every;
             break;
@@ -423,6 +431,24 @@ RRDHOST *rrdhost_create(
     else
         rrdhost_option_clear(host, RRDHOST_OPTION_REPLICATION);
 
+    // Decide the tier-0 offline spill store BEFORE the replication parameters,
+    // which need it to skip the in-memory-ring cap. The db[] slot itself is
+    // wired further down, in the storage-engine assignment.
+    //
+    // Scoped to the local host on purpose. Hosts streamed *into* this agent are
+    // a separate design question: they would all share the single process-global
+    // multidb_ctx[0] quota, with no per-child accounting.
+    if(spill_enabled && is_localhost) {
+        host->spill.enabled = true;
+
+        // The sender has never been ready yet. Seeding this with "now" rather
+        // than 0 is what makes a child whose parent is already down at boot
+        // start spilling after the normal start delay, instead of spilling
+        // instantly on every ordinary restart.
+        host->spill.not_ready_since_s = now_realtime_sec();
+        host->spill.ready_since_s = 0;
+    }
+
     rrdhost_set_replication_parameters(host, memory_mode, replication_period, replication_step);
 
     host->system_info = rrdhost_system_info_create();
@@ -475,6 +501,25 @@ RRDHOST *rrdhost_create(
             host->db[tier].eng = storage_engine_get(host->db[tier].mode);
             host->db[tier].si = (STORAGE_INSTANCE *) multidb_ctx[tier];
             host->db[tier].tier_grouping = get_tier_grouping(tier);
+        }
+
+        // The tier-0 offline spill store. It sits in the slot just past the real
+        // tiers and holds tier-0-resolution samples written only while this host
+        // has no parent to stream to.
+        //
+        // NOTE the deliberate index mismatch: the slot is rrd_spill_slot()
+        // (== nd_profile.storage_tiers) but the dbengine context is
+        // multidb_ctx[0], because the spill stores tier-0 data. Do not "fix"
+        // this to multidb_ctx[rrd_spill_slot()] - that context does not exist.
+        //
+        // host->spill.enabled was decided earlier, before the replication
+        // parameters were set.
+        if(host->spill.enabled) {
+            size_t spill = rrd_spill_slot();
+            host->db[spill].mode = RRD_DB_MODE_DBENGINE;
+            host->db[spill].eng = storage_engine_get(RRD_DB_MODE_DBENGINE);
+            host->db[spill].si = (STORAGE_INSTANCE *) multidb_ctx[0];
+            host->db[spill].tier_grouping = 1;   // tier-0 resolution, never aggregated
         }
 #endif
     }

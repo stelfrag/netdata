@@ -9,14 +9,32 @@ int default_rrd_history_entries = RRD_DEFAULT_HISTORY_ENTRIES;
 bool dbengine_enabled = false; // will become true if and when dbengine is initialized
 bool dbengine_datafiles_present = false; // detected at startup, regardless of the configured memory mode
 bool dbengine_use_direct_io = true;
+bool spill_enabled = false; // true only when the real dbengine init path brought up multidb_ctx[0] for the spill store
 static size_t storage_tiers_grouping_iterations[RRD_STORAGE_TIERS] = {1, 60, 60, 60, 60};
 static time_t storage_tiers_retention_time_s[RRD_STORAGE_TIERS] = {14 * DAYS, 90 * DAYS, 2 * 365 * DAYS, 2 * 365 * DAYS, 2 * 365 * DAYS};
+
+// tier-0 offline spill store configuration, parsed by netdata_conf_section_db()
+// and consumed by netdata_conf_dbengine_init(). offline_retention_s == 0 means
+// the feature is off, which is the default.
+static time_t offline_retention_s = 0;
+static int    offline_retention_size_mb = OFFLINE_RETENTION_DEFAULT_SIZE_MB;
+time_t offline_retention_start_delay_s = 30;
+time_t offline_retention_stop_delay_s = 60;
+time_t offline_retention_stop_max_s = 3600;
 
 time_t rrdset_free_obsolete_time_s = 3600;
 time_t rrdhost_cleanup_orphan_to_archive_time_s = 3600;
 time_t rrdhost_free_ephemeral_time_s = 0;
 
 extern time_t dbengine_journal_v2_unmount_time;
+
+// Whether the operator asked for the offline spill store. This answers the
+// config question only; whether this agent actually streams to a parent (and so
+// has anything to spill *for*) is decided by the caller in rrd_init(), which is
+// where streaming configuration is visible.
+bool spill_conf_requested(void) {
+    return offline_retention_s > 0;
+}
 
 size_t get_tier_grouping(size_t tier) {
     if(unlikely(tier >= nd_profile.storage_tiers)) tier = nd_profile.storage_tiers - 1;
@@ -135,7 +153,7 @@ RRD_BACKFILL get_dbengine_backfill(RRD_BACKFILL backfill)
 }
 #endif
 
-void netdata_conf_dbengine_init(const char *hostname) {
+void netdata_conf_dbengine_init(const char *hostname, bool enable_spill) {
 #ifdef ENABLE_DBENGINE
 
     // ----------------------------------------------------------------------------------------------------------------
@@ -193,6 +211,11 @@ void netdata_conf_dbengine_init(const char *hostname) {
         inicfg_set_number(&netdata_config, CONFIG_SECTION_DB, "dbengine pages per extent", rrdeng_pages_per_extent);
     }
 
+    // Must be sampled BEFORE the inicfg_get_number() below, which creates the
+    // key when it is absent and would make inicfg_exists() always true.
+    bool storage_tiers_explicitly_configured =
+        inicfg_exists(&netdata_config, CONFIG_SECTION_DB, "storage tiers");
+
     nd_profile.storage_tiers = inicfg_get_number(&netdata_config, CONFIG_SECTION_DB, "storage tiers", nd_profile.storage_tiers);
     if(nd_profile.storage_tiers < 1) {
         nd_log(NDLS_DAEMON, NDLP_WARNING, "At least 1 storage tier is required. Assuming 1.");
@@ -207,6 +230,39 @@ void netdata_conf_dbengine_init(const char *hostname) {
 
         nd_profile.storage_tiers = RRD_STORAGE_TIERS;
         inicfg_set_number(&netdata_config, CONFIG_SECTION_DB, "storage tiers", nd_profile.storage_tiers);
+    }
+
+    // ----------------------------------------------------------------------------------------------------------------
+    // tier-0 offline spill store: pin to a single dbengine tier
+    //
+    // The whole point of the spill store is that a streaming child does no
+    // tier-0 disk writes while its parent is reachable. But rrdhost_create()'s
+    // non-dbengine branch assigns tiers 1..N of a ram/alloc/none host to
+    // multidb_ctx[tier], which would resume continuous 60s/3600s writes the
+    // moment dbengine is initialized here - defeating the feature entirely.
+    //
+    // So default to exactly one dbengine tier (multidb_ctx[0], used solely as
+    // the spill store) and honour a higher count only when the operator asked
+    // for it explicitly.
+    bool spill_requested = enable_spill && spill_conf_requested() && default_rrd_memory_mode != RRD_DB_MODE_DBENGINE;
+
+    if(spill_requested) {
+        if(!storage_tiers_explicitly_configured && nd_profile.storage_tiers > 1) {
+            nd_log(NDLS_DAEMON, NDLP_NOTICE,
+                   "DBENGINE on '%s': [" CONFIG_SECTION_DB "].offline retention is enabled with db mode '%s', "
+                   "so aggregate tiers are disabled (storage tiers %zu -> 1). "
+                   "dbengine is used only as the tier-0 offline spill store.",
+                   hostname, rrd_memory_mode_name(default_rrd_memory_mode), nd_profile.storage_tiers);
+
+            nd_profile.storage_tiers = 1;
+        }
+        else if(storage_tiers_explicitly_configured && nd_profile.storage_tiers > 1) {
+            nd_log(NDLS_DAEMON, NDLP_WARNING,
+                   "DBENGINE on '%s': [" CONFIG_SECTION_DB "].offline retention is enabled together with an explicit "
+                   "'storage tiers = %zu'. Aggregate tiers 1..%zu write to disk continuously, which partially defeats "
+                   "the purpose of the offline spill store.",
+                   hostname, nd_profile.storage_tiers, nd_profile.storage_tiers - 1);
+        }
     }
 
     new_dbengine_defaults =
@@ -282,6 +338,23 @@ void netdata_conf_dbengine_init(const char *hostname) {
             &netdata_config, CONFIG_SECTION_DB,
             dbengineconfig, new_dbengine_defaults ? storage_tiers_retention_time_s[tier] : 0);
 
+        if(spill_requested && tier == 0) {
+            // multidb_ctx[0] is the offline spill store, not a continuously
+            // collected tier, so it is sized by the [db].offline retention*
+            // keys. Those are the discoverable names for this feature and they
+            // are authoritative here.
+            if(inicfg_exists(&netdata_config, CONFIG_SECTION_DB, "dbengine tier 0 retention size") ||
+               inicfg_exists(&netdata_config, CONFIG_SECTION_DB, "dbengine tier 0 retention time"))
+                nd_log(NDLS_DAEMON, NDLP_WARNING,
+                       "DBENGINE on '%s': 'dbengine tier 0 retention size/time' are ignored while "
+                       "[" CONFIG_SECTION_DB "].offline retention is enabled - the tier-0 dbengine store is the "
+                       "offline spill store and is sized by 'offline retention' and 'offline retention size'.",
+                       hostname);
+
+            disk_space_mb = offline_retention_size_mb;
+            storage_tiers_retention_time_s[0] = offline_retention_s;
+        }
+
         tiers_init[tier].disk_space_mb = (int) disk_space_mb;
         tiers_init[tier].tier = tier;
         tiers_init[tier].retention_seconds = (size_t) storage_tiers_retention_time_s[tier];
@@ -327,7 +400,26 @@ void netdata_conf_dbengine_init(const char *hostname) {
     rrdeng_calculate_tier_disk_space_percentage();
 
     dbengine_enabled = true;
+
+    // Only now, with multidb_ctx[0] actually initialized and ready, may the
+    // spill slot exist. Everything downstream (rrddim_size(), host->db[] and the
+    // query slot count) keys off this, and it must be settled before the first
+    // host is created in rrd_init().
+    if(spill_requested) {
+        spill_enabled = true;
+
+        nd_log(NDLS_DAEMON, NDLP_NOTICE,
+               "DBENGINE on '%s': tier-0 offline spill store enabled (db mode '%s', retention %ld seconds, %d MiB). "
+               "No tier-0 disk writes will happen while a parent is connected.",
+               hostname, rrd_memory_mode_name(default_rrd_memory_mode),
+               (long)offline_retention_s, offline_retention_size_mb);
+    }
 #else
+    if(enable_spill && spill_conf_requested())
+        nd_log(NDLS_DAEMON, NDLP_ERR,
+               "[" CONFIG_SECTION_DB "].offline retention requires dbengine, which is not available in this build. "
+               "The offline spill store is disabled.");
+
     nd_profile.storage_tiers = inicfg_get_number(&netdata_config, CONFIG_SECTION_DB, "storage tiers", 1);
     if(nd_profile.storage_tiers != 1) {
         nd_log(NDLS_DAEMON, NDLP_WARNING,
@@ -373,6 +465,61 @@ void netdata_conf_section_db(void) {
             netdata_log_error("Invalid memory mode '%s' given. Using '%s'", mode, rrd_memory_mode_name(default_rrd_memory_mode));
             inicfg_set(&netdata_config, CONFIG_SECTION_DB, "db", rrd_memory_mode_name(default_rrd_memory_mode));
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // tier-0 offline spill store
+    //
+    // A child streaming to a parent keeps tier 0 in its configured in-memory db
+    // mode while the parent is reachable (no tier-0 disk writes), and spills
+    // tier-0-resolution samples into dbengine while it is orphaned, so the
+    // parent can replicate an outage longer than the in-memory ring holds.
+
+    offline_retention_s = inicfg_get_duration_seconds(
+        &netdata_config, CONFIG_SECTION_DB, "offline retention", offline_retention_s);
+
+    if(offline_retention_s < 0) {
+        nd_log(NDLS_DAEMON, NDLP_WARNING,
+               "[" CONFIG_SECTION_DB "].offline retention cannot be negative. Disabling the offline spill store.");
+        offline_retention_s = 0;
+        inicfg_set_duration_seconds(&netdata_config, CONFIG_SECTION_DB, "offline retention", 0);
+    }
+
+    if(offline_retention_s && default_rrd_memory_mode == RRD_DB_MODE_DBENGINE) {
+        // tier 0 is already dbengine, so every sample is already persisted.
+        // There is nothing to spill and nothing to gain.
+        nd_log(NDLS_DAEMON, NDLP_WARNING,
+               "[" CONFIG_SECTION_DB "].offline retention is ignored when [" CONFIG_SECTION_DB "].db is 'dbengine' - "
+               "tier 0 is already stored on disk. Use 'dbengine tier 0 retention time' instead.");
+        offline_retention_s = 0;
+    }
+
+    if(offline_retention_s) {
+        offline_retention_size_mb = (int)inicfg_get_size_mb(
+            &netdata_config, CONFIG_SECTION_DB, "offline retention size", offline_retention_size_mb);
+
+        if(offline_retention_size_mb < RRDENG_MIN_DISK_SPACE_MB) {
+            nd_log(NDLS_DAEMON, NDLP_WARNING,
+                   "[" CONFIG_SECTION_DB "].offline retention size %d MiB is below the minimum %d MiB. Using %d MiB.",
+                   offline_retention_size_mb, RRDENG_MIN_DISK_SPACE_MB, RRDENG_MIN_DISK_SPACE_MB);
+            offline_retention_size_mb = RRDENG_MIN_DISK_SPACE_MB;
+            inicfg_set_size_mb(&netdata_config, CONFIG_SECTION_DB, "offline retention size", offline_retention_size_mb);
+        }
+
+        offline_retention_start_delay_s = inicfg_get_duration_seconds(
+            &netdata_config, CONFIG_SECTION_DB, "offline retention start delay", offline_retention_start_delay_s);
+        offline_retention_stop_delay_s = inicfg_get_duration_seconds(
+            &netdata_config, CONFIG_SECTION_DB, "offline retention stop delay", offline_retention_stop_delay_s);
+        offline_retention_stop_max_s = inicfg_get_duration_seconds(
+            &netdata_config, CONFIG_SECTION_DB, "offline retention stop max", offline_retention_stop_max_s);
+
+        // A negative delay would make the predicate fire immediately and thrash.
+        if(offline_retention_start_delay_s < 0) offline_retention_start_delay_s = 0;
+        if(offline_retention_stop_delay_s < 0) offline_retention_stop_delay_s = 0;
+
+        // The escape hatch must not fire before the normal stop condition.
+        if(offline_retention_stop_max_s < offline_retention_stop_delay_s)
+            offline_retention_stop_max_s = offline_retention_stop_delay_s;
     }
 
 #ifdef ENABLE_DBENGINE

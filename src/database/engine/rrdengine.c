@@ -2408,17 +2408,30 @@ bool rrdeng_ctx_tier_cap_exceeded(struct rrdengine_instance *ctx)
 
 static void retention_timer_cb(uv_timer_t *handle __maybe_unused)
 {
+    // wait until the agent is up; rotating before any host exists is pointless
     if (!localhost)
         return;
 
     worker_is_busy(RRDENG_RETENTION_TIMER_CB);
 
-    for (size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
-        STORAGE_ENGINE *eng = localhost->db[tier].eng;
-        if (!eng || eng->seb != STORAGE_ENGINE_BACKEND_DBENGINE)
-            continue;
+    // Rotate every dbengine context that was initialized, rather than only the
+    // ones the LOCAL host happens to store its own metrics in. This loop used to
+    // gate on localhost->db[tier].eng being the dbengine backend, which silently
+    // skipped contexts that hold other hosts' data:
+    //   - a 'db = ram' parent stores streamed children in multidb_ctx[0..N], but
+    //     localhost->db[0].eng is the rrddim backend, so tier 0 was never
+    //     time-rotated and 'dbengine tier 0 retention time' had no effect;
+    //   - with the tier-0 offline spill store, multidb_ctx[0] holds the spilled
+    //     samples while localhost->db[0] is the in-memory ring, so
+    //     'offline retention' would never expire.
+    // Disk-cap rotation still happened in both cases (scheduled from
+    // after_extent_write()), but only while something was actively writing.
+    //
+    // Every tier below nd_profile.storage_tiers is initialized whenever the
+    // dbengine event loop this timer runs in exists - netdata_conf_dbengine_init()
+    // lowers storage_tiers to the number of contexts it actually created.
+    for (size_t tier = 0; tier < nd_profile.storage_tiers; tier++)
         check_and_schedule_db_rotation(multidb_ctx[tier]);
-    }
 
     worker_is_idle();
 }

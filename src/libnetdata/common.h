@@ -270,7 +270,17 @@ typedef uint32_t uid_t;
 // --------------------------------------------------------------------------------------------------------------------
 // DBENGINE
 
+// the maximum number of *configurable* storage tiers
 #define RRD_STORAGE_TIERS 5
+
+// Storage slots = the configurable tiers, plus one extra slot for the tier-0
+// offline spill store (a dbengine-backed, tier-0-resolution store written only
+// while a child has no parent to stream to). The spill slot lives at index
+// nd_profile.storage_tiers, so arrays indexed by tier in the collect and query
+// paths must be sized RRD_STORAGE_SLOTS, while anything describing real tiers
+// (per-tier config, dbengine contexts, per-tier page types) stays at
+// RRD_STORAGE_TIERS.
+#define RRD_STORAGE_SLOTS (RRD_STORAGE_TIERS + 1)
 
 // --------------------------------------------------------------------------------------------------------------------
 // UUIDs

@@ -71,6 +71,55 @@ time_t rrdset_first_entry_s_of_tier(RRDSET *st, size_t tier) {
     return first_entry_s;
 }
 
+// The oldest tier-0-resolution timestamp this chart can serve to a replicating
+// parent: the in-memory ring, unioned with the tier-0 offline spill store.
+//
+// Deliberately separate from rrdset_first_entry_s_of_tier(): that one must keep
+// reporting raw per-store retention, because ML reads it for tier 0 and then
+// queries rd->tiers[0].smh directly - handing ML a window its handle cannot
+// serve would be wrong.
+static time_t rrdset_first_entry_s_for_replication(RRDSET *st) {
+    time_t first_entry_s = rrdset_first_entry_s_of_tier(st, 0);
+
+    if(!spill_enabled || !st->rrdhost->spill.enabled)
+        return first_entry_s;
+
+    size_t spill = rrd_spill_slot();
+    RRDDIM *rd;
+
+    rrddim_foreach_read(rd, st) {
+        if(!rd->tiers[spill].smh)
+            continue;
+
+        time_t t = storage_engine_oldest_time_s(rd->tiers[spill].seb, rd->tiers[spill].smh);
+        if(t && (!first_entry_s || t < first_entry_s))
+            first_entry_s = t;
+    }
+    rrddim_foreach_done(rd);
+
+    return first_entry_s;
+}
+
+// The retention a replicating parent is told about, and which
+// replication_response_prepare() clamps its requests to. Same shape as
+// rrdset_get_retention_of_tier_for_collected_chart(tier 0), but the first entry
+// spans the offline spill store as well.
+void rrdset_get_replication_retention_of_chart(RRDSET *st, time_t *first_time_s, time_t *last_time_s, time_t now_s) {
+    rrdset_get_retention_of_tier_for_collected_chart(st, first_time_s, last_time_s, now_s, 0);
+
+    if(!spill_enabled || !st->rrdhost->spill.enabled)
+        return;
+
+    // Only widen backwards, and only when there is a live window to widen.
+    // A zeroed retention means "this chart has no data" and must stay zeroed.
+    if(!*first_time_s || !*last_time_s)
+        return;
+
+    time_t unioned_first_s = rrdset_first_entry_s_for_replication(st);
+    if(unioned_first_s && unioned_first_s < *first_time_s)
+        *first_time_s = unioned_first_s;
+}
+
 void rrdset_get_retention_of_tier_for_collected_chart(RRDSET *st, time_t *first_time_s, time_t *last_time_s, time_t now_s, size_t tier) {
     if(!now_s)
         now_s = now_realtime_sec();

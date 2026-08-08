@@ -2398,6 +2398,11 @@ static void do_pending_uuid_deletion(struct meta_config_s *config, struct judy_l
             // switched dbengine -> ram/alloc), the uuid may still back on-disk
             // data, so keep the row. dbengine-enabled agents keep the retention
             // re-check, which also guards the replication/backfill race.
+            //
+            // A ram/alloc/none agent running the tier-0 offline spill store has
+            // dbengine_enabled == true, so it takes the dimension_can_be_deleted()
+            // path and its spilled data is protected here as well as by the
+            // spill-retention check in rrddim_delete_callback().
             if ((!dbengine_enabled && !dbengine_datafiles_present) ||
                 dimension_can_be_deleted(uuid, NULL, false))
                 delete_dimension_uuid(uuid, NULL, false);

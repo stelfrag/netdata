@@ -24,7 +24,9 @@ time_t rrdset_set_update_every_s(RRDSET *st, time_t update_every_s) {
     // switch update every to the storage engine
     RRDDIM *rd;
     rrddim_foreach_read(rd, st) {
-        for (size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
+        // rrd_storage_slots(): the spill store collects at tier-0 resolution
+        // (tier_grouping 1), so it must follow the chart's update every too.
+        for (size_t tier = 0; tier < rrd_storage_slots(); tier++) {
             if (rd->tiers[tier].sch)
                 storage_engine_store_change_collection_frequency(
                     rd->tiers[tier].sch,
@@ -56,7 +58,7 @@ void rrdset_finalize_collection(RRDSET *st, bool dimensions_too) {
         rrddim_foreach_done(rd);
     }
 
-    for(size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
+    for(size_t tier = 0; tier < rrd_storage_slots(); tier++) {
         STORAGE_ENGINE *eng = st->rrdhost->db[tier].eng;
         if(!eng) continue;
 
@@ -89,7 +91,10 @@ static void rrdset_collection_reset(RRDSET *st) {
         rd->collector.last_collected_time.tv_usec = 0;
         rd->collector.counter = 0;
 
-        for(size_t tier = 0; tier < nd_profile.storage_tiers;tier++)
+        // rrd_storage_slots(): a collection reset must also flush the spill
+        // store's hot page. storage_engine_store_flush() null-checks the handle,
+        // so an inactive spill slot is a no-op.
+        for(size_t tier = 0; tier < rrd_storage_slots();tier++)
             storage_engine_store_flush(rd->tiers[tier].sch);
     }
     rrddim_foreach_done(rd);
@@ -277,7 +282,7 @@ static inline void rrdset_init_last_updated_time(RRDSET *st) {
     last_updated_time_align(st);
 }
 
-__thread size_t rrdset_done_statistics_points_stored_per_tier[RRD_STORAGE_TIERS];
+__thread size_t rrdset_done_statistics_points_stored_per_tier[RRD_STORAGE_SLOTS];
 
 // caching of dimensions rrdset_done() and rrdset_done_interpolate() loop through
 struct rda_item {
@@ -522,6 +527,13 @@ void rrdset_timed_done(RRDSET *st, struct timeval now, bool pending_rrdset_next)
     RRDSET_STREAM_BUFFER stream_buffer = { .wb = NULL, };
     if(unlikely(rrdhost_has_stream_sender_enabled(st->rrdhost)))
         stream_buffer = stream_send_metrics_init(st, now.tv_sec);
+
+    // Latch the tier-0 offline spill decision once for this whole iteration, so
+    // every dimension of the chart stores (or does not store) the same sample
+    // set. Evaluated after stream_send_metrics_init(), which is where a
+    // disconnected sender may restart itself.
+    if(unlikely(spill_enabled))
+        st->spill_active = rrdhost_spill_should_be_active(st->rrdhost, now.tv_sec);
 
     spinlock_lock(&st->data_collection_lock);
 

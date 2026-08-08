@@ -108,7 +108,12 @@ static void rrdset_insert_callback(const DICTIONARY_ITEM *item __maybe_unused, v
 
     // initialize the db tiers
     {
-        for(size_t tier = 0; tier < nd_profile.storage_tiers; tier++) {
+        // rrd_storage_slots() so the tier-0 offline spill store gets its own
+        // per-chart page alignment group. Sharing one alignment across charts
+        // would give every metric the same page boundary and produce a
+        // thundering-herd flush. Hosts without a spill store have a NULL engine
+        // in that slot and are skipped below.
+        for(size_t tier = 0; tier < rrd_storage_slots(); tier++) {
             STORAGE_ENGINE *eng = st->rrdhost->db[tier].eng;
             if(!eng) continue;
 

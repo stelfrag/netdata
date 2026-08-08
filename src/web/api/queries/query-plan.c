@@ -10,7 +10,11 @@ static bool query_metric_is_valid_tier(QUERY_METRIC *qm, size_t tier) {
 }
 
 static bool query_plan_tier_is_valid(QUERY_METRIC *qm, size_t tier) {
-    if(tier >= nd_profile.storage_tiers || tier >= RRD_STORAGE_TIERS)
+    // rrd_storage_slots(): the tier-0 offline spill store is a legal plan
+    // source. It is NOT a legal *selection* candidate - see
+    // query_metric_best_tier_for_timeframe(), which stays bounded to the real
+    // tiers on purpose.
+    if(tier >= rrd_storage_slots() || tier >= RRD_STORAGE_SLOTS)
         return false;
 
     return query_metric_is_valid_tier(qm, tier);
@@ -216,7 +220,10 @@ static void query_planer_initialize_plans(QUERY_ENGINE_OPS *ops) {
             points_to_add_to_after = query_planer_expand_duration_in_points(update_every, update_every0);
         }
         else
-            points_to_add_to_after = (tier == 0) ? 0 : POINTS_TO_EXPAND_QUERY;
+            // the offline spill store is tier-0 resolution, so expanding it
+            // backwards buys nothing
+            points_to_add_to_after =
+                (tier == 0 || rrddim_tier_is_spill(tier)) ? 0 : POINTS_TO_EXPAND_QUERY;
 
         size_t points_to_add_to_before;
         if(p + 1 < qm->plan.used) {
@@ -379,6 +386,50 @@ static bool query_plan_build_entries(QUERY_ENGINE_OPS *ops, time_t after_wanted,
         // the selected tier
         time_t selected_tier_first_time_s = qm->plan.array[0].after;
         time_t selected_tier_last_time_s = qm->plan.array[0].before;
+
+        // The tier-0 offline spill store fills the head gap FIRST, ahead of any
+        // coarser tier. Order matters: the coarse walk below break's as soon as
+        // one tier reaches after_wanted, so running it first would serve
+        // 60s-resolution data over a window where tier-0-resolution spill data
+        // exists.
+        //
+        // The spill is handled here rather than inside the coarse walk because
+        // that walk assumes "higher index == coarser", and the spill has the
+        // same update_every as tier 0. Feeding it into
+        // query_metric_best_tier_for_timeframe() instead would be worse still:
+        // query_plan_points_density_is_better() breaks an exact weight tie by
+        // index in OPPOSITE directions depending on whether the weight is
+        // "acceptable", so tier selection would flip with the window size.
+        if (spill_enabled && selected_tier_first_time_s > after_wanted &&
+            qm->plan.used < QUERY_PLANS_MAX) {
+            size_t sp = rrd_spill_slot();
+
+            if(query_metric_is_valid_tier(qm, sp)) {
+                time_t spill_first_time_s = qm->tiers[sp].db_first_time_s;
+                time_t spill_last_time_s  = qm->tiers[sp].db_last_time_s;
+
+                if (spill_first_time_s < selected_tier_first_time_s &&
+                    spill_first_time_s <= before_wanted &&
+                    spill_last_time_s >= after_wanted) {
+
+                    QUERY_PLAN_ENTRY t = {
+                        .tier = sp,
+                        .after = (spill_first_time_s < after_wanted) ? after_wanted : spill_first_time_s,
+                        .before = (spill_last_time_s > selected_tier_first_time_s)
+                                      ? selected_tier_first_time_s : spill_last_time_s,
+                    };
+
+                    if(!query_plan_entry_is_valid(qm, &t, after_wanted, before_wanted))
+                        return false;
+
+                    ops->plans[qm->plan.used].initialized = false;
+                    ops->plans[qm->plan.used].finalized = false;
+                    qm->plan.array[qm->plan.used++] = t;
+
+                    selected_tier_first_time_s = t.after;
+                }
+            }
+        }
 
         // check if our selected tier can start the query
         if (selected_tier_first_time_s > after_wanted) {

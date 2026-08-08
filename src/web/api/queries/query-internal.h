@@ -68,7 +68,7 @@ typedef struct query_engine_ops {
 
     // statistics
     size_t db_total_points_read;
-    size_t db_points_read_per_tier[RRD_STORAGE_TIERS];
+    size_t db_points_read_per_tier[RRD_STORAGE_SLOTS];
 
     // the LATEST grouping with a single output point covering the metric's
     // last stored sample is answered from the collector's cached value,

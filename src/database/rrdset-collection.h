@@ -5,7 +5,7 @@
 
 #include "rrd.h"
 
-extern __thread size_t rrdset_done_statistics_points_stored_per_tier[RRD_STORAGE_TIERS];
+extern __thread size_t rrdset_done_statistics_points_stored_per_tier[RRD_STORAGE_SLOTS];
 
 void rrdset_next_usec_unfiltered(RRDSET *st, usec_t microseconds);
 void rrdset_next_usec(RRDSET *st, usec_t microseconds);
