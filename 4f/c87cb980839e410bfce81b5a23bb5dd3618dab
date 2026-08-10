@@ -1,0 +1,20 @@
+src/go/plugin/go.d/discovery/sdext/discoverer/netlistensd/metadata.yaml
+  s_1ecbc340120569::t_be7fceb2c0e6fc 199
+  s_1ecbc340120569::t_77834bb976038a 32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4fc87cb980839e410bfce81b5a23bb5dd3618dab",
+  "prompts": {},
+  "sessions": {
+    "s_1ecbc340120569": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fda823c6-7b41-4b03-88e8-2c2e0a8ade61",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>"
+    }
+  }
+}
