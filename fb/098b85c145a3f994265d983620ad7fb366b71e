@@ -1,0 +1,26 @@
+src/libnetdata/paths/paths.h
+  s_16a8446097d4ec::t_680bc7726ab7e2 19-25
+src/libnetdata/paths/paths.c
+  s_16a8446097d4ec::t_d1237da3820217 226-242,246-247,254-280
+src/daemon/dyncfg/dyncfg-files.c
+  s_16a8446097d4ec::t_72f73af8dc257e 24-27
+src/libnetdata/paths/tests/test_fopen_secret_write.c
+  s_16a8446097d4ec::t_e976aecacef1fd 203-204
+  s_16a8446097d4ec::t_847de1982ec826 137-188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "fb098b85c145a3f994265d983620ad7fb366b71e",
+  "prompts": {},
+  "sessions": {
+    "s_16a8446097d4ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3ffa00e-cf2e-4ac0-9507-10b97a2fd2ed",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>"
+    }
+  }
+}
