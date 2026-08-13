@@ -1,0 +1,24 @@
+src/libnetdata/paths/tests/test_fopen_secret_write.c
+  s_16a8446097d4ec::t_e2b6d321d370da 3,5-8,10,15
+src/libnetdata/paths/paths.c
+  s_16a8446097d4ec::t_ebdf9550170957 501-679
+  s_16a8446097d4ec::t_113eb07e1952cf 768-769
+src/libnetdata/paths/paths.h
+  s_16a8446097d4ec::t_4f2f5dfbb223e4 60-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7ec5ec70502bb490fee6418cc9f380d1364bec2b",
+  "prompts": {},
+  "sessions": {
+    "s_16a8446097d4ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3ffa00e-cf2e-4ac0-9507-10b97a2fd2ed",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>"
+    }
+  }
+}
