@@ -1,0 +1,19 @@
+system/systemd/tmpfiles.conf.in
+  s_16a8446097d4ec::t_7ab551b8703a39 10-15,18-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e6a49146a17e69077fd97f4c41e1f9513b795a4e",
+  "prompts": {},
+  "sessions": {
+    "s_16a8446097d4ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3ffa00e-cf2e-4ac0-9507-10b97a2fd2ed",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>"
+    }
+  }
+}
