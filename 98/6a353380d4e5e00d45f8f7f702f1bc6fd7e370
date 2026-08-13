@@ -1,0 +1,24 @@
+src/libnetdata/paths/paths.c
+  s_16a8446097d4ec::t_d78d7297e0ac8c 297-305
+  s_16a8446097d4ec::t_25c15721fd7c0a 241-243,246-271
+src/web/api/v1/api_v1_manage.c
+  s_16a8446097d4ec::t_dd75398b044134 73-76
+src/libnetdata/paths/paths.h
+  s_16a8446097d4ec::t_495a3a7b8fe36d 21-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "986a353380d4e5e00d45f8f7f702f1bc6fd7e370",
+  "prompts": {},
+  "sessions": {
+    "s_16a8446097d4ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3ffa00e-cf2e-4ac0-9507-10b97a2fd2ed",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>"
+    }
+  }
+}
