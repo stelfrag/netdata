@@ -1,0 +1,25 @@
+src/aclk/https_client.c
+  s_35a34082b1e6cd::t_c6dbfd7299dc39 753-769
+  s_35a34082b1e6cd::t_50e6b1b0d3d704 928
+  s_35a34082b1e6cd::t_3d3333c3d1fb40 937
+  s_35a34082b1e6cd::t_52de5e9f7a9c53 61-63
+  s_35a34082b1e6cd::t_2a1bd1a5d1425c 919
+src/aclk/https_client.h
+  s_35a34082b1e6cd::t_246c8af7d290d6 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5820fd6e5ad926655ae9f96c3effb425b08cc300",
+  "prompts": {},
+  "sessions": {
+    "s_35a34082b1e6cd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f58e1a32-4ae3-44ac-a31e-6b180222356f",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
