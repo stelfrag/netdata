@@ -1,0 +1,37 @@
+src/web/api/mcp_auth.c
+  s_16a8446097d4ec::t_05f1dee641942a 104-112
+src/claim/claim-with-api.c
+  s_16a8446097d4ec::t_4c312fbf68cae9 31-33
+src/claim/claim.c
+  s_16a8446097d4ec::t_efec6ed00a7917 157-172,174-175
+src/libnetdata/paths/paths.c
+  s_16a8446097d4ec::t_ee7724f99d9c01 224-238
+  s_16a8446097d4ec::t_dc6a24836f29be 371-398,401-403
+  s_16a8446097d4ec::t_9de9fc5bf703ba 619,624,700,705
+  s_16a8446097d4ec::t_82da459375ee78 754-756,795-799,802-803
+  s_16a8446097d4ec::t_0b8c68d2d18726 541-571,574-576,578-587
+  s_16a8446097d4ec::t_f698ebb27e0067 333,335-337,349-350,359-360,362-363
+  s_16a8446097d4ec::t_1a8edf28bef796 326-332,334,339-348,351,353-355,366
+  s_16a8446097d4ec::t_48d3e919653091 732-753,757-770,810-842
+  s_16a8446097d4ec::t_eaf156baa0c557 572-573
+  s_16a8446097d4ec::t_7ca1aec3e94749 577
+  s_16a8446097d4ec::t_3f0d3ebff3ee45 771-794,800-801,804-809
+src/libnetdata/paths/paths.h
+  s_16a8446097d4ec::t_f1b3e569ab8c0c 41-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ddc3db7ab60c2cfbac679be6c12f2d3da5eeee94",
+  "prompts": {},
+  "sessions": {
+    "s_16a8446097d4ec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b3ffa00e-cf2e-4ac0-9507-10b97a2fd2ed",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Stelios Fragkakis <52996999+stelfrag@users.noreply.github.com>"
+    }
+  }
+}
