@@ -569,13 +569,9 @@ RRDSET *rrdset_create_custom(
         rrdset_flag_set(st, RRDSET_FLAG_METADATA_UPDATE);
         rrdhost_flag_set(host, RRDHOST_FLAG_METADATA_UPDATE);
         rrdset_metadata_updated(st);
-        // The name is a prototype matching input - prototype_matches_rrdset()
-        // compares ap->match.on.chart against both st->id and st->name - and
-        // the rename happens here, after the conflict callback has already
-        // returned. react_action cannot see it, so queue the re-evaluation
-        // from the place that actually detects the rename.
-        rrdset_flag_set(st, RRDSET_FLAG_PENDING_HEALTH_INITIALIZATION);
-        rrdhost_flag_set(host, RRDHOST_FLAG_PENDING_HEALTH_INITIALIZATION);
+        // health re-evaluation on rename is queued by rrdset_reset_name() itself;
+        // the branch above only assigns the initial name of a chart we just created,
+        // which rrdset_insert_callback() has already flagged for initialization
     }
 
     dictionary_acquired_item_release(host->rrdset_root_index, st_item);
