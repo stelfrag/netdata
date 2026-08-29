@@ -228,7 +228,7 @@ void ml_host_stop(RRDHOST *rh) {
 
             dim->suppression_anomaly_counter = 0;
             dim->suppression_window_counter = 0;
-            dim->cns.clear();
+            dim->cns_count = 0;
             dim->cns_head = 0;
             dim->km_contexts.clear();
             dim->has_received_downstream_model = false;
@@ -418,8 +418,7 @@ void ml_dimension_new(RRDDIM *rd)
     dim->create_new_model_queued = false;
     dim->reset_generation = 0;
     dim->cns_head = 0;
-
-    ml_kmeans_init(&dim->kmeans);
+    dim->cns_count = 0;
 
     if (simple_pattern_matches(Cfg.sp_charts_to_skip, rrdset_name(rd->rrdset)))
         dim->mls = MACHINE_LEARNING_STATUS_DISABLED_DUE_TO_EXCLUDED_CHART;
@@ -428,7 +427,12 @@ void ml_dimension_new(RRDDIM *rd)
 
     spinlock_init(&dim->slock);
 
-    dim->km_contexts.reserve(Cfg.num_models_to_use);
+    // km_contexts is intentionally NOT reserved here. Reserving
+    // num_models_to_use entries at creation costs 2304 bytes (18 x 128) for
+    // every dimension, including the ones that never train and never receive a
+    // model. The exact reservation is made on the first install instead, in
+    // ml_dimension_update_models(); the model-load path reserves its own local
+    // vector and swaps it in (ml.cc).
 
     rd->ml_dimension = (rrd_ml_dimension_t *) dim;
 
@@ -540,6 +544,7 @@ void ml_init()
         worker->scratch_training_cns = new calculated_number_t[max_elements_needed_for_training]();
 
         worker->id = idx;
+        ml_kmeans_init(&worker->kmeans_scratch);
         worker->queue = ml_queue_init();
         worker->pending_model_info.reserve(Cfg.flush_models_batch_size);
         netdata_mutex_init(&worker->nd_mutex);
