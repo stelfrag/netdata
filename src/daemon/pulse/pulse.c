@@ -136,6 +136,9 @@ void pulse_thread_main(void *ptr) {
         pulse_daemon_do(pulse_extended_enabled);
     }
 
+    // release the per-child chart references this thread acquired, on this thread
+    pulse_parents_cleanup();
+
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITING;
     worker_unregister();
     static_thread->enabled = NETDATA_MAIN_THREAD_EXITED;

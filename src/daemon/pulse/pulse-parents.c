@@ -288,11 +288,18 @@ static void chart_by_reason(struct by_reason *b, const char *id, const char *con
 // rrdhost_root_index is DICT_OPTION_VALUE_LINK_DONT_CLONE with no delete callback, so the
 // dictionary never owns the host and freez(host) is not serialized by it - only rrd_rdlock()
 // gives lifetime here (see the comment above rrdhost_find_and_run() in src/database/rrdhost.c).
-// So this traversal can, in principle, read and write a host that is being freed concurrently by
-// svc_rrdhost_cleanup_orphan_hosts(). That is not introduced by the per-child chart cache - the
-// pass already dereferenced host->rrdlabels and wrote labels_applied_version the same way - but
-// the cache does add pointer-sized fields to the same window, so fixing it properly (an rrd_rdlock
-// around this traversal, or moving the per-host pulse state out of the RRDHOST) is tracked work.
+// So this traversal can, in principle, READ a host that is being freed concurrently by
+// svc_rrdhost_cleanup_orphan_hosts() (src/daemon/service.c) or by "netdatacli remove-stale-node
+// --unregister" (src/daemon/commands.c). The worst outcome of such a read is a garbage sample.
+//
+// What this pass deliberately does NOT do: it never writes to the host, and it keeps no pointer of
+// its own inside the host. All pulse-owned per-child state - the resolved chart set and the
+// applied-labels version - lives in pulse_child_charts_registry below, which belongs to the pulse
+// thread alone. So a host being freed under us cannot hand us a dangling RRDSET_ACQUIRED to
+// dereference, and nothing here can write into freed memory.
+//
+// Closing the remaining read window needs rrd_rdlock() around this traversal, which serialises the
+// whole pass against every host add and remove; that is tracked separately.
 
 typedef enum {
     PULSE_INBOUND_LOCAL = 0,
@@ -346,8 +353,17 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
     return PULSE_OUTBOUND_MAX;
 }
 
-// per-child charts on the parent's localhost: one set per child, resolved by id once and then held
-// on the RRDHOST (host->stream.rcv.status.charts).
+// --------------------------------------------------------------------------------------------------------------------
+// per-child pulse charts: one set per child, resolved by id once and then held in
+// pulse_child_charts_registry - a registry owned exclusively by the pulse thread, keyed by the
+// child's machine_guid.
+//
+// Why a registry and not a member of the RRDHOST: rrdhost_root_index does not own the RRDHOST (see
+// the CAVEAT above), so anything cached inside a host can be read after that host has been freed.
+// This registry is created, read, written and destroyed ONLY here, on the pulse thread -
+// pulse_parents_do() has a single caller, pulse_thread_main() - so it needs no locking and no host
+// teardown path can reach it. Hence DICT_OPTION_SINGLE_THREADED: a second writer would be a bug,
+// not a supported mode.
 //
 // Why the cache: re-resolving the set on every pass was the bulk of this thread's work on a parent
 // with many children. rrdset_create_localhost() on an existing chart costs two chart-index lookups
@@ -359,7 +375,7 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
 // was built by rrdset_fix_name() as "<type>.<id>", so its strcmp guard can never match and it runs
 // the full path (sanitize + a chart-name-index lookup) only to return 0. Four times per child per
 // second; measured at 29% of this thread on an 808-host parent, with the label probe below another
-// 23%.
+// 23%. The registry replaces all of it with one hashed lookup per child per pass.
 //
 // Why holding the chart references is safe, and why a raw RRDSET * would NOT be. A cached chart
 // CAN be obsoleted by something else: pluginsd applies "CHART <id> ... obsolete" to whatever the id
@@ -382,18 +398,27 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
 // (1) keeps the object alive so that (2)'s flag read is safe, and (2) keeps us from silently
 // collecting into a chart the reaper has already unlinked from the index.
 //
-// NOT done, deliberately: releasing these references when the child's host goes away. It would be
-// the obvious third step - the references die with the RRDHOST, so a departed child's four chart
-// items stay referenced for the life of the agent - but the release would have to run from
+// Reclamation - mark and sweep, entirely on this thread:
+//   3. pulse_parents_traverse() bumps pulse_child_charts_pass once per pass; every child the
+//      traversal produces stamps its entry with that pass number; pulse_child_charts_sweep() then
+//      deletes every entry that was not stamped, and the registry's delete callback releases that
+//      entry's four acquired references.
+// A departed child's references are therefore released exactly one pulse step after its last
+// appearance, WITHOUT reading the (possibly freed) RRDHOST: "gone" is defined as "not produced by
+// the traversal", never as anything read out of a host. Both release sites - dictionary_del() in
+// the sweep and dictionary_destroy() in pulse_parents_cleanup() - run on the pulse thread.
+//
+// This is what an RRDHOST-resident cache could not do: the release would have had to run from
 // rrdhost_free_unlinked() (src/database/rrdhost.c), i.e. on the teardown thread, while this
-// traversal may still be inside the same host. That makes it a second unsynchronised writer of
-// these slots, and no caller helps: rrdhost_free___while_having_rrd_wrlock() holds rrd_wrlock but
-// this traversal never takes rrd_rdlock, so the write lock serialises nothing here. It also buys
-// nothing today, because nothing obsoletes these charts, so no reclaim ever happens; the only
-// observable effect is that dictionary_destroy() defers teardown of localhost's chart index, on the
-// ASAN-only shutdown path. The release belongs with the traversal-lifetime fix (rrd_rdlock around
-// pulse_parents_traverse, or moving this per-host pulse state off the RRDHOST), which is what makes
-// it safe to write these slots from anywhere but here.
+// traversal may still be inside the same host - a second unsynchronised writer of those slots, and
+// no caller helps, since rrdhost_free___while_having_rrd_wrlock() holds rrd_wrlock but this
+// traversal never takes rrd_rdlock.
+//
+// (3) also matters to the reaper: it now skips (and re-arms RRDHOST_FLAG_PENDING_OBSOLETE_CHARTS
+// for) any obsolete chart whose dictionary item somebody else holds. A departed child's references
+// used to live for the rest of the agent's life, so its four charts, once obsoleted, would have
+// made every subsequent service run re-scan and re-arm forever. With the sweep, the reference is
+// gone one pulse step later and the reaper completes.
 //
 // One accepted narrowing versus the old per-pass path, needing an adversarial obsoleter to reach at
 // all (the reaper can only win the staleness race when a pulse step is further apart than
@@ -416,10 +441,64 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
 //
 // The four charts do still leak on localhost for every child that goes away (pre-existing: nothing
 // obsoletes them, so nothing frees them). A future sweep that fixes that leak is safe against this
-// cache, and thanks to (3) it will actually be able to reclaim the charts of departed children.
+// registry, and thanks to (3) it will actually be able to reclaim the charts of departed children:
+// their references are already released.
 //
 // Identity + copied child labels are set when the set is resolved and whenever the child's label
 // version changes.
+
+struct pulse_child_charts {
+    // The RRDHOST this entry was last populated from, kept ONLY as an opaque identity token and
+    // NEVER dereferenced - by the time we compare it, the host it points to may already be freed.
+    // It makes a child that left and came back between two sweeps (same machine_guid, a new
+    // RRDHOST) re-apply its labels, which the version compare alone can miss because the new
+    // host's rrdlabels version starts independently of the old one's.
+    const void *host;
+
+    // last host-label version applied to the charts below; the traversal re-applies labels + hops
+    // only when it changes, i.e. on reconnect / mid-stream label push
+    uint32_t labels_applied_version;
+
+    // mark-and-sweep stamp: the value of pulse_child_charts_pass when this entry was last seen
+    uint64_t seen_pass;
+
+    // ACQUIRED chart references, not raw RRDSET pointers: the reference is what keeps the chart
+    // from being freed underneath the cache
+    RRDSET_ACQUIRED *traffic;
+    RRDSET_ACQUIRED *state;
+    RRDSET_ACQUIRED *reconnects;
+    RRDSET_ACQUIRED *age;
+};
+
+// pulse-thread-owned; never touched by any other thread
+static DICTIONARY *pulse_child_charts_registry = NULL;
+static uint64_t pulse_child_charts_pass = 0;
+
+// Reached from dictionary_del() in pulse_child_charts_sweep() and from dictionary_destroy() in
+// pulse_parents_cleanup() - both on the pulse thread, and nowhere else.
+static void pulse_child_charts_delete_cb(
+    const DICTIONARY_ITEM *item __maybe_unused, void *value, void *data __maybe_unused) {
+    struct pulse_child_charts *c = value;
+
+    rrdset_acquired_release(c->traffic);
+    rrdset_acquired_release(c->state);
+    rrdset_acquired_release(c->reconnects);
+    rrdset_acquired_release(c->age);
+
+    c->traffic = c->state = c->reconnects = c->age = NULL;
+}
+
+static struct pulse_child_charts *pulse_child_charts_entry(const char *machine_guid) {
+    if(unlikely(!pulse_child_charts_registry)) {
+        pulse_child_charts_registry =
+            dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
+        dictionary_register_delete_callback(pulse_child_charts_registry, pulse_child_charts_delete_cb, NULL);
+    }
+
+    // a NULL value with a size makes the dictionary callocz() the entry on insert, and
+    // DONT_OVERWRITE_VALUE makes this a get-or-create that never disturbs an existing entry
+    return dictionary_set(pulse_child_charts_registry, machine_guid, NULL, sizeof(struct pulse_child_charts));
+}
 
 static void pulse_child_chart_labels(RRDSET *st, RRDHOST *host) {
     char node_id[UUID_STR_LEN] = "";
@@ -468,7 +547,7 @@ static inline RRDDIM *pulse_child_dim(RRDSET *st, const char *id, collected_numb
 // Return the cached chart, or NULL when it must be (re)resolved: either nothing is cached yet, or
 // something obsoleted it and rrdset_create_localhost() must revive it under its destroy_lock. The
 // acquired reference keeps the chart alive so this flag read is always safe.
-static inline RRDSET *pulse_child_chart_cached(struct rrdset_acquired **slot) {
+static inline RRDSET *pulse_child_chart_cached(RRDSET_ACQUIRED **slot) {
     RRDSET *st = rrdset_acquired_to_rrdset(*slot);
     if(likely(st && !rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE)))
         return st;
@@ -482,17 +561,23 @@ static inline RRDSET *pulse_child_chart_cached(struct rrdset_acquired **slot) {
 
 // Hold an acquired reference on a chart we just created or revived, so the obsolete-chart reaper
 // cannot free it while it is cached.
-static inline void pulse_child_chart_hold(struct rrdset_acquired **slot, RRDSET *st) {
+static inline void pulse_child_chart_hold(RRDSET_ACQUIRED **slot, RRDSET *st) {
     *slot = rrdset_find_and_acquire(localhost, rrdset_id(st), true);
 }
 
 static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) {
     char id[RRD_ID_LENGTH_MAX + 1];
     const char *guid = host->machine_guid;
-    struct rrdhost_pulse_child_charts *c = &host->stream.rcv.status.charts;
+
+    // get-or-create this child's pulse-owned entry and stamp it as seen in this pass, so the sweep
+    // at the end of the traversal keeps it
+    struct pulse_child_charts *c = pulse_child_charts_entry(guid);
+    c->seen_pass = pulse_child_charts_pass;
 
     // re-apply labels + hops only when the host's labels changed (reconnect / mid-stream push), via a
-    // cheap version compare - so we don't re-copy every child's labels on every pass.
+    // cheap version compare - so we don't re-copy every child's labels on every pass. A different
+    // RRDHOST behind the same machine_guid also forces a refresh; that pointer is compared, never
+    // dereferenced.
     //
     // Caveat, pre-existing and NOT covered by this compare: hops comes from host->system_info
     // (rrdhost_ingestion_hops()), not from the labels, and rrdlabels_migrate_to_these() ASSIGNS
@@ -501,8 +586,9 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
     // parent is missed until something else touches the labels. The per-chart rrdlabels_exist() probe
     // this replaced did not catch it either - it only ever asked whether machine_guid was present.
     uint32_t lv = rrdlabels_version(host->rrdlabels);
-    bool refresh_labels = (lv != host->stream.rcv.status.labels_applied_version);
-    host->stream.rcv.status.labels_applied_version = lv;
+    bool refresh_labels = (lv != c->labels_applied_version || (const void *)host != c->host);
+    c->labels_applied_version = lv;
+    c->host = host;
 
     // Each chart (re)resolved below sets refresh_labels, so a freshly created or revived chart always
     // gets its labels. This replaces the former per-chart rrdlabels_exist(st->rrdlabels,
@@ -610,12 +696,31 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
     rrdset_done(st_age);
 }
 
+// Drop the entries of the children this pass did not produce, releasing their chart references.
+// "Gone" is decided purely from what the traversal saw: we never read a departed child's RRDHOST,
+// which may already have been freed. Runs on the pulse thread, like every other access here.
+static void pulse_child_charts_sweep(void) {
+    if(!pulse_child_charts_registry)
+        return;
+
+    struct pulse_child_charts *c;
+    dfe_start_write(pulse_child_charts_registry, c) {
+        if(c->seen_pass != pulse_child_charts_pass)
+            dictionary_del(pulse_child_charts_registry, c_dfe.name);
+    }
+    dfe_done(c);
+
+    dictionary_garbage_collect(pulse_child_charts_registry);
+}
+
 // traverse all hosts once: tally BOTH the inbound and outbound aggregates from each host's combined
 // pulse_state, and refresh the per-child charts. A host may carry both an inbound (receiver) and an
 // outbound (sender) state simultaneously, so both are tallied independently.
 static void pulse_parents_traverse(ssize_t inbound[2][PULSE_INBOUND_MAX], ssize_t outbound[PULSE_OUTBOUND_MAX]) {
     // per-child charts only when streaming ingest is actually configured
     bool do_children = stream_conf_is_parent(false);
+
+    pulse_child_charts_pass++;
 
     RRDHOST *host;
     dfe_start_reentrant(rrdhost_root_index, host) {
@@ -637,6 +742,21 @@ static void pulse_parents_traverse(ssize_t inbound[2][PULSE_INBOUND_MAX], ssize_
             outbound[out]++;
     }
     dfe_done(host);
+
+    // children that disappeared during or before this pass are not stamped - reclaim them here.
+    // This also reclaims everything when do_children is false, which is correct: nothing is cached.
+    pulse_child_charts_sweep();
+}
+
+// Release everything this thread owns. Called by pulse_thread_main() once its loop has ended, so
+// the acquired chart references are released by the thread that took them, after the last possible
+// traversal.
+void pulse_parents_cleanup(void) {
+    if(!pulse_child_charts_registry)
+        return;
+
+    dictionary_destroy(pulse_child_charts_registry);
+    pulse_child_charts_registry = NULL;
 }
 
 void pulse_parents_do(bool extended) {
