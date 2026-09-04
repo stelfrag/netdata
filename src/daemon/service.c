@@ -152,7 +152,21 @@ static inline size_t svc_rrdhost_cleanup_charts_marked_obsolete(RRDHOST *host) {
             if(!is_replicating && svc_rrdset_lock_for_deletion(st, now)) {
                 archived_items += svc_rrdset_archive_obsolete_dimensions(st, /* chart_obsolete = */ true);
 
-                if(!rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE_DIMENSIONS)) {
+                // The reference test must happen under destroy_lock and mirrors the one the
+                // dimension reaper does above: 1 == only this traversal holds the item.
+                // rrdset_free() -> dict_item_del() only flags a referenced item ITEM_FLAG_DELETED
+                // and defers rrdset_delete_callback() - the only place st->destroy_lock is
+                // unlocked - so freeing a chart somebody else holds (health, web, ML, contexts,
+                // backfill, the pulse per-child chart cache) leaves an unindexed, still-OBSOLETE
+                // chart with destroy_lock held for as long as that reference lives; any collector
+                // still holding a pointer to it then fatal()s in rrdset_timed_done() with "is being
+                // collected while is being destroyed". Holding destroy_lock while counting also
+                // settles the race with rrdset_create_custom(), which acquires the item before it
+                // trylocks destroy_lock: a reviver is therefore either already counted here, or it
+                // has not acquired yet and will find the item deleted. Skipping without counting an
+                // archive re-arms RRDHOST_FLAG_PENDING_OBSOLETE_CHARTS below, so the sweep retries.
+                if(!rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE_DIMENSIONS) &&
+                    dictionary_acquired_item_references(st_dfe.item) == 1) {
                     full_archives++;
                     archived_items++;       // rrdset_free archives the RRDINSTANCE
 

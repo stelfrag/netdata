@@ -395,30 +395,19 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
 // pulse_parents_traverse, or moving this per-host pulse state off the RRDHOST), which is what makes
 // it safe to write these slots from anywhere but here.
 //
-// Two accepted narrowings versus the old per-pass path, both needing an adversarial obsoleter to
-// reach at all (the reaper can only win the staleness race when a pulse step is further apart than
-// rrdset_free_obsolete_time_s, so neither is reachable at the default 1s cadence):
+// One accepted narrowing versus the old per-pass path, needing an adversarial obsoleter to reach at
+// all (the reaper can only win the staleness race when a pulse step is further apart than
+// rrdset_free_obsolete_time_s, so it is not reachable at the default 1s cadence): if the obsoletion
+// and the unlink both land after (2)'s flag read but before this pass's rrdset_done(), we collect
+// into a just-unlinked chart for that single pass and re-resolve on the next one. The old code
+// re-added the chart within the same pass. Non-crashing thanks to the reference, and it costs at
+// most one sample.
 //
-//   a) If the obsoletion and the unlink both land after (2)'s flag read but before this pass's
-//      rrdset_done(), we collect into a just-unlinked chart for that single pass and re-resolve on
-//      the next one. The old code re-added the chart within the same pass. Non-crashing thanks to
-//      the reference, and it costs at most one sample.
-//
-//   b) The reaper frees a chart while still holding its destroy_lock: svc_rrdset_lock_for_deletion()
-//      returns with the lock held and src/daemon/service.c calls rrdset_free() without unlocking,
-//      deferring the unlock to rrdset_delete_callback() (src/database/rrdset-index-id.c). Our
-//      reference stops that callback from running, so the chart becomes a zombie - unindexed,
-//      OBSOLETE, destroy_lock held - until our next pass releases it and the GC tears it down. If
-//      some OTHER collector still holds a pointer to that chart in the meantime (a pluginsd slot
-//      survives the obsoletion unslot), its next collection hits the trylock at
-//      src/database/rrdset-collection.c and fatal()s with "is being collected while is being
-//      destroyed". Base degraded more gently there: the reaper's own dictionary_garbage_collect()
-//      ran the callback in the same pass, so the stale slot resolved to NULL and the plugin was
-//      merely disabled. The window is bounded by one pulse step for a live child; for a child whose
-//      host has gone away the reference is never released (see below), so its chart would stay a
-//      zombie. Fixing that properly is the reaper's job - it already refuses to archive a DIMENSION
-//      whose dictionary item has other references (src/daemon/service.c) and should apply the same
-//      test before freeing a chart.
+// The reaper no longer frees a chart whose dictionary item somebody else holds: it applies the same
+// reference test it already applied to dimensions (src/daemon/service.c), skipping the chart and
+// re-arming RRDHOST_FLAG_PENDING_OBSOLETE_CHARTS instead of leaving an unindexed, OBSOLETE chart
+// with its destroy_lock held. So a cached chart of ours can no longer become a zombie that fatal()s
+// another collector in rrdset_timed_done().
 //
 // Also note the conflict callback no longer re-asserts title/units/family/context/priority/
 // chart_type/plugin/module on every pass. Nothing we own changes them, so this is invisible in
