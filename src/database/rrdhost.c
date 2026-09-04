@@ -1049,6 +1049,7 @@ static void rrdhost_free_unlinked(RRDHOST *host) {
     // free it
 
     pulse_host_status(host, PULSE_HOST_STATUS_DELETED, 0);
+    pulse_child_charts_release(host);
     __atomic_sub_fetch(&netdata_buffers_statistics.rrdhost_allocations_size, sizeof(RRDHOST), __ATOMIC_RELAXED);
 
     freez(host->cache_dir);

@@ -281,8 +281,18 @@ static void chart_by_reason(struct by_reason *b, const char *id, const char *con
 //
 // One read-only pass over the rrdhost dictionary computes BOTH the streaming_inbound aggregate
 // (nodes per ephemerality x state) AND each child's per-instance charts on the parent's localhost.
-// No global shared counters and no rrd_rdlock: dfe_start_reentrant() refcounts each host during
-// iteration, and every per-host value read here is a single-writer relaxed atomic.
+// No global shared counters and no rrd_rdlock, and every per-host value read here is a
+// single-writer relaxed atomic.
+//
+// CAVEAT, pre-existing: dfe_start_reentrant() refcounts the dictionary ITEM, not the RRDHOST.
+// rrdhost_root_index is DICT_OPTION_VALUE_LINK_DONT_CLONE with no delete callback, so the
+// dictionary never owns the host and freez(host) is not serialized by it - only rrd_rdlock()
+// gives lifetime here (see the comment above rrdhost_find_and_run() in src/database/rrdhost.c).
+// So this traversal can, in principle, read and write a host that is being freed concurrently by
+// svc_rrdhost_cleanup_orphan_hosts(). That is not introduced by the per-child chart cache - the
+// pass already dereferenced host->rrdlabels and wrote labels_applied_version the same way - but
+// the cache does add pointer-sized fields to the same window, so fixing it properly (an rrd_rdlock
+// around this traversal, or moving the per-host pulse state out of the RRDHOST) is tracked work.
 
 typedef enum {
     PULSE_INBOUND_LOCAL = 0,
@@ -336,10 +346,80 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
     return PULSE_OUTBOUND_MAX;
 }
 
-// per-child charts on the parent's localhost: one set per child, found-or-created by id on every
-// pass. No registry/cache is kept: a host that leaves the dictionary stops being updated and the
-// chart engine obsoletes its charts via the standard not-collected timer (rrdset_free_obsolete_time_s),
-// exactly like every other collector. Identity + copied child labels are set once, at chart creation.
+// per-child charts on the parent's localhost: one set per child, resolved by id once and then held
+// on the RRDHOST (host->stream.rcv.status.charts).
+//
+// Why the cache: re-resolving the set on every pass was the bulk of this thread's work on a parent
+// with many children. rrdset_create_localhost() on an existing chart costs two chart-index lookups
+// - the second, in rrdset_index_add_and_acquire(), takes the localhost chart-index WRITE lock to run
+// rrdset_conflict_callback(), so it also serialises against every other collector and query on
+// localhost - plus that callback's metadata field compares and its unconditional
+// rrdset_update_permanent_labels(), plus rrdset_reset_name(). That last one is pure waste for any
+// chart created without an explicit name: rrdset_create_custom() calls it with `id`, while st->name
+// was built by rrdset_fix_name() as "<type>.<id>", so its strcmp guard can never match and it runs
+// the full path (sanitize + a chart-name-index lookup) only to return 0. Four times per child per
+// second; measured at 29% of this thread on an 808-host parent, with the label probe below another
+// 23%.
+//
+// Why holding the chart references is safe, and why a raw RRDSET * would NOT be. A cached chart
+// CAN be obsoleted by something else: pluginsd applies "CHART <id> ... obsolete" to whatever the id
+// resolves to, with no ownership check (src/plugins.d/pluginsd_parser.c), and chart ids on localhost
+// are not a protected namespace. Once obsolete, svc_rrdset_lock_for_deletion() frees the chart as
+// soon as its last_accessed / last_updated / last_collected are all older than
+// rrdset_free_obsolete_time_s (src/daemon/service.c) - which happens whenever a pulse step is
+// further apart than that window, since [pulse] update every has no upper clamp.
+//
+// Re-resolving by id every pass used to absorb this for free: rrdset_create_custom() revives an
+// obsoleted chart under its destroy_lock before returning it (src/database/rrdset-index-id.c). A
+// plain pointer cache removes that revival, and an ASAN run reproduced the resulting
+// heap-use-after-free (pulse reading a chart the obsolete-chart reaper had already freed). So the
+// cache does two things instead:
+//   1. it holds an ACQUIRED reference on each chart's dictionary item, so the item cannot be freed
+//      while cached - the dictionary refuses to free a referenced item;
+//   2. it re-checks RRDSET_FLAG_OBSOLETE on every pass and, if set, releases the reference and
+//      re-resolves through rrdset_create_localhost(), which performs the same revival the old
+//      per-pass path did;
+//   3. pulse_child_charts_release() drops the references from the host teardown path, so a departed
+//      child does not pin its four chart items for the life of the agent - without it the references
+//      would die with the RRDHOST and the items could be marked deleted but never freed.
+// (1) keeps the object alive so that (2)'s flag read is safe; (2) keeps us from silently collecting
+// into a chart the reaper has already unlinked from the index; (3) keeps (1) from turning the
+// pre-existing chart leak into an unreclaimable one, and stops dictionary_destroy() from having to
+// defer teardown of localhost's chart index over still-referenced items at shutdown.
+//
+// Two accepted narrowings versus the old per-pass path, both needing an adversarial obsoleter to
+// reach at all (the reaper can only win the staleness race when a pulse step is further apart than
+// rrdset_free_obsolete_time_s, so neither is reachable at the default 1s cadence):
+//
+//   a) If the obsoletion and the unlink both land after (2)'s flag read but before this pass's
+//      rrdset_done(), we collect into a just-unlinked chart for that single pass and re-resolve on
+//      the next one. The old code re-added the chart within the same pass. Non-crashing thanks to
+//      the reference, and it costs at most one sample.
+//
+//   b) The reaper frees a chart while still holding its destroy_lock: svc_rrdset_lock_for_deletion()
+//      returns with the lock held and src/daemon/service.c calls rrdset_free() without unlocking,
+//      deferring the unlock to rrdset_delete_callback() (src/database/rrdset-index-id.c). Our
+//      reference stops that callback from running, so the chart becomes a zombie - unindexed,
+//      OBSOLETE, destroy_lock held - until our next pass releases it and the GC tears it down. If
+//      some OTHER collector still holds a pointer to that chart in the meantime (a pluginsd slot
+//      survives the obsoletion unslot), its next collection hits the trylock at
+//      src/database/rrdset-collection.c and fatal()s with "is being collected while is being
+//      destroyed". Base degraded more gently there: the reaper's own dictionary_garbage_collect()
+//      ran the callback in the same pass, so the stale slot resolved to NULL and the plugin was
+//      merely disabled. The window is bounded by one pulse step, and pulse_child_charts_release()
+//      keeps a departed child's chart from staying a zombie for the life of the agent.
+//
+// Also note the conflict callback no longer re-asserts title/units/family/context/priority/
+// chart_type/plugin/module on every pass. Nothing we own changes them, so this is invisible in
+// normal operation; a colliding collector's overrides would now persist until the next obsolete or
+// re-resolve instead of being corrected within a second.
+//
+// The four charts do still leak on localhost for every child that goes away (pre-existing: nothing
+// obsoletes them, so nothing frees them). A future sweep that fixes that leak is safe against this
+// cache, and thanks to (3) it will actually be able to reclaim the charts of departed children.
+//
+// Identity + copied child labels are set when the set is resolved and whenever the child's label
+// version changes.
 
 static void pulse_child_chart_labels(RRDSET *st, RRDHOST *host) {
     char node_id[UUID_STR_LEN] = "";
@@ -372,10 +452,12 @@ static void pulse_child_chart_labels(RRDSET *st, RRDHOST *host) {
 // needed the first time each dimension appears, so look it up first and fall back to creating it.
 static inline RRDDIM *pulse_child_dim(RRDSET *st, const char *id, collected_number multiplier, RRD_ALGORITHM algorithm) {
     // rrddim_find_active() only hides an obsolete dimension when its chart is ALSO undiscoverable
-    // (rrdset_is_discoverable()), and these pulse charts are never obsolete - so it can hand back an
-    // obsolete dimension. Returning it unrevived would defer revival to rrdset_done(), which logs
-    // "has the OBSOLETE flag set, but it is collected" as an error. Fall through to rrddim_add(),
-    // whose pre-lookup revives it properly.
+    // (rrdset_is_discoverable()), so it can hand back an obsolete dimension. Returning it unrevived
+    // would defer revival to rrdset_done(), which logs "has the OBSOLETE flag set, but it is
+    // collected" as an error. Fall through to rrddim_add(), whose pre-lookup revives it properly.
+    // (This used to say these charts are never obsolete. They can be: anything may obsolete them,
+    // see pulse_child_charts_update() - the chart is revived on the next pass, and the dimension
+    // has to be handled here in the meantime.)
     RRDDIM *rd = rrddim_find_active(st, id);
     if(likely(rd && !rrddim_flag_check(rd, RRDDIM_FLAG_OBSOLETE)))
         return rd;
@@ -383,24 +465,95 @@ static inline RRDDIM *pulse_child_dim(RRDSET *st, const char *id, collected_numb
     return rrddim_add(st, id, NULL, multiplier, 1, algorithm);
 }
 
+// Return the cached chart, or NULL when it must be (re)resolved: either nothing is cached yet, or
+// something obsoleted it and rrdset_create_localhost() must revive it under its destroy_lock. The
+// acquired reference keeps the chart alive so this flag read is always safe.
+static inline RRDSET *pulse_child_chart_cached(struct rrdset_acquired **slot) {
+    RRDSET *st = rrdset_acquired_to_rrdset(*slot);
+    if(likely(st && !rrdset_flag_check(st, RRDSET_FLAG_OBSOLETE)))
+        return st;
+
+    if(*slot) {
+        rrdset_acquired_release(*slot);
+        *slot = NULL;
+    }
+    return NULL;
+}
+
+// Hold an acquired reference on a chart we just created or revived, so the obsolete-chart reaper
+// cannot free it while it is cached.
+static inline void pulse_child_chart_hold(struct rrdset_acquired **slot, RRDSET *st) {
+    *slot = rrdset_find_and_acquire(localhost, rrdset_id(st), true);
+}
+
+// Called from rrdhost_free_unlinked() (src/database/rrdhost.c), where the host is already out of
+// rrdhost_root_index and the pulse traversal can no longer reach it. Without this the four acquired
+// references die with the RRDHOST and the chart items stay referenced forever, so a future sweep that
+// obsoletes stale localhost charts could mark them but never free them.
+void pulse_child_charts_release(RRDHOST *host) {
+    struct rrdhost_pulse_child_charts *c = &host->stream.rcv.status.charts;
+    struct rrdset_acquired **slots[] = { &c->traffic, &c->state, &c->reconnects, &c->age };
+
+    for(size_t i = 0; i < sizeof(slots) / sizeof(slots[0]) ;i++) {
+        if(*slots[i]) {
+            rrdset_acquired_release(*slots[i]);
+            *slots[i] = NULL;
+        }
+    }
+}
+
 static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) {
     char id[RRD_ID_LENGTH_MAX + 1];
     const char *guid = host->machine_guid;
+    struct rrdhost_pulse_child_charts *c = &host->stream.rcv.status.charts;
 
     // re-apply labels + hops only when the host's labels changed (reconnect / mid-stream push), via a
-    // cheap version compare - so we don't re-copy every child's labels on every pass. hops can change
-    // when a child re-attaches via a different parent in a cluster; that reconnect bumps the version.
+    // cheap version compare - so we don't re-copy every child's labels on every pass.
+    //
+    // Caveat, pre-existing and NOT covered by this compare: hops comes from host->system_info
+    // (rrdhost_ingestion_hops()), not from the labels, and rrdlabels_migrate_to_these() ASSIGNS
+    // dst->version = src->version rather than bumping it. So a reconnect that pushes the same number
+    // of labels leaves the version unchanged, and a hops change made by re-attaching via a different
+    // parent is missed until something else touches the labels. The per-chart rrdlabels_exist() probe
+    // this replaced did not catch it either - it only ever asked whether machine_guid was present.
     uint32_t lv = rrdlabels_version(host->rrdlabels);
     bool refresh_labels = (lv != host->stream.rcv.status.labels_applied_version);
     host->stream.rcv.status.labels_applied_version = lv;
 
+    // Each chart (re)resolved below sets refresh_labels, so a freshly created or revived chart always
+    // gets its labels. This replaces the former per-chart rrdlabels_exist(st->rrdlabels,
+    // "machine_guid") probe, which ran on every pass for every chart. That probe is O(number of
+    // labels): the labels JudyL is keyed by the interned RRDLABEL pointer
+    // (src/database/rrdlabels.c), so rrdlabels_exist() walks the whole array, and it interns + frees
+    // the key string on every call.
+    //
+    // This is at least as eager as the probe it replaces. Label removal does exist in general
+    // (rrdlabels_flush(), rrdlabels_remove_all_unmarked(), rrdlabels_migrate_to_these()), but nothing
+    // applies it to these four chart ids. Their only per-pass label writer was
+    // rrdset_update_permanent_labels(), via the conflict callback of the rrdset_create_localhost()
+    // call this cache removes; it re-added _collect_plugin / _collect_module every second and now
+    // does so only at creation. Ours is pulse_child_chart_labels() below, which always (re)adds
+    // machine_guid after copying the child's labels. So a cached chart cannot lose machine_guid, and
+    // a set resolved from scratch always gets its labels here.
+    //
+    // Known consequence of that, judged acceptable: a child that configures a reserved key as a host
+    // label (e.g. [host labels] _collect_plugin = foo) used to have it reverted within a second by
+    // the permanent-labels rewrite and now keeps it on these four charts, because rrdlabels_copy()'s
+    // same-key cleanup does not honour RRDLABEL_FLAG_DONT_DELETE. It needs a deliberately
+    // reserved-prefixed host label to reach, and reporting what the child actually declared is
+    // arguably the more honest outcome.
     // --- traffic ---
-    snprintfz(id, sizeof(id), "streaming.in.traffic.%s", guid);
-    RRDSET *st_traffic = rrdset_create_localhost(
-        "netdata", id, NULL, "Streaming", "netdata.streaming.in.traffic",
-        "Inbound Streaming Traffic", "bytes/s", "netdata", "pulse",
-        130160, localhost->rrd_update_every, RRDSET_TYPE_AREA);
-    if(unlikely(refresh_labels || !rrdlabels_exist(st_traffic->rrdlabels, "machine_guid")))
+    RRDSET *st_traffic = pulse_child_chart_cached(&c->traffic);
+    if(unlikely(!st_traffic)) {
+        snprintfz(id, sizeof(id), "streaming.in.traffic.%s", guid);
+        st_traffic = rrdset_create_localhost(
+            "netdata", id, NULL, "Streaming", "netdata.streaming.in.traffic",
+            "Inbound Streaming Traffic", "bytes/s", "netdata", "pulse",
+            130160, localhost->rrd_update_every, RRDSET_TYPE_AREA);
+        pulse_child_chart_hold(&c->traffic, st_traffic);
+        refresh_labels = true;
+    }
+    if(unlikely(refresh_labels))
         pulse_child_chart_labels(st_traffic, host);
     rrddim_set_by_pointer(st_traffic, pulse_child_dim(st_traffic, "in", 1, RRD_ALGORITHM_INCREMENTAL),
         (collected_number)single_writer_atomic_read(&host->stream.rcv.status.bytes_in));
@@ -417,12 +570,17 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
         [PULSE_INBOUND_REPLICATING]         = "replicating",
         [PULSE_INBOUND_RUNNING]             = "running",
     };
-    snprintfz(id, sizeof(id), "streaming.in.state.%s", guid);
-    RRDSET *st_state = rrdset_create_localhost(
-        "netdata", id, NULL, "Streaming", "netdata.streaming.in.state",
-        "Inbound Streaming State", "state", "netdata", "pulse",
-        130161, localhost->rrd_update_every, RRDSET_TYPE_LINE);
-    if(unlikely(refresh_labels || !rrdlabels_exist(st_state->rrdlabels, "machine_guid")))
+    RRDSET *st_state = pulse_child_chart_cached(&c->state);
+    if(unlikely(!st_state)) {
+        snprintfz(id, sizeof(id), "streaming.in.state.%s", guid);
+        st_state = rrdset_create_localhost(
+            "netdata", id, NULL, "Streaming", "netdata.streaming.in.state",
+            "Inbound Streaming State", "state", "netdata", "pulse",
+            130161, localhost->rrd_update_every, RRDSET_TYPE_LINE);
+        pulse_child_chart_hold(&c->state, st_state);
+        refresh_labels = true;
+    }
+    if(unlikely(refresh_labels))
         pulse_child_chart_labels(st_state, host);
     for(size_t i = 0; i < PULSE_INBOUND_MAX ; i++) {
         if(!state_dim[i]) continue;
@@ -432,24 +590,34 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
     rrdset_done(st_state);
 
     // --- reconnects ---
-    snprintfz(id, sizeof(id), "streaming.in.reconnects.%s", guid);
-    RRDSET *st_reconnects = rrdset_create_localhost(
-        "netdata", id, NULL, "Streaming", "netdata.streaming.in.reconnects",
-        "Inbound Streaming Reconnects", "connects/s", "netdata", "pulse",
-        130162, localhost->rrd_update_every, RRDSET_TYPE_LINE);
-    if(unlikely(refresh_labels || !rrdlabels_exist(st_reconnects->rrdlabels, "machine_guid")))
+    RRDSET *st_reconnects = pulse_child_chart_cached(&c->reconnects);
+    if(unlikely(!st_reconnects)) {
+        snprintfz(id, sizeof(id), "streaming.in.reconnects.%s", guid);
+        st_reconnects = rrdset_create_localhost(
+            "netdata", id, NULL, "Streaming", "netdata.streaming.in.reconnects",
+            "Inbound Streaming Reconnects", "connects/s", "netdata", "pulse",
+            130162, localhost->rrd_update_every, RRDSET_TYPE_LINE);
+        pulse_child_chart_hold(&c->reconnects, st_reconnects);
+        refresh_labels = true;
+    }
+    if(unlikely(refresh_labels))
         pulse_child_chart_labels(st_reconnects, host);
     rrddim_set_by_pointer(st_reconnects, pulse_child_dim(st_reconnects, "connections", 1, RRD_ALGORITHM_INCREMENTAL),
         (collected_number)__atomic_load_n(&host->stream.rcv.status.connections, __ATOMIC_RELAXED));
     rrdset_done(st_reconnects);
 
     // --- age (seconds in the current inbound state; reset to 0 on every state change) ---
-    snprintfz(id, sizeof(id), "streaming.in.age.%s", guid);
-    RRDSET *st_age = rrdset_create_localhost(
-        "netdata", id, NULL, "Streaming", "netdata.streaming.in.age",
-        "Inbound Streaming State Age", "seconds", "netdata", "pulse",
-        130163, localhost->rrd_update_every, RRDSET_TYPE_LINE);
-    if(unlikely(refresh_labels || !rrdlabels_exist(st_age->rrdlabels, "machine_guid")))
+    RRDSET *st_age = pulse_child_chart_cached(&c->age);
+    if(unlikely(!st_age)) {
+        snprintfz(id, sizeof(id), "streaming.in.age.%s", guid);
+        st_age = rrdset_create_localhost(
+            "netdata", id, NULL, "Streaming", "netdata.streaming.in.age",
+            "Inbound Streaming State Age", "seconds", "netdata", "pulse",
+            130163, localhost->rrd_update_every, RRDSET_TYPE_LINE);
+        pulse_child_chart_hold(&c->age, st_age);
+        refresh_labels = true;
+    }
+    if(unlikely(refresh_labels))
         pulse_child_chart_labels(st_age, host);
     time_t changed = __atomic_load_n(&host->stream.rcv.status.state_changed_s, __ATOMIC_RELAXED);
     time_t now_s = now_realtime_sec();

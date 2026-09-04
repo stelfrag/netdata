@@ -13,6 +13,18 @@
 
 struct stream_thread;
 struct rrdset;
+struct rrdset_acquired;
+
+// this host's per-child pulse charts on the parent's localhost - see the charts member of
+// RRDHOST.stream.rcv.status for the ownership and lifetime rules. These are ACQUIRED chart
+// references, not raw RRDSET pointers: the reference is what keeps the chart from being freed
+// underneath the cache.
+struct rrdhost_pulse_child_charts {
+    struct rrdset_acquired *traffic;
+    struct rrdset_acquired *state;
+    struct rrdset_acquired *reconnects;
+    struct rrdset_acquired *age;
+};
 
 typedef struct rrdhost RRDHOST;
 typedef struct ml_host rrd_ml_host_t;
@@ -296,6 +308,22 @@ struct rrdhost {
                 // traversal (single thread) re-applies labels + hops only when it changes, i.e. on
                 // reconnect / mid-stream label push.
                 uint32_t labels_applied_version;
+
+                // this host's per-child pulse charts (they live on the parent's localhost), cached
+                // so the steady-state pulse step does not re-resolve four charts per child by
+                // string id every second. Written and read ONLY by the pulse traversal
+                // (pulse_parents_do() has a single caller, pulse_thread_main()), so no locking -
+                // unlike the receiver-owned fields above, and unlike what the receiver_lock note
+                // further down this header says about stream.rcv.status as a whole.
+                //
+                // Lifetime: each entry holds an acquired reference on the chart's dictionary
+                // item, so the chart cannot be freed while it is cached - the garbage collector
+                // refuses to free a referenced item (RC_ITEM_IS_REFERENCED,
+                // src/libnetdata/dictionary/). The cache does NOT rely on nobody obsoleting these
+                // charts: anything can, because a plugin's "CHART <id> ... obsolete" is applied
+                // without an ownership check. See the comment above pulse_child_charts_update()
+                // in src/daemon/pulse/pulse-parents.c for why that matters and how it is handled.
+                struct rrdhost_pulse_child_charts charts;
             } status;
         } rcv;
 
@@ -412,7 +440,9 @@ struct rrdhost {
 
 extern RRDHOST *localhost;
 
-// receiver_lock protects host->receiver and the host->stream.rcv.status fields.
+// receiver_lock protects host->receiver and the host->stream.rcv.status fields, EXCEPT
+// labels_applied_version and charts, which are owned exclusively by the pulse traversal
+// (single thread, no lock) and are never touched by the receiver.
 //
 // Hold time must stay short-bounded: no caller may hold receiver_lock across
 // O(charts), I/O, sends, ML stop/start, or any wait on other subsystems. The

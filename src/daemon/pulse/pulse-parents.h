@@ -32,6 +32,11 @@ typedef enum {
 
 void pulse_host_status(RRDHOST *host, PULSE_HOST_STATUS status, STREAM_HANDSHAKE reason);
 
+// Release the acquired references this host's per-child pulse charts hold, so the charts become
+// reclaimable again. MUST be called from the host teardown path: the references live in the RRDHOST
+// and would otherwise die with it, pinning four localhost chart items for the life of the agent.
+void pulse_child_charts_release(RRDHOST *host);
+
 // receiver events
 
 void pulse_parent_stream_info_received_request(void);
