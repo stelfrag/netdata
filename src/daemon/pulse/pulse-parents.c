@@ -379,13 +379,21 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
 //   2. it re-checks RRDSET_FLAG_OBSOLETE on every pass and, if set, releases the reference and
 //      re-resolves through rrdset_create_localhost(), which performs the same revival the old
 //      per-pass path did;
-//   3. pulse_child_charts_release() drops the references from the host teardown path, so a departed
-//      child does not pin its four chart items for the life of the agent - without it the references
-//      would die with the RRDHOST and the items could be marked deleted but never freed.
-// (1) keeps the object alive so that (2)'s flag read is safe; (2) keeps us from silently collecting
-// into a chart the reaper has already unlinked from the index; (3) keeps (1) from turning the
-// pre-existing chart leak into an unreclaimable one, and stops dictionary_destroy() from having to
-// defer teardown of localhost's chart index over still-referenced items at shutdown.
+// (1) keeps the object alive so that (2)'s flag read is safe, and (2) keeps us from silently
+// collecting into a chart the reaper has already unlinked from the index.
+//
+// NOT done, deliberately: releasing these references when the child's host goes away. It would be
+// the obvious third step - the references die with the RRDHOST, so a departed child's four chart
+// items stay referenced for the life of the agent - but the release would have to run from
+// rrdhost_free_unlinked() (src/database/rrdhost.c), i.e. on the teardown thread, while this
+// traversal may still be inside the same host. That makes it a second unsynchronised writer of
+// these slots, and no caller helps: rrdhost_free___while_having_rrd_wrlock() holds rrd_wrlock but
+// this traversal never takes rrd_rdlock, so the write lock serialises nothing here. It also buys
+// nothing today, because nothing obsoletes these charts, so no reclaim ever happens; the only
+// observable effect is that dictionary_destroy() defers teardown of localhost's chart index, on the
+// ASAN-only shutdown path. The release belongs with the traversal-lifetime fix (rrd_rdlock around
+// pulse_parents_traverse, or moving this per-host pulse state off the RRDHOST), which is what makes
+// it safe to write these slots from anywhere but here.
 //
 // Two accepted narrowings versus the old per-pass path, both needing an adversarial obsoleter to
 // reach at all (the reaper can only win the staleness race when a pulse step is further apart than
@@ -406,8 +414,11 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
 //      src/database/rrdset-collection.c and fatal()s with "is being collected while is being
 //      destroyed". Base degraded more gently there: the reaper's own dictionary_garbage_collect()
 //      ran the callback in the same pass, so the stale slot resolved to NULL and the plugin was
-//      merely disabled. The window is bounded by one pulse step, and pulse_child_charts_release()
-//      keeps a departed child's chart from staying a zombie for the life of the agent.
+//      merely disabled. The window is bounded by one pulse step for a live child; for a child whose
+//      host has gone away the reference is never released (see below), so its chart would stay a
+//      zombie. Fixing that properly is the reaper's job - it already refuses to archive a DIMENSION
+//      whose dictionary item has other references (src/daemon/service.c) and should apply the same
+//      test before freeing a chart.
 //
 // Also note the conflict callback no longer re-asserts title/units/family/context/priority/
 // chart_type/plugin/module on every pass. Nothing we own changes them, so this is invisible in
@@ -484,22 +495,6 @@ static inline RRDSET *pulse_child_chart_cached(struct rrdset_acquired **slot) {
 // cannot free it while it is cached.
 static inline void pulse_child_chart_hold(struct rrdset_acquired **slot, RRDSET *st) {
     *slot = rrdset_find_and_acquire(localhost, rrdset_id(st), true);
-}
-
-// Called from rrdhost_free_unlinked() (src/database/rrdhost.c), where the host is already out of
-// rrdhost_root_index and the pulse traversal can no longer reach it. Without this the four acquired
-// references die with the RRDHOST and the chart items stay referenced forever, so a future sweep that
-// obsoletes stale localhost charts could mark them but never free them.
-void pulse_child_charts_release(RRDHOST *host) {
-    struct rrdhost_pulse_child_charts *c = &host->stream.rcv.status.charts;
-    struct rrdset_acquired **slots[] = { &c->traffic, &c->state, &c->reconnects, &c->age };
-
-    for(size_t i = 0; i < sizeof(slots) / sizeof(slots[0]) ;i++) {
-        if(*slots[i]) {
-            rrdset_acquired_release(*slots[i]);
-            *slots[i] = NULL;
-        }
-    }
 }
 
 static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) {
