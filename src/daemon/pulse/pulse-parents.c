@@ -579,12 +579,16 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
     // RRDHOST behind the same machine_guid also forces a refresh; that pointer is compared, never
     // dereferenced.
     //
-    // Caveat, pre-existing and NOT covered by this compare: hops comes from host->system_info
-    // (rrdhost_ingestion_hops()), not from the labels, and rrdlabels_migrate_to_these() ASSIGNS
-    // dst->version = src->version rather than bumping it. So a reconnect that pushes the same number
-    // of labels leaves the version unchanged, and a hops change made by re-attaching via a different
-    // parent is missed until something else touches the labels. The per-chart rrdlabels_exist() probe
-    // this replaced did not catch it either - it only ever asked whether machine_guid was present.
+    // Caveat, pre-existing and NOT covered by this compare: the chart's hostname and hops labels are
+    // not label-derived. hostname comes from rrdhost_hostname() and hops from host->system_info
+    // (rrdhost_ingestion_hops()), while rrdlabels_migrate_to_these() ASSIGNS dst->version =
+    // src->version rather than bumping it. So a reconnect that pushes the same number of labels
+    // leaves the version unchanged, and a child that comes back under the same machine_guid with a
+    // different hostname - or re-attached via a different parent, changing hops - keeps the old
+    // label until something else touches the labels. Verified against c290568811, i.e. before this
+    // cache existed: 4/4 reconnects kept a stale hostname there too. The per-chart
+    // rrdlabels_exist() probe this replaced did not catch it either - it only ever asked whether
+    // machine_guid was present, never whether it was current.
     uint32_t lv = rrdlabels_version(host->rrdlabels);
     bool refresh_labels = (lv != c->labels_applied_version || (const void *)host != c->host);
     c->labels_applied_version = lv;
