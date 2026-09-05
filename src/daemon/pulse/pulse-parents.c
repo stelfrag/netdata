@@ -448,13 +448,6 @@ static PULSE_OUTBOUND_STATE pulse_outbound_state(PULSE_HOST_STATUS s) {
 // version changes.
 
 struct pulse_child_charts {
-    // The RRDHOST this entry was last populated from, kept ONLY as an opaque identity token and
-    // NEVER dereferenced - by the time we compare it, the host it points to may already be freed.
-    // It makes a child that left and came back between two sweeps (same machine_guid, a new
-    // RRDHOST) re-apply its labels, which the version compare alone can miss because the new
-    // host's rrdlabels version starts independently of the old one's.
-    const void *host;
-
     // last host-label version applied to the charts below; the traversal re-applies labels + hops
     // only when it changes, i.e. on reconnect / mid-stream label push
     uint32_t labels_applied_version;
@@ -575,24 +568,33 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
     c->seen_pass = pulse_child_charts_pass;
 
     // re-apply labels + hops only when the host's labels changed (reconnect / mid-stream push), via a
-    // cheap version compare - so we don't re-copy every child's labels on every pass. A different
-    // RRDHOST behind the same machine_guid also forces a refresh; that pointer is compared, never
-    // dereferenced.
+    // cheap version compare - so we don't re-copy every child's labels on every pass. Resolving a
+    // chart below also forces a refresh.
     //
-    // Caveat, pre-existing and NOT covered by this compare: the chart's hostname and hops labels are
-    // not label-derived. hostname comes from rrdhost_hostname() and hops from host->system_info
-    // (rrdhost_ingestion_hops()), while rrdlabels_migrate_to_these() ASSIGNS dst->version =
-    // src->version rather than bumping it. So a reconnect that pushes the same number of labels
-    // leaves the version unchanged, and a child that comes back under the same machine_guid with a
-    // different hostname - or re-attached via a different parent, changing hops - keeps the old
-    // label until something else touches the labels. Verified against c290568811, i.e. before this
-    // cache existed: 4/4 reconnects kept a stale hostname there too. The per-chart
-    // rrdlabels_exist() probe this replaced did not catch it either - it only ever asked whether
-    // machine_guid was present, never whether it was current.
+    // ACCEPTED LIMITATION, to be closed by a follow-up that compares the effective label state
+    // rather than a version number. Two ways stale labels survive here:
+    //
+    //   - Same host, changed identity. hostname comes from rrdhost_hostname() and hops from
+    //     host->system_info (rrdhost_ingestion_hops()); neither is part of host->rrdlabels, and
+    //     rrdlabels_migrate_to_these() ASSIGNS dst->version = src->version rather than bumping it.
+    //     So a reconnect can change either while the version stays put. Pre-existing: verified on
+    //     c290568811, before this cache existed, 4/4 reconnects kept a stale hostname.
+    //
+    //   - Replaced host, same machine_guid. This entry is keyed by guid and the sweep only drops it
+    //     when a pass fails to collect that guid, so a host freed and re-created between two passes
+    //     keeps this entry and its remembered version. Note this one is a REGRESSION against
+    //     c290568811, where labels_applied_version lived on the RRDHOST: a replacement was
+    //     callocz'd to 0, so any non-zero version forced a refresh. Moving the version into this
+    //     registry lost that implicit reset.
+    //
+    // Do NOT plug the second case with an RRDHOST address as an identity token: allocator reuse
+    // makes two different hosts compare equal, so it fails exactly when it is needed. Complete
+    // invalidation has to account for the effective label state - copied labels including their
+    // source flags, plus the authoritative hostname / node_id presence / hops this writer applies -
+    // which then covers both cases and makes an incarnation id unnecessary.
     uint32_t lv = rrdlabels_version(host->rrdlabels);
-    bool refresh_labels = (lv != c->labels_applied_version || (const void *)host != c->host);
+    bool refresh_labels = (lv != c->labels_applied_version);
     c->labels_applied_version = lv;
-    c->host = host;
 
     // Each chart (re)resolved below sets refresh_labels, so a freshly created or revived chart always
     // gets its labels. This replaces the former per-chart rrdlabels_exist(st->rrdlabels,
