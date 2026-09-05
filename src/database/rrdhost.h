@@ -292,12 +292,10 @@ struct rrdhost {
                 // pulse_host_status() (relaxed atomic).
                 bool running_latched;
 
-                // NOTE: the pulse traversal keeps NO state here. Its per-child chart set and the
-                // last host-label version it applied live in pulse_child_charts_registry
-                // (src/daemon/pulse/pulse-parents.c), keyed by machine_guid and owned by the pulse
-                // thread alone. That traversal walks rrdhost_root_index without rrd_rdlock(), and
-                // rrdhost_root_index does not own the RRDHOST, so anything it cached here could be
-                // read after this host was freed.
+                // NOTE: the pulse traversal deliberately keeps no state here - it walks
+                // rrdhost_root_index without rrd_rdlock(), so anything cached here can be read
+                // after the host is freed. See pulse_child_charts_registry in
+                // src/daemon/pulse/pulse-parents.c.
             } status;
         } rcv;
 
