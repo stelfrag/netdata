@@ -493,9 +493,10 @@ static struct pulse_child_charts *pulse_child_charts_entry(const char *machine_g
         dictionary_register_delete_callback(pulse_child_charts_registry, pulse_child_charts_delete_cb, NULL);
     }
 
-    // look the entry up first and only fall back to creating it: dictionary_set() always takes the
-    // index write lock and runs the insert probe even when the item exists, and in steady state it
-    // always exists. Same reasoning as pulse_child_dim() below.
+    // look the entry up first and only fall back to creating it: dictionary_set() runs the JudyHS
+    // insert probe even when the item exists, and in steady state it always exists, so a plain get
+    // is the cheaper half. (The index lock is a no-op here - the registry is SINGLE_THREADED - so
+    // the probe is the whole saving.) Same reasoning as pulse_child_dim() below.
     struct pulse_child_charts *c = dictionary_get(pulse_child_charts_registry, machine_guid);
     if(likely(c))
         return c;
@@ -564,18 +565,28 @@ static inline RRDSET *pulse_child_chart_cached(RRDSET_ACQUIRED **slot) {
     return NULL;
 }
 
-// Hold an acquired reference on a chart we just created or revived, so the obsolete-chart reaper
-// cannot free it while it is cached. Returns false if the chart could not be acquired.
+// Take an acquired reference on the chart with this id and return the chart THROUGH that reference,
+// or NULL if it could not be acquired.
 //
-// rrdset_create_custom() releases the item it acquired before returning, so between that release
-// and this acquire the chart has no references at all and the reaper's own test would see one. It
-// can only act on an OBSOLETE chart, and create/revive just cleared that flag, so this needs an
-// adversarial obsoletion landing inside the gap - but if it happens the chart is gone from the
-// index, we get NULL here, and the caller must not keep collecting into the stale pointer.
-static inline bool pulse_child_chart_hold(RRDSET_ACQUIRED **slot, RRDSET *st) {
+// rrdset_create_custom() releases the item it acquired before returning, so the pointer it hands
+// back is unprotected: between that release and this acquire the chart has no references at all.
+// The reaper can only act on an OBSOLETE chart, and it also needs last_accessed, last_updated and
+// last_collected all older than rrdset_free_obsolete_time_s - so losing the chart here needs both
+// an obsoletion by something else AND this thread stalled for that grace period, since we otherwise
+// collect the chart every pass. Narrow, but if it happens we must not touch the returned pointer.
+//
+// Hence the id is rebuilt here rather than read back with rrdset_id(st), which would dereference
+// it, and the caller collects through what we return rather than through what create returned -
+// the two can differ if the chart was replaced under the same id in that window.
+static inline RRDSET *pulse_child_chart_hold(
+    RRDSET_ACQUIRED **slot, const char *type, const char *id) {
     internal_fatal(*slot != NULL, "PULSE: holding a chart into a slot that is already held");
-    *slot = rrdset_find_and_acquire(localhost, rrdset_id(st), true);
-    return *slot != NULL;
+
+    char full_id[RRD_ID_LENGTH_MAX + 1];
+    snprintfz(full_id, sizeof(full_id), "%s.%s", type, id);
+
+    *slot = rrdset_find_and_acquire(localhost, full_id, true);
+    return rrdset_acquired_to_rrdset(*slot);
 }
 
 static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) {
@@ -648,7 +659,8 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
             "netdata", id, NULL, "Streaming", "netdata.streaming.in.traffic",
             "Inbound Streaming Traffic", "bytes/s", "netdata", "pulse",
             130160, localhost->rrd_update_every, RRDSET_TYPE_AREA);
-        if(unlikely(!pulse_child_chart_hold(&c->traffic, st_traffic)))
+        st_traffic = pulse_child_chart_hold(&c->traffic, "netdata", id);
+        if(unlikely(!st_traffic))
             return;
         refresh_labels = true;
     }
@@ -676,7 +688,8 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
             "netdata", id, NULL, "Streaming", "netdata.streaming.in.state",
             "Inbound Streaming State", "state", "netdata", "pulse",
             130161, localhost->rrd_update_every, RRDSET_TYPE_LINE);
-        if(unlikely(!pulse_child_chart_hold(&c->state, st_state)))
+        st_state = pulse_child_chart_hold(&c->state, "netdata", id);
+        if(unlikely(!st_state))
             return;
         refresh_labels = true;
     }
@@ -697,7 +710,8 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
             "netdata", id, NULL, "Streaming", "netdata.streaming.in.reconnects",
             "Inbound Streaming Reconnects", "connects/s", "netdata", "pulse",
             130162, localhost->rrd_update_every, RRDSET_TYPE_LINE);
-        if(unlikely(!pulse_child_chart_hold(&c->reconnects, st_reconnects)))
+        st_reconnects = pulse_child_chart_hold(&c->reconnects, "netdata", id);
+        if(unlikely(!st_reconnects))
             return;
         refresh_labels = true;
     }
@@ -715,7 +729,8 @@ static void pulse_child_charts_update(RRDHOST *host, PULSE_INBOUND_STATE state) 
             "netdata", id, NULL, "Streaming", "netdata.streaming.in.age",
             "Inbound Streaming State Age", "seconds", "netdata", "pulse",
             130163, localhost->rrd_update_every, RRDSET_TYPE_LINE);
-        if(unlikely(!pulse_child_chart_hold(&c->age, st_age)))
+        st_age = pulse_child_chart_hold(&c->age, "netdata", id);
+        if(unlikely(!st_age))
             return;
         refresh_labels = true;
     }
