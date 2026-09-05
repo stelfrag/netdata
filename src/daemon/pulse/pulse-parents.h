@@ -45,4 +45,8 @@ void pulse_sender_connection_failed(const char *destination __maybe_unused, STRE
 
 void pulse_parents_do(bool extended);
 
+// release the pulse-thread-owned per-child chart registry; call from the pulse thread only,
+// after its last pulse_parents_do()
+void pulse_parents_cleanup(void);
+
 #endif //NETDATA_PULSE_PARENTS_H

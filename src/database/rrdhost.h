@@ -292,10 +292,10 @@ struct rrdhost {
                 // pulse_host_status() (relaxed atomic).
                 bool running_latched;
 
-                // last host-label version applied to this host's per-child charts; the pulse
-                // traversal (single thread) re-applies labels + hops only when it changes, i.e. on
-                // reconnect / mid-stream label push.
-                uint32_t labels_applied_version;
+                // NOTE: the pulse traversal deliberately keeps no state here - it walks
+                // rrdhost_root_index without rrd_rdlock(), so anything cached here can be read
+                // after the host is freed. See pulse_child_charts_registry in
+                // src/daemon/pulse/pulse-parents.c.
             } status;
         } rcv;
 
