@@ -6,7 +6,7 @@
 // workers interfaces
 
 #define WORKER_UTILIZATION_MAX_JOB_TYPES 80
-#define WORKER_SPINLOCK_CONTENTION_FUNCTIONS 200
+#define WORKER_SPINLOCK_CONTENTION_FUNCTIONS 256 // must be a power of two
 
 typedef enum __attribute__((packed)) {
     WORKER_METRIC_EMPTY = 0,

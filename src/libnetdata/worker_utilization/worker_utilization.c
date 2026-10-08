@@ -552,15 +552,25 @@ ALWAYS_INLINE void worker_set_metric(size_t job_id, NETDATA_DOUBLE value) {
 
 // --------------------------------------------------------------------------------------------------------------------
 
+_Static_assert((WORKER_SPINLOCK_CONTENTION_FUNCTIONS & (WORKER_SPINLOCK_CONTENTION_FUNCTIONS - 1)) == 0,
+               "spinlock table size must be a power of two");
+
+// Fibonacci hashing of the __FUNCTION__ pointer: the top 8 bits of the product spread the nearby .rodata
+// addresses of the lock call sites over the table, so probe chains stay short.
 static ALWAYS_INLINE size_t pointer_hash_function(const char *func) {
-    uintptr_t addr = (uintptr_t)func;
-    return (size_t)(((addr >> 4) | (addr >> 16)) + func[0]) % WORKER_SPINLOCK_CONTENTION_FUNCTIONS;
+#if UINTPTR_MAX == UINT64_MAX
+    return (size_t)(((uint64_t)(uintptr_t)func * UINT64_C(0x9E3779B97F4A7C15)) >> 56);
+#elif UINTPTR_MAX == UINT32_MAX
+    return (size_t)(((uint32_t)(uintptr_t)func * UINT32_C(0x9E3779B9)) >> 24);
+#else
+#error Unsupported pointer width
+#endif
 }
 
 static void worker_spinlock_contention_do(const char *func, size_t spins) {
     size_t hash = pointer_hash_function(func);
     for (size_t i = 0; i < WORKER_SPINLOCK_CONTENTION_FUNCTIONS; i++) {
-        size_t slot = (hash + i) % WORKER_SPINLOCK_CONTENTION_FUNCTIONS;
+        size_t slot = (hash + i) & (WORKER_SPINLOCK_CONTENTION_FUNCTIONS - 1);
         if (worker->spinlocks[slot].function == func || worker->spinlocks[slot].function == NULL) {
             // Either an empty slot or a matching slot
 
