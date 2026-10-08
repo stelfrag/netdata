@@ -115,7 +115,7 @@ int http_api_v2(mqtt_wss_client client, aclk_query_t *query)
     usec_t dt_ut = 0;
 
     int z_ret;
-    BUFFER *z_buffer = buffer_create(NETDATA_WEB_RESPONSE_INITIAL_SIZE, &netdata_buffers_statistics.buffers_aclk);
+    BUFFER *z_buffer = NULL;  // created only when the response is compressed
 
     // set while the compressed buffer is installed in w->response.data; holds the pooled
     // web client's own buffer so it can be put back before the client is released
@@ -165,13 +165,27 @@ int http_api_v2(mqtt_wss_client client, aclk_query_t *query)
     web_client_timeout_checkpoint_response_ready(w, &dt_ut);
 
     if (w->response.data->len && w->response.zinitialized) {
+        // deflate straight into z_buffer, growing it like any BUFFER, so it stays about the compressed size
+        z_buffer = buffer_create(NETDATA_WEB_RESPONSE_INITIAL_SIZE, &netdata_buffers_statistics.buffers_aclk);
+
         w->response.zstream.next_in = (Bytef *)w->response.data->buffer;
         w->response.zstream.avail_in = w->response.data->len;
-        do {
-            w->response.zstream.avail_out = NETDATA_WEB_RESPONSE_ZLIB_CHUNK_SIZE;
-            w->response.zstream.next_out = w->response.zbuffer;
+        for (;;) {
+            buffer_need_bytes(z_buffer, 1); // keep room beyond the terminator
+            const size_t free_bytes = z_buffer->size - z_buffer->len - 1;
+            const uInt offered = (uInt)MIN(free_bytes, (size_t)NETDATA_WEB_RESPONSE_ZLIB_CHUNK_SIZE);
+
+            w->response.zstream.next_out = (Bytef *)z_buffer->buffer + z_buffer->len;
+            w->response.zstream.avail_out = offered;
+
             z_ret = deflate(&w->response.zstream, Z_FINISH);
-            if(z_ret < 0) {
+            z_buffer->len += offered - w->response.zstream.avail_out;
+
+            if (z_ret == Z_STREAM_END)
+                break;
+
+            // Z_OK, or Z_BUF_ERROR with the output full, only mean "give me more room"
+            if (z_ret != Z_OK && !(z_ret == Z_BUF_ERROR && w->response.zstream.avail_out == 0)) {
                 if(w->response.zstream.msg)
                     netdata_log_error("Error compressing body. ZLIB error: \"%s\"", w->response.zstream.msg);
                 else
@@ -181,11 +195,8 @@ int http_api_v2(mqtt_wss_client client, aclk_query_t *query)
                 aclk_http_msg_v2_err(client, query->callback_topic, query->msg_id, w->response.code, CLOUD_EC_ZLIB_ERROR, CLOUD_EMSG_ZLIB_ERROR, NULL, 0);
                 goto cleanup;
             }
-            int bytes_to_cpy = NETDATA_WEB_RESPONSE_ZLIB_CHUNK_SIZE - w->response.zstream.avail_out;
-            buffer_need_bytes(z_buffer, bytes_to_cpy);
-            memcpy(&z_buffer->buffer[z_buffer->len], w->response.zbuffer, bytes_to_cpy);
-            z_buffer->len += bytes_to_cpy;
-        } while(z_ret != Z_STREAM_END);
+        }
+        z_buffer->buffer[z_buffer->len] = '\0';
 
         // web_client_build_http_header() reads the response buffer to size Content-Length
         // and to emit Content-Type and the cacheability headers, so it has to see the
