@@ -1,0 +1,4 @@
+# Hash-locked into packagecloud-requirements.txt; after editing, regenerate it from .github/scripts with Python 3.12:
+#   pip-compile --allow-unsafe --generate-hashes --no-emit-index-url --strip-extras -o packagecloud-requirements.txt packagecloud-requirements.in
+python-dateutil
+requests

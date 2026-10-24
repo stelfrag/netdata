@@ -37,14 +37,19 @@ jobs:
           sed -i 's/"version": ".*"/"version": "'"$VERSION"'"/' server.json
           echo "Updated server.json to version: $VERSION"
 
-      - name: Install mcp-publisher (latest release)
+      - name: Install mcp-publisher
         id: install_publisher
+        env:
+          # To bump: take the linux_amd64 line from the release's registry_<version>_checksums.txt.
+          MCP_PUBLISHER_VERSION: v1.8.4
+          MCP_PUBLISHER_SHA256: 5dc2fd415369c73551259f31cd33e2aacc9e0d1021e7f08fef1492d93b781628
         run: |
           set -euo pipefail
-          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          ARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
-          URL="https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz"
-          curl -fsSL "$URL" | tar xz
+          ARCHIVE=mcp-publisher_linux_amd64.tar.gz
+          curl -fsSL --proto '=https' --proto-redir '=https' -o "$ARCHIVE" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${ARCHIVE}"
+          echo "${MCP_PUBLISHER_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          tar xzf "$ARCHIVE" mcp-publisher
           sudo mv mcp-publisher /usr/local/bin/
           mcp-publisher --version
 

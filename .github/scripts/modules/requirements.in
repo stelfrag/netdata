@@ -1,0 +1,3 @@
+# Hash-locked into requirements.txt; after editing, regenerate it from .github/scripts with Python 3.12:
+#   pip-compile --allow-unsafe --generate-hashes --no-emit-index-url --strip-extras -o modules/requirements.txt modules/requirements.in
+PyGithub==2.1.1

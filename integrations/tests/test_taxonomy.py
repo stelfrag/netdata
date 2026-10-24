@@ -589,11 +589,36 @@ class TouchedCollectorGateTest(unittest.TestCase):
     def test_diff_range_base_resolves_merge_base_for_three_dot_ranges(self):
         with patch.object(check_collector_taxonomy, 'run_git', return_value='merged-sha\n') as run_git:
             base = check_collector_taxonomy.diff_range_base('origin/master...HEAD')
-            run_git.assert_called_once_with('merge-base', 'origin/master', 'HEAD')
+            run_git.assert_called_once_with('merge-base', '--end-of-options', 'origin/master', 'HEAD')
         self.assertEqual(base, 'merged-sha')
 
     def test_diff_range_base_uses_left_side_for_two_dot_ranges(self):
         self.assertEqual(check_collector_taxonomy.diff_range_base('origin/master..HEAD'), 'origin/master')
+
+    def run_main(self, pr_diff):
+        argv = ['check_collector_taxonomy.py', f'--pr-diff={pr_diff}']
+        with patch.object(sys, 'argv', argv), \
+                patch.object(check_collector_taxonomy, 'run_git', return_value='') as run_git, \
+                patch.object(check_collector_taxonomy, 'build_taxonomy', return_value=(None, [])):
+            try:
+                return check_collector_taxonomy.main(), run_git
+            except SystemExit as e:
+                return e.code, run_git
+
+    def test_pr_diff_rejects_ranges_git_could_misread(self):
+        for pr_diff in ('', '--output=/tmp/x', '-x..HEAD', 'origin/master...--output=/tmp/x',
+                        '..HEAD', 'origin/master...', 'a....b', 'a...b...c'):
+            with self.subTest(pr_diff=pr_diff), patch('sys.stderr'):
+                code, run_git = self.run_main(pr_diff)
+                self.assertEqual(code, 2)
+                run_git.assert_not_called()
+
+    def test_pr_diff_accepts_revision_ranges(self):
+        for pr_diff in ('origin/master...HEAD', 'base..head', 'HEAD~1'):
+            with self.subTest(pr_diff=pr_diff):
+                code, run_git = self.run_main(pr_diff)
+                self.assertEqual(code, 0)
+                run_git.assert_called_once_with('diff', '--name-status', '--end-of-options', pr_diff)
 
     def test_label_description_only_change_is_not_touched(self):
         old_text = f"""plugin_name: go.d.plugin

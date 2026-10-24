@@ -1030,7 +1030,7 @@ jobs:
       - name: Setup python environment
         id: setup-python
         run: |
-          pip install -r .github/scripts/modules/requirements.txt
+          python -m pip install --require-hashes --only-binary :all: -r .github/scripts/modules/requirements.txt
       - name: Check if the version is latest and published
         id: check-latest-version
         run: |

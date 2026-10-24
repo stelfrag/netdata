@@ -14,10 +14,26 @@ def run_git(*args):
     return subprocess.check_output(['git', '-C', str(REPO_PATH), *args], text=True)
 
 
+def pr_diff_range(value):
+    """argparse type for --pr-diff: REV, A..B or A...B, with every endpoint present and not readable by git as an
+    option."""
+    for separator in ('...', '..'):
+        if separator in value:
+            endpoints = value.split(separator, 1)
+            break
+    else:
+        endpoints = [value]
+
+    for endpoint in endpoints:
+        if not endpoint or endpoint.startswith(('-', '.')) or '..' in endpoint:
+            raise argparse.ArgumentTypeError(f'{value!r} is not a REV, A..B or A...B git range')
+    return value
+
+
 def diff_range_base(diff_range):
     if '...' in diff_range:
         left, right = diff_range.split('...', 1)
-        return run_git('merge-base', left, right).strip()
+        return run_git('merge-base', '--end-of-options', left, right).strip()
     if '..' in diff_range:
         left, _right = diff_range.split('..', 1)
         return left
@@ -57,12 +73,12 @@ def metadata_metrics_touched(diff_range, path):
     if not path.exists():
         return True
 
-    diff = run_git('diff', '--unified=0', diff_range, '--', relpath(path))
+    diff = run_git('diff', '--unified=0', '--end-of-options', diff_range, '--', relpath(path))
     if not diff.strip():
         return False
 
     try:
-        old_text = run_git('show', f'{diff_range_base(diff_range)}:{relpath(path)}')
+        old_text = run_git('show', '--end-of-options', f'{diff_range_base(diff_range)}:{relpath(path)}')
     except subprocess.CalledProcessError:
         return True
 
@@ -82,7 +98,7 @@ def collector_metadata_paths():
 
 
 def touched_collectors(diff_range):
-    output = run_git('diff', '--name-status', diff_range)
+    output = run_git('diff', '--name-status', '--end-of-options', diff_range)
     collector_metadata = collector_metadata_paths()
     touched = set()
     for line in output.splitlines():
@@ -128,6 +144,7 @@ def main():
     )
     parser.add_argument(
         '--pr-diff',
+        type=pr_diff_range,
         help='Git diff range for touched-collector coverage, for example origin/master...HEAD.',
     )
     args = parser.parse_args()

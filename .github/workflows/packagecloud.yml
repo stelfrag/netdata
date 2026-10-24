@@ -24,13 +24,18 @@ jobs:
         id: checkout
         with:
           submodules: recursive
+      - name: Init Python environment
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: init-python
+        with:
+          python-version: "3.12"
       - name: Prepare environment
         id: prepare
         run: |
-          pip3 install requests python-dateutil
+          python -m pip install --require-hashes --only-binary :all: -r .github/scripts/packagecloud-requirements.txt
       - name: Run PackageCloud Cleanup
         id: cleanup
         env:
           PKGCLOUD_TOKEN: ${{ secrets.PACKAGE_CLOUD_API_KEY }}
         run: |
-          python3 .github/scripts/netdata-pkgcloud-cleanup.py -r ${{ matrix.repos }}
+          python .github/scripts/netdata-pkgcloud-cleanup.py -r ${{ matrix.repos }}
