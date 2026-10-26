@@ -46,7 +46,7 @@ connections were open, and did the host change before it?
    jq '.transition | {alert, when, new_status}' "$F"
    jq '.evidence | map_values(.status)' "$F"
    jq '.evidence.processes_at.rows[:5] | map({Cmd, PID, CPU, RSS, RecordedFor})' "$F"
-   jq '.evidence.processes_window | {started, exited, total, top: (.rows[:5] | map({Cmd, PeakCPU, Started, Exited}))}' "$F"
+   jq '.evidence.processes_window | {running, recorded_processes, started, exited, top: (.rows[:5] | map({Cmd, PeakCPU, Started, Exited}))}' "$F"
    jq '.evidence.host_changes.events' "$F"
    ```
 

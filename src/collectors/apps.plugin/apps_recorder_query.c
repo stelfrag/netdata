@@ -24,12 +24,34 @@ typedef struct {
     uint64_t rows_cpu_sum;          // 1/10000 of a core, summed over frames
     uint64_t procs_cpu_sum;
     double coverage_min;
+
+    // the frame totals: all processes, not only the rows kept
+    uint32_t pids_min, pids_max;
+    uint64_t pids_sum;
+    uint32_t procs_cpu_max;
+    uint64_t procs_rss_kib_sum, procs_rss_kib_max;
+    size_t host_frames;             // frames that know the host CPU
+    uint64_t host_cpu_sum;
+    uint32_t host_cpu_max;
 } REC_COVERAGE;
 
 static void coverage_add(REC_COVERAGE *c, const APPS_REC_FRAME_HDR *h) {
     c->frames++;
     c->rows_cpu_sum += h->rows_cpu;
     c->procs_cpu_sum += h->procs_cpu;
+
+    if(c->frames == 1 || h->pids < c->pids_min) c->pids_min = h->pids;
+    if(h->pids > c->pids_max) c->pids_max = h->pids;
+    c->pids_sum += h->pids;
+    if(h->procs_cpu > c->procs_cpu_max) c->procs_cpu_max = h->procs_cpu;
+    c->procs_rss_kib_sum += h->procs_rss_kib;
+    if(h->procs_rss_kib > c->procs_rss_kib_max) c->procs_rss_kib_max = h->procs_rss_kib;
+    if(h->host_cpu) {
+        c->host_frames++;
+        c->host_cpu_sum += h->host_cpu;
+        if(h->host_cpu > c->host_cpu_max) c->host_cpu_max = h->host_cpu;
+    }
+
     double cov = h->procs_cpu ? MIN((double)h->rows_cpu / (double)h->procs_cpu, 1.0) : 1.0;
     if(c->frames == 1 || cov < c->coverage_min)
         c->coverage_min = cov;
@@ -98,6 +120,37 @@ static void emit_recorded(BUFFER *wb, const char *mode, usec_t from_ut, usec_t t
         buffer_json_member_add_uint64(wb, "samples", c->frames);
         buffer_json_member_add_double(wb, "cpu_coverage", coverage_avg(c) * 100.0);
         buffer_json_member_add_double(wb, "cpu_coverage_min", (c->frames ? c->coverage_min : 1.0) * 100.0);
+
+        // every process, not only the rows kept; CPU in % of one core like the CPU columns, memory in MiB
+        if(c->frames) {
+            const double n = (double)c->frames;
+            buffer_json_member_add_object(wb, "totals");
+            {
+                buffer_json_member_add_object(wb, "processes");
+                buffer_json_member_add_uint64(wb, "min", c->pids_min);
+                buffer_json_member_add_double(wb, "avg", (double)c->pids_sum / n);
+                buffer_json_member_add_uint64(wb, "max", c->pids_max);
+                buffer_json_object_close(wb);
+
+                buffer_json_member_add_object(wb, "processes_cpu");
+                buffer_json_member_add_double(wb, "avg", (double)c->procs_cpu_sum / n / 100.0);
+                buffer_json_member_add_double(wb, "max", (double)c->procs_cpu_max / 100.0);
+                buffer_json_object_close(wb);
+
+                if(c->host_frames) {
+                    buffer_json_member_add_object(wb, "host_cpu");
+                    buffer_json_member_add_double(wb, "avg", (double)c->host_cpu_sum / (double)c->host_frames / 100.0);
+                    buffer_json_member_add_double(wb, "max", (double)c->host_cpu_max / 100.0);
+                    buffer_json_object_close(wb);
+                }
+
+                buffer_json_member_add_object(wb, "processes_rss");
+                buffer_json_member_add_double(wb, "avg", (double)c->procs_rss_kib_sum / n / 1024.0);
+                buffer_json_member_add_double(wb, "max", (double)c->procs_rss_kib_max / 1024.0);
+                buffer_json_object_close(wb);
+            }
+            buffer_json_object_close(wb);
+        }
         buffer_json_member_add_array(wb, "source");
         if(sources & APPS_REC_SOURCE_DISK) buffer_json_add_array_item_string(wb, "disk");
         if(sources & APPS_REC_SOURCE_RAM) buffer_json_add_array_item_string(wb, "ram");

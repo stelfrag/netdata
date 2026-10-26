@@ -303,9 +303,19 @@ static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, c
         bool truncated;
         size_t rows = ae_table_rows(wb, "rows", jobj, sort_key, NULL, AE_PROCESS_ROWS_MAX, &truncated);
 
-        // the range answer is capped by apps.plugin; it says how many processes there were
+        // running: every process on the host (the recorder's frame totals); recorded_processes: the ones the
+        // recorder kept in detail (the busiest by CPU, memory and I/O, and every start and exit), capped by apps.plugin
+        struct json_object *totals = NULL, *running = NULL;
+        if(json_object_object_get_ex(recorded, "totals", &totals) &&
+           json_object_object_get_ex(totals, "processes", &running)) {
+            if(min_sample_ut)
+                buffer_json_member_add_int64(wb, "running", ae_json_int(running, "max", 0));
+            else
+                ae_json_value(wb, "running", running);
+        }
+
         int64_t total = ae_json_int(jobj, "processes_total", (int64_t)rows);
-        buffer_json_member_add_uint64(wb, "total", (uint64_t)total);
+        buffer_json_member_add_uint64(wb, "recorded_processes", (uint64_t)total);
         buffer_json_member_add_boolean(wb, "truncated", truncated || (uint64_t)total > rows);
 
         // the window answer marks processes that started or exited inside it; counted over the rows it returned
@@ -658,6 +668,31 @@ static void ae_table_passthrough(BUFFER *wb, struct json_object *answer, const c
     freez(from);
 }
 
+// a dashboard answer that cannot show processes: one row saying why, with the picker kept so another alert can be
+// picked (the dashboard shows only "rejected" for an error status)
+static int ae_message_table(BUFFER *wb, struct ae_list *list, const char *message) {
+    ae_table_preamble(wb, FUNCTION_ALERT_EVIDENCE_HELP);
+    ae_picker_params(wb, list);
+
+    buffer_json_member_add_array(wb, "data");
+    buffer_json_add_array_item_array(wb);
+    buffer_json_add_array_item_string(wb, message);
+    buffer_json_array_close(wb);
+    buffer_json_array_close(wb);
+
+    buffer_json_member_add_object(wb, "columns");
+    buffer_rrdf_table_add_field(wb, 0, "Message", "Why there are no processes to show",
+                                RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                                0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                                RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_NONE,
+                                RRDF_FIELD_OPTS_VISIBLE | RRDF_FIELD_OPTS_UNIQUE_KEY | RRDF_FIELD_OPTS_FULL_WIDTH | RRDF_FIELD_OPTS_WRAP,
+                                NULL);
+    buffer_json_object_close(wb);
+
+    buffer_json_finalize(wb);
+    return HTTP_RESP_OK;
+}
+
 static int ae_processes_view(BUFFER *wb, struct ae_list *list, const struct ae_transition *tr, const char *source) {
     const time_t T = tr->when;
     char cmd[128];
@@ -671,16 +706,20 @@ static int ae_processes_view(BUFFER *wb, struct ae_list *list, const struct ae_t
     // an answer without `recorded` is the live table, not the past
     if(jobj && !json_object_object_get_ex(jobj, "recorded", &recorded)) {
         json_object_put(jobj);
-        return ae_error(wb, HTTP_RESP_SERVICE_UNAVAILABLE, "this agent has no process flight recorder");
+        jobj = NULL;
+        available = false;
     }
     if(!jobj) {
+        char message[256];
         if(!available || code == HTTP_RESP_SERVICE_UNAVAILABLE)
-            return ae_error(wb, HTTP_RESP_SERVICE_UNAVAILABLE, "this agent has no process flight recorder");
-        if(code == HTTP_RESP_NOT_FOUND)
-            return ae_error(wb, HTTP_RESP_NOT_FOUND, "no process history was saved around this alert");
-        if(code == HTTP_RESP_OK)
-            return ae_error(wb, HTTP_RESP_INTERNAL_SERVER_ERROR, "the processes Function answered with invalid JSON");
-        return ae_error(wb, code, "the processes Function answered with an error");
+            snprintfz(message, sizeof(message), "This agent has no process flight recorder (apps.plugin on Linux).");
+        else if(code == HTTP_RESP_NOT_FOUND)
+            snprintfz(message, sizeof(message),
+                      "No process history was saved around this alert: the agent did not record processes then, "
+                      "or the saved history was deleted to stay within its disk limit.");
+        else
+            snprintfz(message, sizeof(message), "The processes Function answered with an error (%d).", code);
+        return ae_message_table(wb, list, message);
     }
 
     char when[32], help[512];
@@ -722,7 +761,7 @@ static int ae_dashboard_view(BUFFER *wb, const char *alert, bool info, const cha
             ae_transition_lookup(alert, &tr);
 
         if(!tr.found || uuid_compare(tr.host_id, localhost->host_id.uuid) != 0)
-            code = ae_error(wb, HTTP_RESP_NOT_FOUND, "this agent has no alert of its own with this id");
+            code = ae_message_table(wb, &list, "This agent has no alert of its own with this id.");
         else
             code = ae_processes_view(wb, &list, &tr, source);
 

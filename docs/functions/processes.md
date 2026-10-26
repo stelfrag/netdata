@@ -242,6 +242,7 @@ that says how complete it is:
 | `cpu_coverage`                | The share of all-process CPU held by the recorded processes, in percent             |
 | `cpu_coverage_min`            | The lowest coverage of any sample used                                              |
 | `source`                      | `ram` (the last 30 minutes) and/or `disk` (windows the Agent saved around incidents) |
+| `totals`                      | All processes, not only the recorded ones, over the samples used: `processes` (running processes: `min`, `avg`, `max`), `processes_cpu` and `host_cpu` (% of one core: `avg`, `max`; `host_cpu` when known), `processes_rss` (MiB: `avg`, `max`) |
 
 `at:` returns `PID`, `Cmd`, `Exe`, `PPID`, `Category`, `Uid`, `CPU`, `RSS`, `Swap`, `LReads`, `LWrites`, `PReads`,
 `PWrites`, `Threads`, `State` and `RecordedFor` (why the process was kept: `cpu`, `memory`, `io`).

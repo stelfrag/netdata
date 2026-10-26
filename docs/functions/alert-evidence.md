@@ -52,6 +52,8 @@ Open **Alert Evidence** in the Functions tab. It has an **Alert** picker:
 - Pick one of the last 100 alerts to see the processes from 10 minutes before to 2 minutes after it: average and peak
   CPU, peak memory, first and last seen, and whether each process started or exited in that time. Command lines are not
   shown.
+- When nothing was saved for the alert you pick (for example it fired before the Agent recorded processes, or the
+  saved history was deleted to stay within the disk limit), the table says so in one row.
 
 The same views answer `alert-evidence` (or `alert-evidence alert:all`) and `alert-evidence alert:<transition id>`.
 
@@ -63,8 +65,8 @@ The same views answer `alert-evidence` (or `alert-evidence alert:all`) and `aler
   "type": "alert-evidence",
   "transition": { "id": "...", "node": "...", "alert": "...", "when": 1793020000, "new_status": "WARNING", "...": "..." },
   "evidence": {
-    "processes_at":       { "status": "ok", "recorded": { "...": "..." }, "rows": [ { "Cmd": "...", "CPU": 99.9, "...": "..." } ] },
-    "processes_window":   { "status": "ok", "rows": [ "..." ], "started": 3, "exited": 2 },
+    "processes_at":       { "status": "ok", "running": 529, "recorded_processes": 53, "recorded": { "...": "..." }, "rows": [ { "Cmd": "...", "CPU": 99.9, "...": "..." } ] },
+    "processes_window":   { "status": "ok", "running": { "min": 520, "avg": 528.4, "max": 541 }, "recorded_processes": 881, "rows": [ "..." ], "started": 633, "exited": 621 },
     "connections":        { "status": "ok", "captured": 1793020005, "rows": [ "..." ], "total": 120 },
     "host_changes":       { "status": "ok", "includes_startup": false, "events": [ { "ND_HOST_CHANGE": "kernel", "...": "..." } ] },
     "journal":            { "status": "pointer", "function": "systemd-journal", "after": 1793019400, "before": 1793020120 },
@@ -86,8 +88,10 @@ Every section reports a `status`:
 | `other_node`   | the transition was evaluated for another node; ask that node's Agent                                |
 | `error`        | the source answered with an error; `code` holds the HTTP code                                       |
 
-Process rows show at most 50 processes and connection rows at most 1000; `total` and `truncated` say how many there
-were. `started` and `exited` are counted over the busiest 1000 processes of the window; `counts_partial` is true when
+`running` is every process on the host (at the alert, or `min`/`avg`/`max` over the window); `recorded_processes` is
+the ones the recorder kept in detail: the busiest by CPU, memory and I/O, and every process that started or exited.
+`recorded.totals` adds the CPU and memory of all processes. Process rows show at most 50 of the recorded processes and
+connection rows at most 1000; `truncated` says there were more, and the connections' `total` how many. `started` and `exited` are counted over the busiest 1000 processes of the window; `counts_partial` is true when
 there were more. `processes_at` is `ok` only when the recorder has a sample from the minute before the alert. Command
 lines are never included.
 
