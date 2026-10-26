@@ -15,6 +15,7 @@
 #define APPS_REC_STRING_NONE        UINT16_MAX
 #define APPS_REC_STRINGS_MAX        (UINT16_MAX - 1)
 #define APPS_REC_STRING_LEN_MAX     4095
+#define APPS_REC_RAW_MAX            (64U * 1024 * 1024)    // the largest decompressed chunk a reader accepts
 
 #define APPS_REC_CHUNK_FLAG_ZSTD    0x0001
 
@@ -82,7 +83,7 @@ typedef struct __attribute__((packed)) {
     uint32_t frames;
     uint32_t raw_len;           // payload length when decompressed
     uint32_t stored_len;        // payload length as stored after this header
-    uint32_t crc;               // crc32 of the stored payload
+    uint32_t crc;               // crc32 of this header (with crc = 0) and the stored payload
     uint8_t boot_id[16];
 } APPS_REC_CHUNK_HDR;
 
@@ -98,6 +99,7 @@ typedef struct __attribute__((packed)) {
 // building chunks
 
 typedef struct apps_rec_builder {
+    uint8_t boot_id[16];        // stamped on every chunk sealed
     BUFFER *payload;
     BUFFER *pending_strings;    // strings added since the last frame
     uint16_t pending_count;
@@ -112,7 +114,7 @@ typedef struct apps_rec_builder {
     uint64_t last_ut;
 } APPS_REC_BUILDER;
 
-void apps_rec_builder_init(APPS_REC_BUILDER *b);
+void apps_rec_builder_init(APPS_REC_BUILDER *b, const uint8_t boot_id[16]);
 void apps_rec_builder_destroy(APPS_REC_BUILDER *b);
 
 // the id of a string in the chunk being built; APPS_REC_STRING_NONE for NULL
@@ -129,12 +131,13 @@ void apps_rec_builder_add_frame(
 
 // seals the chunk being built and resets the builder; NULL when it has no frames.
 // The returned block is a header followed by the stored payload; free it with freez().
-APPS_REC_CHUNK_HDR *apps_rec_builder_seal(APPS_REC_BUILDER *b, const uint8_t boot_id[16], size_t *size);
+APPS_REC_CHUNK_HDR *apps_rec_builder_seal(APPS_REC_BUILDER *b, size_t *size);
 
 // --------------------------------------------------------------------------------------------------------------------
 // reading chunks
 
 typedef struct {
+    const uint8_t *boot_id;     // 16 bytes: pid + starttime identify a process only within one boot
     const APPS_REC_FRAME_HDR *hdr;
     const APPS_REC_START *starts;
     const APPS_REC_EXIT *exits;

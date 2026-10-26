@@ -228,8 +228,10 @@ can answer for moments that have passed, including processes that have already e
 - The other filters (`category:`, `pid:`, ...) do not apply to the recorded past.
 
 **What the recorded past contains**: not every process. Each sample keeps the processes holding 95% of the CPU of
-all processes (50 to 150 of them), the 10 largest by memory and by I/O, and every start and exit. Every answer has a
-`recorded` object that says how complete it is:
+all processes (50 to 150 of them) and the 10 largest by memory and by I/O; these are the rows `at:` returns. Every
+process start and exit is recorded too: range answers use them for `Started` and `Exited`, and list processes that
+started within the range even when they were never among the recorded rows. Every answer has a `recorded` object
+that says how complete it is:
 
 | Field                         | Meaning                                                                             |
 |-------------------------------|-------------------------------------------------------------------------------------|

@@ -40,6 +40,9 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
     size_t i = w->frames;
     const EXPECTED_FRAME *e = &w->expected[i];
 
+    if(!f->boot_id || memcmp(f->boot_id, boot_id, sizeof(boot_id)) != 0)
+        return fail(w, "boot id differs", i);
+
     if(f->hdr->time_ut != e->hdr.time_ut || f->hdr->pids != e->hdr.pids || f->hdr->host_cpu != e->hdr.host_cpu ||
         f->hdr->procs_cpu != e->hdr.procs_cpu || f->hdr->rows_cpu != e->hdr.rows_cpu ||
         f->hdr->procs_rss_kib != e->hdr.procs_rss_kib)
@@ -141,7 +144,7 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
 
 static bool test_round_trip(void) {
     APPS_REC_BUILDER b;
-    apps_rec_builder_init(&b);
+    apps_rec_builder_init(&b, boot_id);
     EXPECTED_FRAME e[FRAMES];
     make_frames(&b, e);
 
@@ -157,7 +160,7 @@ static bool test_round_trip(void) {
     }
 
     size_t size;
-    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, boot_id, &size);
+    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, &size);
     if(!hdr || hdr->frames != FRAMES || hdr->first_ut != e[0].hdr.time_ut || hdr->last_ut != e[FRAMES - 1].hdr.time_ut ||
         memcmp(hdr->boot_id, boot_id, sizeof(boot_id)) != 0) {
         fprintf(stderr, "round trip: bad sealed header\n");
@@ -183,7 +186,7 @@ static bool test_round_trip(void) {
     }
 
     // an empty builder seals to nothing
-    if(apps_rec_builder_seal(&b, boot_id, &size) || size) {
+    if(apps_rec_builder_seal(&b, &size) || size) {
         fprintf(stderr, "round trip: empty builder sealed a chunk\n");
         return false;
     }
@@ -201,11 +204,11 @@ static bool count_frames(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *s
 
 static bool test_corruption(void) {
     APPS_REC_BUILDER b;
-    apps_rec_builder_init(&b);
+    apps_rec_builder_init(&b, boot_id);
     EXPECTED_FRAME e[FRAMES];
     make_frames(&b, e);
     size_t size;
-    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, boot_id, &size);
+    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, &size);
     bool ok = true;
 
     if(!apps_rec_chunk_valid(hdr, size)) {
@@ -232,6 +235,13 @@ static bool test_corruption(void) {
     }
     payload[size - sizeof(*hdr) - 1] ^= 0xff;
 
+    hdr->last_ut++;
+    if(apps_rec_chunk_valid(hdr, size)) {
+        fprintf(stderr, "corruption: flipped header field not detected\n");
+        ok = false;
+    }
+    hdr->last_ut--;
+
     hdr->version++;
     if(apps_rec_chunk_valid(hdr, size)) {
         fprintf(stderr, "corruption: unknown version accepted\n");
@@ -250,6 +260,15 @@ static bool test_corruption(void) {
     return ok;
 }
 
+// the chunk checksum: the header with crc = 0, then the stored payload
+static void recrc(APPS_REC_CHUNK_HDR *hdr) {
+    hdr->crc = 0;
+    uLong crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, (const Bytef *)hdr, (uInt)sizeof(*hdr));
+    crc = crc32(crc, (const Bytef *)hdr + sizeof(*hdr), (uInt)hdr->stored_len);
+    hdr->crc = (uint32_t)crc;
+}
+
 // a chunk with a valid checksum but counts that point past the payload
 static APPS_REC_CHUNK_HDR *raw_chunk(const void *payload, size_t len, uint32_t frames, size_t *size) {
     APPS_REC_CHUNK_HDR *hdr = callocz(1, sizeof(*hdr) + len);
@@ -259,7 +278,7 @@ static APPS_REC_CHUNK_HDR *raw_chunk(const void *payload, size_t len, uint32_t f
     hdr->first_ut = hdr->last_ut = 1;
     hdr->frames = frames;
     hdr->raw_len = hdr->stored_len = (uint32_t)len;
-    hdr->crc = (uint32_t)crc32(crc32(0L, Z_NULL, 0), payload, (uInt)len);
+    recrc(hdr);
     *size = sizeof(*hdr) + len;
     return hdr;
 }
@@ -311,12 +330,33 @@ static bool test_bounds(void) {
     uint8_t partial[sizeof(APPS_REC_FRAME_HDR) + 3] = { 0 };
     ok &= expect_rejected("trailing partial header", partial, sizeof(partial), 1);
 
+    // a header claiming a huge decompressed size is rejected before anything is allocated for it
+    {
+        APPS_REC_BUILDER b;
+        apps_rec_builder_init(&b, boot_id);
+        APPS_REC_FRAME_HDR h = { .time_ut = 1 };
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0);
+        size_t size;
+        APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, &size);
+        apps_rec_builder_destroy(&b);
+
+        hdr->raw_len = UINT32_MAX - 15;
+        hdr->flags |= APPS_REC_CHUNK_FLAG_ZSTD;
+        recrc(hdr);
+        size_t seen = 0;
+        if(apps_rec_chunk_valid(hdr, size) || apps_rec_chunk_foreach_frame(hdr, size, count_frames, &seen)) {
+            fprintf(stderr, "huge raw_len: accepted\n");
+            ok = false;
+        }
+        freez(hdr);
+    }
+
     return ok;
 }
 
 static bool test_limits(void) {
     APPS_REC_BUILDER b;
-    apps_rec_builder_init(&b);
+    apps_rec_builder_init(&b, boot_id);
     bool ok = true;
 
     // ids stay stable while the intern table grows
@@ -358,7 +398,7 @@ static bool test_limits(void) {
 
     // all 1000 strings went out with the first frame
     size_t size;
-    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, boot_id, &size);
+    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, &size);
     size_t frames = 0;
     if(!apps_rec_chunk_foreach_frame(hdr, size, count_frames, &frames) || frames != APPS_REC_FRAMES_PER_CHUNK) {
         fprintf(stderr, "limits: full chunk does not decode (%zu frames)\n", frames);
@@ -375,12 +415,12 @@ static bool test_limits(void) {
 // a sealed chunk of `frames` empty frames starting at first_ut
 static APPS_REC_CHUNK_HDR *test_chunk(uint64_t first_ut, size_t frames, size_t *size) {
     APPS_REC_BUILDER b;
-    apps_rec_builder_init(&b);
+    apps_rec_builder_init(&b, boot_id);
     for(size_t i = 0; i < frames; i++) {
         APPS_REC_FRAME_HDR h = { .time_ut = first_ut + i * USEC_PER_SEC, .pids = (uint32_t)i };
         apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0);
     }
-    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, boot_id, size);
+    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, size);
     apps_rec_builder_destroy(&b);
     return hdr;
 }

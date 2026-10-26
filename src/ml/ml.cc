@@ -1491,6 +1491,10 @@ ml_host_detect_once(ml_host_t *host, ONEWAYALLOC *owa)
         ml_update_host_and_detection_rate_charts(host, host_anomaly_rate * 10000.0, owa);
     } else {
         host->host_anomaly_rate = 0.0;
+
+        // a stopped host ends its anomaly episode
+        if (host->rh == localhost)
+            process_history_anomaly_rate(0.0);
     }
 }
 

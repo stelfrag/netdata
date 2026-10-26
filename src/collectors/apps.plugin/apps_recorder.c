@@ -227,7 +227,7 @@ static void ring_push(APPS_REC_CHUNK_HDR *hdr, size_t size) {
 
 static void seal_chunk(void) {
     size_t size;
-    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&rec.builder, rec.boot_id, &size);
+    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&rec.builder, &size);
     if(hdr)
         ring_push(hdr, size);
 }
@@ -744,7 +744,7 @@ void apps_recorder_init(void) {
         return;
 
     read_boot_id(rec.boot_id);
-    apps_rec_builder_init(&rec.builder);
+    apps_rec_builder_init(&rec.builder, rec.boot_id);
 
     if(apps_recorder_disk_mb > 0) {
         const char *cache_dir = getenv("NETDATA_CACHE_DIR");

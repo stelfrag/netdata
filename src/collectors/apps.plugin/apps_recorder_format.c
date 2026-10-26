@@ -12,8 +12,9 @@
 // --------------------------------------------------------------------------------------------------------------------
 // building chunks
 
-void apps_rec_builder_init(APPS_REC_BUILDER *b) {
+void apps_rec_builder_init(APPS_REC_BUILDER *b, const uint8_t boot_id[16]) {
     memset(b, 0, sizeof(*b));
+    memcpy(b->boot_id, boot_id, sizeof(b->boot_id));
     b->payload = buffer_create(64 * 1024, NULL);
     b->pending_strings = buffer_create(4 * 1024, NULL);
     b->interned_size = APPS_REC_INTERN_INITIAL;
@@ -113,7 +114,8 @@ uint16_t apps_rec_builder_string(APPS_REC_BUILDER *b, STRING *s) {
 
 bool apps_rec_builder_full(const APPS_REC_BUILDER *b, size_t new_strings_needed) {
     return b->frames >= APPS_REC_FRAMES_PER_CHUNK ||
-           b->strings + new_strings_needed > APPS_REC_STRINGS_MAX;
+           b->strings + new_strings_needed > APPS_REC_STRINGS_MAX ||
+           buffer_strlen(b->payload) >= APPS_REC_RAW_MAX / 2;
 }
 
 void apps_rec_builder_add_frame(
@@ -143,12 +145,28 @@ void apps_rec_builder_add_frame(
     b->frames++;
 }
 
-APPS_REC_CHUNK_HDR *apps_rec_builder_seal(APPS_REC_BUILDER *b, const uint8_t boot_id[16], size_t *size) {
+static uint32_t chunk_crc(const APPS_REC_CHUNK_HDR *hdr) {
+    APPS_REC_CHUNK_HDR h = *hdr;
+    h.crc = 0;
+    uLong crc = crc32(0L, Z_NULL, 0);
+    crc = crc32(crc, (const Bytef *)&h, (uInt)sizeof(h));
+    crc = crc32(crc, (const Bytef *)hdr + sizeof(*hdr), (uInt)hdr->stored_len);
+    return (uint32_t)crc;
+}
+
+APPS_REC_CHUNK_HDR *apps_rec_builder_seal(APPS_REC_BUILDER *b, size_t *size) {
     *size = 0;
     if(!b->frames)
         return NULL;
 
     size_t raw_len = buffer_strlen(b->payload);
+    if(raw_len > APPS_REC_RAW_MAX) {
+        // apps_rec_builder_full() seals long before this; a chunk no reader would accept is not kept
+        nd_log(NDLS_COLLECTORS, NDLP_ERR, "apps.plugin recorder: dropping a %zu bytes chunk", raw_len);
+        builder_reset(b);
+        return NULL;
+    }
+
     const void *raw = buffer_tostring(b->payload);
     APPS_REC_CHUNK_HDR *hdr = NULL;
     size_t stored_len = raw_len;
@@ -180,10 +198,8 @@ APPS_REC_CHUNK_HDR *apps_rec_builder_seal(APPS_REC_BUILDER *b, const uint8_t boo
     hdr->frames = b->frames;
     hdr->raw_len = (uint32_t)raw_len;
     hdr->stored_len = (uint32_t)stored_len;
-    memcpy(hdr->boot_id, boot_id, sizeof(hdr->boot_id));
-
-    uLong crc = crc32(0L, Z_NULL, 0);
-    hdr->crc = (uint32_t)crc32(crc, (const Bytef *)hdr + sizeof(*hdr), (uInt)stored_len);
+    memcpy(hdr->boot_id, b->boot_id, sizeof(hdr->boot_id));
+    hdr->crc = chunk_crc(hdr);
 
     *size = sizeof(*hdr) + stored_len;
     builder_reset(b);
@@ -206,7 +222,8 @@ static bool strings_add(APPS_REC_STRINGS *s, const char *str) {
 }
 
 // walks a decompressed payload; every count and length is checked against the payload bounds
-static bool payload_foreach_frame(const uint8_t *p, size_t len, size_t expected_frames, apps_rec_frame_cb_t cb, void *data) {
+static bool payload_foreach_frame(const uint8_t *p, size_t len, size_t expected_frames, const uint8_t *boot_id,
+                                  apps_rec_frame_cb_t cb, void *data) {
     const uint8_t *end = p + len;
     APPS_REC_STRINGS strings = { 0 };
     size_t frames = 0;
@@ -233,7 +250,7 @@ static bool payload_foreach_frame(const uint8_t *p, size_t len, size_t expected_
                       (size_t)hdr->rows * sizeof(APPS_REC_ROW);
         if((size_t)(end - p) < body) { ok = false; break; }
 
-        APPS_REC_FRAME_VIEW f = { .hdr = hdr };
+        APPS_REC_FRAME_VIEW f = { .boot_id = boot_id, .hdr = hdr };
         f.starts = (const APPS_REC_START *)p;
         p += (size_t)hdr->starts * sizeof(APPS_REC_START);
         f.exits = (const APPS_REC_EXIT *)p;
@@ -261,15 +278,22 @@ bool apps_rec_chunk_valid(const APPS_REC_CHUNK_HDR *hdr, size_t size) {
         return false;
 
     if(hdr->stored_len != size - sizeof(*hdr) || !hdr->frames || hdr->frames > APPS_REC_FRAMES_PER_CHUNK ||
-        hdr->first_ut > hdr->last_ut)
+        hdr->first_ut > hdr->last_ut || hdr->raw_len > APPS_REC_RAW_MAX)
         return false;
 
-    if(!(hdr->flags & APPS_REC_CHUNK_FLAG_ZSTD) && hdr->raw_len != hdr->stored_len)
+    if(hdr->flags & APPS_REC_CHUNK_FLAG_ZSTD) {
+#ifdef ENABLE_ZSTD
+        unsigned long long content = ZSTD_getFrameContentSize((const uint8_t *)hdr + sizeof(*hdr), hdr->stored_len);
+        if(content != hdr->raw_len)
+            return false;
+#else
+        return false;
+#endif
+    }
+    else if(hdr->raw_len != hdr->stored_len)
         return false;
 
-    uLong crc = crc32(0L, Z_NULL, 0);
-    crc = crc32(crc, (const Bytef *)hdr + sizeof(*hdr), (uInt)hdr->stored_len);
-    return (uint32_t)crc == hdr->crc;
+    return chunk_crc(hdr) == hdr->crc;
 }
 
 bool apps_rec_chunk_foreach_frame(const APPS_REC_CHUNK_HDR *hdr, size_t size, apps_rec_frame_cb_t cb, void *data) {
@@ -279,13 +303,13 @@ bool apps_rec_chunk_foreach_frame(const APPS_REC_CHUNK_HDR *hdr, size_t size, ap
     const uint8_t *stored = (const uint8_t *)hdr + sizeof(*hdr);
 
     if(!(hdr->flags & APPS_REC_CHUNK_FLAG_ZSTD))
-        return payload_foreach_frame(stored, hdr->stored_len, hdr->frames, cb, data);
+        return payload_foreach_frame(stored, hdr->stored_len, hdr->frames, hdr->boot_id, cb, data);
 
 #ifdef ENABLE_ZSTD
     uint8_t *raw = mallocz(hdr->raw_len ? hdr->raw_len : 1);
     size_t got = ZSTD_decompress(raw, hdr->raw_len, stored, hdr->stored_len);
     bool ok = !ZSTD_isError(got) && got == hdr->raw_len &&
-              payload_foreach_frame(raw, got, hdr->frames, cb, data);
+              payload_foreach_frame(raw, got, hdr->frames, hdr->boot_id, cb, data);
     freez(raw);
     return ok;
 #else
@@ -298,5 +322,5 @@ bool apps_rec_builder_foreach_frame(const APPS_REC_BUILDER *b, apps_rec_frame_cb
         return true;
 
     return payload_foreach_frame(
-        (const uint8_t *)buffer_tostring(b->payload), buffer_strlen(b->payload), b->frames, cb, data);
+        (const uint8_t *)buffer_tostring(b->payload), buffer_strlen(b->payload), b->frames, b->boot_id, cb, data);
 }

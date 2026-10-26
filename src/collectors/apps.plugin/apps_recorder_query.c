@@ -280,6 +280,7 @@ static void query_at(const char *transaction, usec_t at_ut, bool show_cmdline) {
 typedef struct {
     int32_t pid;
     uint64_t starttime;
+    uint64_t boot;              // the first 8 bytes of the boot id
     bool used;
 
     int32_t ppid;
@@ -302,13 +303,13 @@ typedef struct {
     size_t exits_unknown;       // exits of processes the range has no identity for
 } REC_RANGE;
 
-static inline size_t agg_slot(int32_t pid, uint64_t starttime, size_t size) {
-    uint64_t h = ((uint64_t)(uint32_t)pid * 0x9e3779b97f4a7c15ULL) ^ (starttime * 0xc2b2ae3d27d4eb4fULL);
+static inline size_t agg_slot(int32_t pid, uint64_t starttime, uint64_t boot, size_t size) {
+    uint64_t h = ((uint64_t)(uint32_t)pid * 0x9e3779b97f4a7c15ULL) ^ (starttime * 0xc2b2ae3d27d4eb4fULL) ^ boot;
     h ^= h >> 31;
     return (size_t)h & (size - 1);
 }
 
-static REC_AGG *agg_find(REC_RANGE *r, int32_t pid, uint64_t starttime, bool create);
+static REC_AGG *agg_find(REC_RANGE *r, int32_t pid, uint64_t starttime, uint64_t boot, bool create);
 
 static void agg_grow(REC_RANGE *r) {
     REC_AGG *old = r->slots;
@@ -318,22 +319,22 @@ static void agg_grow(REC_RANGE *r) {
     r->used = 0;
     for(size_t i = 0; i < old_size; i++) {
         if(!old[i].used) continue;
-        REC_AGG *a = agg_find(r, old[i].pid, old[i].starttime, true);
+        REC_AGG *a = agg_find(r, old[i].pid, old[i].starttime, old[i].boot, true);
         *a = old[i];
     }
     freez(old);
 }
 
-static REC_AGG *agg_find(REC_RANGE *r, int32_t pid, uint64_t starttime, bool create) {
+static REC_AGG *agg_find(REC_RANGE *r, int32_t pid, uint64_t starttime, uint64_t boot, bool create) {
     if(create && (r->used + 1) * 2 > r->size)
         agg_grow(r);
 
     if(!r->size)
         return NULL;
 
-    size_t h = agg_slot(pid, starttime, r->size);
+    size_t h = agg_slot(pid, starttime, boot, r->size);
     while(r->slots[h].used) {
-        if(r->slots[h].pid == pid && r->slots[h].starttime == starttime)
+        if(r->slots[h].pid == pid && r->slots[h].starttime == starttime && r->slots[h].boot == boot)
             return &r->slots[h];
         h = (h + 1) & (r->size - 1);
     }
@@ -342,7 +343,7 @@ static REC_AGG *agg_find(REC_RANGE *r, int32_t pid, uint64_t starttime, bool cre
         return NULL;
 
     REC_AGG *a = &r->slots[h];
-    *a = (REC_AGG){ .pid = pid, .starttime = starttime, .used = true };
+    *a = (REC_AGG){ .pid = pid, .starttime = starttime, .boot = boot, .used = true };
     r->used++;
     return a;
 }
@@ -360,11 +361,13 @@ static void agg_identity(REC_AGG *a, const APPS_REC_STRINGS *strings, int32_t pp
 static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *strings, void *data) {
     REC_RANGE *r = data;
     usec_t t = f->hdr->time_ut;
+    uint64_t boot;
+    memcpy(&boot, f->boot_id, sizeof(boot));
     coverage_add(&r->coverage, f->hdr);
 
     for(uint16_t i = 0; i < f->hdr->starts; i++) {
         APPS_REC_START s = f->starts[i];
-        REC_AGG *a = agg_find(r, s.pid, s.starttime, true);
+        REC_AGG *a = agg_find(r, s.pid, s.starttime, boot, true);
         if(!a->first_ut) a->first_ut = t;
         a->last_ut = MAX(a->last_ut, t);
         a->started = true;
@@ -373,7 +376,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
 
     for(uint16_t i = 0; i < f->hdr->rows; i++) {
         APPS_REC_ROW row = f->rows[i];
-        REC_AGG *a = agg_find(r, row.pid, row.starttime, true);
+        REC_AGG *a = agg_find(r, row.pid, row.starttime, boot, true);
         if(!a->first_ut) a->first_ut = t;
         a->last_ut = MAX(a->last_ut, t);
         a->samples++;
@@ -385,7 +388,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
 
     for(uint16_t i = 0; i < f->hdr->exits; i++) {
         APPS_REC_EXIT e = f->exits[i];
-        REC_AGG *a = agg_find(r, e.pid, e.starttime, false);
+        REC_AGG *a = agg_find(r, e.pid, e.starttime, boot, false);
         if(!a) {
             r->exits_unknown++;
             continue;
@@ -404,7 +407,7 @@ static int cmp_agg_cpu_desc(const void *x, const void *y) {
 }
 
 static const REC_COLUMN range_columns[] = {
-    COL_STR("Key", "Process Identity (pid:starttime)", RRDF_FIELD_OPTS_UNIQUE_KEY | RRDF_FIELD_OPTS_DUMMY),
+    COL_STR("Key", "Process Identity (pid:starttime:boot)", RRDF_FIELD_OPTS_UNIQUE_KEY | RRDF_FIELD_OPTS_DUMMY),
     COL_INT("PID", "Process ID", OPT_STICKY),
     COL_STR("Cmd", "Process Name", OPT_STICKY),
     COL_STR("Exe", "Executable", OPT_VIS),
@@ -449,8 +452,8 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     buffer_json_member_add_array(wb, "data");
     for(size_t i = 0; i < emitted; i++) {
         const REC_AGG *a = sorted[i];
-        char key[64];
-        snprintfz(key, sizeof(key), "%d:%" PRIu64, a->pid, a->starttime);
+        char key[80];
+        snprintfz(key, sizeof(key), "%d:%" PRIu64 ":%016" PRIx64, a->pid, a->starttime, a->boot);
 
         buffer_json_add_array_item_array(wb);
         buffer_json_add_array_item_string(wb, key);
