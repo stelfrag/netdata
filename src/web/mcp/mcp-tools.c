@@ -36,6 +36,7 @@
 #include "mcp-tools-query-metrics.h"
 #include "mcp-tools-weights.h"
 #include "mcp-tools-alert-transitions.h"
+#include "mcp-tools-alert-evidence.h"
 #include "mcp-tools-configured-alerts.h"
 
 // Tool handler function prototypes
@@ -245,6 +246,16 @@ static const MCP_TOOL_DEF mcp_tools[] = {
         .description = "List recent alert state transitions showing how alerts changed over time",
         .execute_callback = mcp_tool_list_alert_transitions_execute,
         .schema_callback = mcp_tool_list_alert_transitions_schema,
+        .read_only_hint = true,
+        .open_world_hint = false
+    },
+    {
+        .name = MCP_TOOL_GET_ALERT_EVIDENCE,
+        .title = "Get alert evidence",
+        .description = "Get the evidence a node kept for one alert transition: processes at the alert and around it, "
+                       "process starts and exits, open connections, host changes, and pointers to logs and correlated metrics",
+        .execute_callback = mcp_tool_get_alert_evidence_execute,
+        .schema_callback = mcp_tool_get_alert_evidence_schema,
         .read_only_hint = true,
         .open_world_hint = false
     },

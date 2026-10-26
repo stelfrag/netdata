@@ -179,6 +179,7 @@ MCP_RETURN_CODE mcp_method_initialize(MCP_CLIENT *mcpc, struct json_object *para
         "- `find_correlated_metrics`: Find metrics that changed significantly during a time period\n"
         "  (compares against 4x previous baseline to score changes)\n"
         "- `list_alert_transitions`: See how alerts changed state during incidents\n"
+        "- `get_alert_evidence`: For one alert transition, the processes, connections and host changes the node kept\n"
         "- `query_metrics`: Get detailed time-series data with per-point anomaly information\n"
         "\n"
         "**For current system state:**\n"

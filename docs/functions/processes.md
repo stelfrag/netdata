@@ -275,3 +275,4 @@ response keeps `has_history: false`: these answers are a separate view, not a ti
 - `containers-vms`: Container and VM-specific process information
 - `network-connections`: Network connections per process
 - `systemd-journal`: Process logs and events
+- [`alert-evidence`](alert-evidence.md): the processes, connections and host changes kept for one alert transition

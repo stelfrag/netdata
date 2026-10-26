@@ -949,6 +949,10 @@ sidebar:
           label: Database Queries
           edit_url: https://github.com/netdata/netdata/edit/master/docs/functions/databases.md
           description: Top and running database queries with deadlock and error attribution for 13 databases.
+      - meta:
+          label: Alert Evidence
+          edit_url: https://github.com/netdata/netdata/edit/master/docs/functions/alert-evidence.md
+          description: The processes, connections and host changes the Agent kept for one alert transition.
   # Alerts & Notifications
   - meta:
       label: Alerts & Notifications

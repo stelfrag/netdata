@@ -66,6 +66,8 @@ skill-verification harness questions for `verify/questions.md`; replace each
 - `currently-firing-alerts-direct.md` (stub -- not yet authored)
 - `alert-config-direct.md` (stub -- not yet authored)
 - `transitions-last-hour-direct.md` (stub -- not yet authored)
+- [get-alert-evidence-direct.md](get-alert-evidence-direct.md): the processes, connections and host changes an
+  Agent kept for one alert transition (`alert-evidence`)
 
 ### Topology / flows
 

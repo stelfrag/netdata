@@ -5,6 +5,7 @@
 #include "daemon-shutdown-watcher.h"
 #include "status-file.h"
 #include "host-changes.h"
+#include "alert-evidence.h"
 #include "static_threads.h"
 #include "web/api/queries/backfill.h"
 #include "web/mcp/mcp.h"
@@ -556,6 +557,7 @@ int netdata_main(int argc, char **argv) {
                             if (rrdhost_system_info_unittest()) return 1;
                             if (build_info_system_info_unittest()) return 1;
                             if (host_changes_unittest()) return 1;
+                            if (alert_evidence_unittest()) return 1;
                             if (ctx_unittest()) return 1;
                             if (query_plan_unittest()) return 1;
                             if (uuid_unittest()) return 1;
@@ -662,6 +664,10 @@ int netdata_main(int argc, char **argv) {
                             int rc = rrdlabels_unittest();
                             rrdlabels_aral_destroy(true);
                             return rc;
+                        }
+                        else if(strcmp(optarg, "alertevidencetest") == 0) {
+                            unittest_running = true;
+                            return alert_evidence_unittest();
                         }
                         else if(strcmp(optarg, "systeminfotest") == 0) {
                             unittest_running = true;

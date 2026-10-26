@@ -19,6 +19,18 @@ void global_functions_add(void) {
 
     nrpc_method_register_builtin(&(struct nrpc_builtin_desc) {
         .owner = rrdhost_nrpc_owner(localhost),
+        .name = FUNCTION_ALERT_EVIDENCE,
+        .help = FUNCTION_ALERT_EVIDENCE_HELP,
+        .tags = "top",
+        .timeout_s = 90,
+        .priority = NRPC_PRIORITY_DEFAULT,
+        .version = NRPC_VERSION_DEFAULT,
+        .access = HTTP_ACCESS_SIGNED_ID | HTTP_ACCESS_SAME_SPACE | HTTP_ACCESS_SENSITIVE_DATA,
+        .handler = function_alert_evidence,
+    });
+
+    nrpc_method_register_builtin(&(struct nrpc_builtin_desc) {
+        .owner = rrdhost_nrpc_owner(localhost),
         .name = "topology:streaming",
         .help = FUNCTION_STREAMING_TOPOLOGY_HELP,
         .tags = "top",

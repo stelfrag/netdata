@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "process-history.h"
+#include "alert-evidence.h"
 
 #define PROCESS_HISTORY_FUNCTION            "__processes-save"
 #define PROCESS_HISTORY_QUEUE_MAX           64
@@ -144,6 +145,9 @@ static void process_history_send(const PROCESS_HISTORY_REQUEST *reqs, size_t n) 
         .result.cb = process_history_result,
         .result.data = c,
     });
+
+    // open connections exist only now; the alert-evidence Function reads them back
+    alert_evidence_capture_connections();
 }
 
 static void process_history_main_cleanup(void *pptr) {
@@ -162,6 +166,7 @@ void process_history_main(void *ptr) {
     worker_register("PROCHIST");
     worker_register_job_name(0, "save request");
 
+    alert_evidence_init();
     __atomic_store_n(&ph.running, true, __ATOMIC_RELEASE);
 
     PROCESS_HISTORY_REQUEST batch[PROCESS_HISTORY_QUEUE_MAX];

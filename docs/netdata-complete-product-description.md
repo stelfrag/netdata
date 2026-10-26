@@ -768,7 +768,7 @@ Netdata applies unsupervised machine learning to every metric it collects, on th
 **[MCP servers](/docs/netdata-ai/mcp/README.md)** (for any AI assistant)
 - **Agent and Parent MCP server:** Streamable HTTP (`/mcp`), SSE (`/sse`) and WebSocket transports; `nd-mcp` bridge for stdio-only clients
 - **Netdata Cloud MCP server:** fleet-wide access through Netdata Cloud (Streamable HTTP, API token with MCP scope)
-- **Tools:** `list_metrics`, `get_metrics_details`, `list_nodes`, `get_nodes_details`, `list_functions`, `execute_function`, `query_metrics`, `find_correlated_metrics`, `find_anomalous_metrics`, `find_unstable_metrics`, `list_raised_alerts`, `list_running_alerts`, `list_alert_transitions`
+- **Tools:** `list_metrics`, `get_metrics_details`, `list_nodes`, `get_nodes_details`, `list_functions`, `execute_function`, `query_metrics`, `find_correlated_metrics`, `find_anomalous_metrics`, `find_unstable_metrics`, `list_raised_alerts`, `list_running_alerts`, `list_alert_transitions`, `get_alert_evidence`
 - Live Functions through MCP: processes, containers, connections, logs, traces, database queries and more
 - [Documented clients](/docs/netdata-ai/mcp/mcp-clients/ai-devops-copilot.md): Claude Desktop, Claude Code, Cursor, VS Code, JetBrains IDEs, OpenAI Codex CLI, Gemini CLI, Crush, OpenCode, and AI DevOps copilots in general
 - Security: MCP API key (Bearer), access-control lists (`allow mcp from`), permissions following the user's Netdata Cloud role; sensitive Functions require the corresponding permission

@@ -42,6 +42,8 @@ set(DAEMON_FILES
         src/daemon/system-info.c
         src/daemon/host-changes.c
         src/daemon/host-changes.h
+        src/daemon/alert-evidence.c
+        src/daemon/alert-evidence.h
         src/daemon/win_system-info.c
         src/daemon/win_system-info.h
         src/daemon/signal-handler.c
@@ -217,6 +219,8 @@ set(API_PLUGIN_FILES
         src/web/api/functions/functions.h
         src/web/api/functions/function-progress.c
         src/web/api/functions/function-progress.h
+        src/web/api/functions/function-alert-evidence.c
+        src/web/api/functions/function-alert-evidence.h
         src/web/api/functions/function-netdata-streaming.c
         src/web/api/functions/function-netdata-streaming.h
         src/web/api/functions/function-topology-streaming.c
@@ -609,6 +613,8 @@ set(WEB_PLUGIN_FILES
         src/web/mcp/mcp-tools-weights.h
         src/web/mcp/mcp-tools-alert-transitions.c
         src/web/mcp/mcp-tools-alert-transitions.h
+        src/web/mcp/mcp-tools-alert-evidence.c
+        src/web/mcp/mcp-tools-alert-evidence.h
         src/web/mcp/mcp-tools-configured-alerts.c
         src/web/mcp/mcp-tools-configured-alerts.h
         src/web/mcp/mcp-params.c

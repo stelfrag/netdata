@@ -372,7 +372,9 @@ their data. When the store reaches its size limit, the oldest data is deleted. A
 mode is `ram`, `alloc` or `none`, or when it runs with the `iot` profile.
 
 **Querying**: the `processes` Function answers for the past with `at:` or `after:`/`before:`. See
-[the processes Function](/docs/functions/processes.md#recorded-past-linux).
+[the processes Function](/docs/functions/processes.md#recorded-past-linux). For one alert, the
+[`alert-evidence`](/docs/functions/alert-evidence.md) Function gathers these processes with the connections and host
+changes the Agent kept.
 
 **Options** (in `command options`):
 
