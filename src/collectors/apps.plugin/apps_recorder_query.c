@@ -17,6 +17,7 @@
 #define APPS_REC_QUERY_RANGE_DEFAULT_S  600
 #define APPS_REC_QUERY_AT_LOOKBACK_S    120
 #define APPS_REC_QUERY_ROWS_MAX         1000
+#define APPS_REC_QUERY_GAPS_LISTED      16
 
 typedef struct {
     usec_t sample_ut;
@@ -108,8 +109,31 @@ static void emit_columns(BUFFER *wb, const REC_COLUMN *cols, size_t n, bool show
     buffer_json_object_close(wb);
 }
 
+// time in a range with no samples (nothing saved, or the agent was not running): exits there are unknown
+typedef struct {
+    usec_t threshold_ut;            // a step between samples longer than this is a gap
+    usec_t prev_ut;                 // the last sample walked
+    usec_t last_gap_from_ut;        // where the latest gap began (the sample before it); 0 without gaps
+    size_t count;
+    usec_t total_ut;
+    struct { usec_t from_ut, to_ut; } listed[APPS_REC_QUERY_GAPS_LISTED];
+} REC_GAPS;
+
+static void gaps_add(REC_GAPS *g, usec_t from_ut, usec_t to_ut) {
+    if(to_ut <= from_ut || to_ut - from_ut <= g->threshold_ut)
+        return;
+
+    if(g->count < APPS_REC_QUERY_GAPS_LISTED) {
+        g->listed[g->count].from_ut = from_ut;
+        g->listed[g->count].to_ut = to_ut;
+    }
+    g->count++;
+    g->total_ut += to_ut - from_ut;
+    g->last_gap_from_ut = from_ut;
+}
+
 static void emit_recorded(BUFFER *wb, const char *mode, usec_t from_ut, usec_t to_ut,
-                          const REC_COVERAGE *c, APPS_REC_SOURCE sources) {
+                          const REC_COVERAGE *c, APPS_REC_SOURCE sources, const REC_GAPS *gaps) {
     buffer_json_member_add_object(wb, "recorded");
     {
         buffer_json_member_add_string(wb, "mode", mode);
@@ -151,6 +175,21 @@ static void emit_recorded(BUFFER *wb, const char *mode, usec_t from_ut, usec_t t
             }
             buffer_json_object_close(wb);
         }
+        if(gaps) {
+            buffer_json_member_add_object(wb, "gaps");
+            buffer_json_member_add_uint64(wb, "count", gaps->count);
+            buffer_json_member_add_double(wb, "seconds", (double)gaps->total_ut / USEC_PER_SEC);
+            buffer_json_member_add_array(wb, "ranges");
+            for(size_t i = 0; i < gaps->count && i < APPS_REC_QUERY_GAPS_LISTED; i++) {
+                buffer_json_add_array_item_object(wb);
+                buffer_json_member_add_uint64(wb, "from_ut", gaps->listed[i].from_ut);
+                buffer_json_member_add_uint64(wb, "to_ut", gaps->listed[i].to_ut);
+                buffer_json_object_close(wb);
+            }
+            buffer_json_array_close(wb);
+            buffer_json_object_close(wb);
+        }
+
         buffer_json_member_add_array(wb, "source");
         if(sources & APPS_REC_SOURCE_DISK) buffer_json_add_array_item_string(wb, "disk");
         if(sources & APPS_REC_SOURCE_RAM) buffer_json_add_array_item_string(wb, "ram");
@@ -291,7 +330,7 @@ static void query_at(const char *transaction, usec_t at_ut, bool show_cmdline) {
     a.coverage.sample_ut = a.hdr.time_ut;
 
     BUFFER *wb = response_begin("The recorded processes table at a moment in the past.");
-    emit_recorded(wb, "at", at_ut, at_ut, &a.coverage, sources);
+    emit_recorded(wb, "at", at_ut, at_ut, &a.coverage, sources, NULL);
 
     buffer_json_member_add_array(wb, "data");
     for(size_t i = 0; i < a.used; i++) {
@@ -353,6 +392,7 @@ typedef struct {
     size_t size;                // power of 2
     size_t used;
     REC_COVERAGE coverage;
+    REC_GAPS gaps;
     size_t exits_unknown;       // exits of processes the range has no identity for
 } REC_RANGE;
 
@@ -418,6 +458,10 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
     memcpy(&boot, f->boot_id, sizeof(boot));
     coverage_add(&r->coverage, f->hdr);
 
+    // the frames arrive in time order
+    gaps_add(&r->gaps, r->gaps.prev_ut, t);
+    r->gaps.prev_ut = MAX(r->gaps.prev_ut, t);
+
     for(uint16_t i = 0; i < f->hdr->starts; i++) {
         APPS_REC_START s = f->starts[i];
         REC_AGG *a = agg_find(r, s.pid, s.starttime, boot, true);
@@ -475,12 +519,17 @@ static const REC_COLUMN range_columns[] = {
     COL_TIME("FirstSeen", "First Seen in the range", OPT_VIS),
     COL_TIME("LastSeen", "Last Seen in the range", OPT_VIS),
     COL_STR("Started", "Started within the range", OPT_VIS),
-    COL_STR("Exited", "Exited within the range", OPT_VIS),
+    COL_STR("Exited", "Exited within the range (unknown: last seen before a time with no samples)", OPT_VIS),
 };
 
 static void query_range(const char *transaction, usec_t after_ut, usec_t before_ut, bool show_cmdline) {
     REC_RANGE r = { 0 };
+    r.gaps.threshold_ut = (usec_t)MAX(3 * update_every, 5) * USEC_PER_SEC;
+    r.gaps.prev_ut = after_ut;      // a gap at the start of the range
     APPS_REC_SOURCE sources = apps_recorder_foreach_frame(after_ut, before_ut, range_frame, &r);
+
+    // a gap at the end of the range, up to now
+    gaps_add(&r.gaps, r.gaps.prev_ut, MIN(before_ut, now_realtime_usec()));
 
     if(!r.coverage.frames) {
         pluginsd_function_json_error_to_stdout(transaction, HTTP_RESP_NOT_FOUND,
@@ -497,7 +546,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     size_t emitted = MIN(n, (size_t)APPS_REC_QUERY_ROWS_MAX);
 
     BUFFER *wb = response_begin("The processes recorded in a past time range.");
-    emit_recorded(wb, "range", after_ut, before_ut, &r.coverage, sources);
+    emit_recorded(wb, "range", after_ut, before_ut, &r.coverage, sources, &r.gaps);
     buffer_json_member_add_uint64(wb, "processes_total", n);
     buffer_json_member_add_uint64(wb, "processes_shown", emitted);
     buffer_json_member_add_uint64(wb, "exits_unidentified", r.exits_unknown);
@@ -524,7 +573,8 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
         buffer_json_add_array_item_uint64(wb, a->first_ut);
         buffer_json_add_array_item_uint64(wb, a->last_ut);
         buffer_json_add_array_item_string(wb, a->started ? "yes" : "no");
-        buffer_json_add_array_item_string(wb, a->exited ? "yes" : "no");
+        // every exit is recorded while sampling; after a gap the process may have exited unseen
+        buffer_json_add_array_item_string(wb, a->exited ? "yes" : (r.gaps.last_gap_from_ut >= a->last_ut ? "unknown" : "no"));
         buffer_json_array_close(wb);
     }
     buffer_json_array_close(wb);

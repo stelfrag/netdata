@@ -5,6 +5,8 @@
 #include "alert-evidence.h"
 
 #define PROCESS_HISTORY_FUNCTION            "__processes-save"
+#define PROCESS_HISTORY_EXIT_BEFORE_S       1800    // all the RAM apps.plugin holds
+#define PROCESS_HISTORY_EXIT_TIMEOUT_S      3
 #define PROCESS_HISTORY_QUEUE_MAX           64
 #define PROCESS_HISTORY_REASON_MAX          128
 #define PROCESS_HISTORY_MIN_INTERVAL_S      10      // requests closer than this are merged into one call
@@ -148,6 +150,34 @@ static void process_history_send(const PROCESS_HISTORY_REQUEST *reqs, size_t n) 
 
     // open connections exist only now; the alert-evidence Function reads them back
     alert_evidence_capture_connections();
+}
+
+void process_history_save_on_exit(void) {
+#if defined(OS_LINUX)
+    if(!process_history_enabled() || !localhost)
+        return;
+
+    char cmd[128];
+    snprintfz(cmd, sizeof(cmd), PROCESS_HISTORY_FUNCTION " at:%lld before:%d after:0 reason:agent-exit seal:yes",
+              (long long)now_realtime_sec(), PROCESS_HISTORY_EXIT_BEFORE_S);
+
+    CLEAN_BUFFER *wb = buffer_create(0, NULL);
+    usec_t started_ut = now_monotonic_usec();
+    int code = nrpc_call(&(struct nrpc_call_spec) {
+        .owner = rrdhost_nrpc_owner(localhost),
+        .result_wb = wb,
+        .cmd = cmd,
+        .source = "process-history",
+        .user_access = HTTP_ACCESS_ALL,
+        .timeout_s = PROCESS_HISTORY_EXIT_TIMEOUT_S,
+        .wait = true,
+        .allow_restricted = true,
+    });
+
+    nd_log(NDLS_DAEMON, code == HTTP_RESP_OK ? NDLP_INFO : NDLP_NOTICE,
+           "PROCESS_HISTORY: keeping the recent process history before exiting: apps.plugin answered %d in %llu ms",
+           code, (unsigned long long)((now_monotonic_usec() - started_ut) / USEC_PER_MS));
+#endif
 }
 
 static void process_history_main_cleanup(void *pptr) {

@@ -523,6 +523,7 @@ void apps_recorder_function_save(const char *transaction, char *function,
     time_t at_s = now_s;
     long long before_s = APPS_RECORDER_SAVE_BEFORE_DEFAULT, after_s = APPS_RECORDER_SAVE_AFTER_DEFAULT;
     const char *reason = "unspecified";
+    bool seal = false;
 
     char *words[PLUGINSD_MAX_WORDS] = { NULL };
     size_t num_words = quoted_strings_splitter_whitespace(function, words, PLUGINSD_MAX_WORDS);
@@ -539,12 +540,14 @@ void apps_recorder_function_save(const char *transaction, char *function,
             ok = (after_s = str2ll(&w[6], NULL)) >= 0 && after_s <= APPS_RECORDER_SAVE_AFTER_MAX;
         else if(strncmp(w, "reason:", 7) == 0)
             reason = &w[7];
+        else if(strcmp(w, "seal:yes") == 0)
+            seal = true;
         else
             ok = false;
 
         if(!ok) {
             netdata_mutex_lock(&apps_and_stdout_mutex);
-            save_error(transaction, HTTP_RESP_BAD_REQUEST, "invalid parameter; use at:, before:, after:, reason:");
+            save_error(transaction, HTTP_RESP_BAD_REQUEST, "invalid parameter; use at:, before:, after:, reason:, seal:yes");
             netdata_mutex_unlock(&apps_and_stdout_mutex);
             return;
         }
@@ -567,6 +570,10 @@ void apps_recorder_function_save(const char *transaction, char *function,
         netdata_mutex_unlock(&apps_and_stdout_mutex);
         return;
     }
+
+    // seal:yes writes the chunk still being recorded now, instead of when it fills (the agent is about to stop us)
+    if(seal && rec.builder.frames)
+        seal_chunk();
 
     usec_t from_ut = (usec_t)MAX(at_s - (time_t)before_s, 0) * USEC_PER_SEC;
     usec_t to_ut = (usec_t)(at_s + (time_t)after_s) * USEC_PER_SEC;

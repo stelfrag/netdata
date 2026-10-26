@@ -366,10 +366,16 @@ after) when:
 - the node's ML anomaly rate stays above 10% for a minute;
 - you run `netdatacli save-process-history [reason]`.
 
+When the Agent stops or restarts, `apps.plugin` also saves what it holds in memory (up to the last 30 minutes, about
+1 MiB), so a restart does not erase the recent past.
+
 Saved windows go to `/var/cache/netdata/apps-recorder/` (the Agent's cache directory) and overlapping windows share
 their data. When the store reaches its size limit, the oldest data is deleted. A saved incident is typically 0.1 to
 0.5 MiB. Nothing is written to disk unless one of the above happens, and the Agent never saves when its database
 mode is `ram`, `alloc` or `none`, or when it runs with the `iot` profile.
+
+Answers for a time range say where nothing was saved (`recorded.gaps`). A process last seen before such a gap shows
+`Exited: unknown`: it may have exited while nothing was kept.
 
 **Querying**: the `processes` Function answers for the past with `at:` or `after:`/`before:`. See
 [the processes Function](/docs/functions/processes.md#recorded-past-linux). For one alert, the

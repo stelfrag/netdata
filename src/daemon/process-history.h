@@ -22,6 +22,10 @@ void process_history_anomaly_rate(double rate);
 
 // the static thread: enabled with a disk-backed database and outside the iot profile
 bool process_history_enabled(void);
+
+// on a normal exit, before the plugins are stopped: apps.plugin writes the last 30 minutes it holds in RAM, so an
+// agent restart does not erase the recent past; waits at most 3 seconds
+void process_history_save_on_exit(void);
 void process_history_main(void *ptr);
 
 #ifdef __cplusplus

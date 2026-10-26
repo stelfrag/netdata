@@ -538,6 +538,11 @@ static void netdata_cleanup_and_exit(EXIT_REASON reason, bool abnormal, bool exi
 }
 
 void netdata_exit_gracefully(EXIT_REASON reason, bool exit_when_done) {
+    // once the exit is set, collection stops and the plugins are gone within milliseconds:
+    // ask apps.plugin to keep its RAM on disk first (the first exit request only)
+    if(!exit_initiated_get())
+        process_history_save_on_exit();
+
     exit_initiated_add(reason);
     FUNCTION_RUN_ONCE();
     netdata_cleanup_and_exit(reason, false, exit_when_done);

@@ -241,7 +241,8 @@ that says how complete it is:
 | `samples`                     | The number of samples used                                                          |
 | `cpu_coverage`                | The share of all-process CPU held by the recorded processes, in percent             |
 | `cpu_coverage_min`            | The lowest coverage of any sample used                                              |
-| `source`                      | `ram` (the last 30 minutes) and/or `disk` (windows the Agent saved around incidents) |
+| `source`                      | `ram` (the last 30 minutes) and/or `disk` (windows the Agent saved around incidents, and the last 30 minutes each time the Agent stopped) |
+| `gaps`                        | `after:`/`before:` only: times in the range with no samples (nothing saved, or the Agent was not running): `count`, `seconds`, and up to 16 `ranges` (`from_ut`, `to_ut`) |
 | `totals`                      | All processes, not only the recorded ones, over the samples used: `processes` (running processes: `min`, `avg`, `max`), `processes_cpu` and `host_cpu` (% of one core: `avg`, `max`; `host_cpu` when known), `processes_rss` (MiB: `avg`, `max`) |
 
 `at:` returns `PID`, `Cmd`, `Exe`, `PPID`, `Category`, `Uid`, `CPU`, `RSS`, `Swap`, `LReads`, `LWrites`, `PReads`,
@@ -249,7 +250,9 @@ that says how complete it is:
 
 `after:`/`before:` returns per process `AvgCPU` (over the whole range, counting 0 while the process was not
 recorded), `PeakCPU`, `PeakRSS`, `Samples`, `FirstSeen`, `LastSeen`, `Started` and `Exited` (within the range), plus
-the identity columns. Rows are sorted by `AvgCPU`; at most 1000 are returned, and `processes_total` /
+the identity columns. `Exited` is `yes` when the exit was recorded, `no` when the samples are continuous from the last
+time the process was seen to the end of the range, and `unknown` when a gap follows that: the process may have exited
+when nothing was being kept. Rows are sorted by `AvgCPU`; at most 1000 are returned, and `processes_total` /
 `processes_shown` say how many there were.
 
 `CmdLine` appears only when command lines are recorded (`with-recorder-cmdline`) and the caller may see them. The
