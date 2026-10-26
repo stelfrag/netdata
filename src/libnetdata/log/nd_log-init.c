@@ -25,6 +25,11 @@ ND_UUID nd_log_get_invocation_id(void) {
     return rc;
 }
 
+// true when this source's events go to the systemd journal with their structured fields (syslog loses them)
+bool nd_log_source_logs_to_journal(ND_LOG_SOURCES source) {
+    return source < _NDLS_MAX && nd_log.sources[source].method == NDLM_JOURNAL;
+}
+
 // --------------------------------------------------------------------------------------------------------------------
 
 static void nd_log_make_stream_unbuffered(FILE *fp, int fd, const char *filename) {

@@ -3,15 +3,19 @@
 #include "function-alert-evidence.h"
 #include "daemon/alert-evidence.h"
 
-// The answer is a JSON document, not a table: one section per kind of evidence, each with a status. The processes
-// come from the apps.plugin flight recorder, the connections from the snapshots taken when the save was triggered,
-// the host changes from the systemd-journal Function; the journal range and the correlated metrics are pointers.
+// With a transition, the answer is a JSON document, not a table: one section per kind of evidence, each with a status.
+// The processes come from the apps.plugin flight recorder, the connections from the snapshots taken when the save was
+// triggered, the host changes from the systemd-journal Function; the journal range and the correlated metrics are
+// pointers. Without a transition (the dashboard lists the Function and calls it bare), the answer is a table of this
+// agent's recent WARNING and CRITICAL transitions, so their ids can be picked from it.
 
 #define AE_HOST_CHANGE_MSGID        "adfd0357c3d6490fb5c7cd9337492f11"
 #define AE_PROCESS_ROWS_MAX         50
 #define AE_CONNECTION_ROWS_MAX      1000
 #define AE_HOST_CHANGES_MAX         100
 #define AE_AT_MAX_AGE_S             60      // processes_at answers with the newest sample before T: older is not evidence
+#define AE_LIST_WINDOW_S            86400   // the transitions table without a transition
+#define AE_LIST_ROWS_MAX            500
 
 // what the inner calls may see: the access this Function requires; command lines stay hidden (no VIEW_AGENT_CONFIG)
 #define AE_INNER_ACCESS (HTTP_ACCESS_SIGNED_ID | HTTP_ACCESS_SAME_SPACE | HTTP_ACCESS_SENSITIVE_DATA)
@@ -347,7 +351,22 @@ static void ae_section_connections(BUFFER *wb, time_t when) {
     buffer_json_object_close(wb);
 }
 
-static void ae_section_host_changes(BUFFER *wb, time_t after, time_t before, const char *source) {
+// The changes found at startup are logged once the agent is running, after the alerts of its first evaluations.
+// `startup_before`, when not 0, extends the window past T to catch them.
+static void ae_section_host_changes(BUFFER *wb, time_t after, time_t before, time_t startup_before, const char *source) {
+    // without the journal the events are in log files, where the systemd-journal Function cannot see them
+    if(!nd_log_source_logs_to_journal(NDLS_DAEMON)) {
+        buffer_json_member_add_object(wb, "host_changes");
+        buffer_json_member_add_string(wb, "status", "unavailable");
+        buffer_json_member_add_string(wb, "message",
+            "this agent does not log to the systemd journal; its host changes are in its daemon log");
+        buffer_json_object_close(wb);
+        return;
+    }
+
+    if(startup_before > before)
+        before = startup_before;
+
     CLEAN_BUFFER *payload = buffer_create(0, NULL);
     buffer_json_initialize(payload, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_MINIFY);
     buffer_json_member_add_time_t(payload, "after", after);
@@ -376,6 +395,7 @@ static void ae_section_host_changes(BUFFER *wb, time_t after, time_t before, con
     buffer_json_member_add_string(wb, "status", !strcmp(status, "not_saved") ? "error" : status);
     buffer_json_member_add_time_t(wb, "after", after);
     buffer_json_member_add_time_t(wb, "before", before);
+    buffer_json_member_add_boolean(wb, "includes_startup", startup_before != 0);
     if(jobj) {
         const char *keys[] = { "timestamp", "ND_HOST_CHANGE", "ND_HOST_CHANGE_OLD", "ND_HOST_CHANGE_NEW", NULL };
         bool truncated;
@@ -385,6 +405,124 @@ static void ae_section_host_changes(BUFFER *wb, time_t after, time_t before, con
     else
         buffer_json_member_add_int64(wb, "code", code);
     buffer_json_object_close(wb);
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// the table of transitions, when no transition is given
+
+struct ae_list {
+    BUFFER *wb;
+    size_t rows;
+};
+
+static void ae_list_cb(struct sql_alert_transition_data *t, void *data) {
+    struct ae_list *list = data;
+    if(list->rows >= AE_LIST_ROWS_MAX ||
+       (t->new_status != RRDCALC_STATUS_WARNING && t->new_status != RRDCALC_STATUS_CRITICAL))
+        return;
+
+    BUFFER *wb = list->wb;
+    buffer_json_add_array_item_array(wb);
+    buffer_json_add_array_item_uuid(wb, t->transition_id);
+    buffer_json_add_array_item_uint64(wb, (uint64_t)t->when_key * USEC_PER_SEC);
+    buffer_json_add_array_item_string(wb, t->alert_name);
+    buffer_json_add_array_item_string(wb, t->chart);
+    buffer_json_add_array_item_string(wb, rrdcalc_status2string(t->new_status));
+    buffer_json_add_array_item_string(wb, rrdcalc_status2string(t->old_status));
+    buffer_json_add_array_item_double(wb, t->new_value);
+    buffer_json_add_array_item_string(wb, t->units);
+    buffer_json_add_array_item_object(wb);
+    buffer_json_member_add_string(wb, "severity", t->new_status == RRDCALC_STATUS_CRITICAL ? "critical" : "warning");
+    buffer_json_object_close(wb);
+    buffer_json_array_close(wb);
+    list->rows++;
+}
+
+static int ae_transitions_table(BUFFER *wb) {
+    buffer_flush(wb);
+    wb->content_type = CT_APPLICATION_JSON;
+    buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
+    buffer_json_member_add_string(wb, "hostname", rrdhost_hostname(localhost));
+    buffer_json_member_add_uint64(wb, "status", HTTP_RESP_OK);
+    buffer_json_member_add_string(wb, "type", "table");
+    buffer_json_member_add_time_t(wb, "update_every", 10);
+    buffer_json_member_add_boolean(wb, "has_history", false);
+    buffer_json_member_add_string(wb, "help", FUNCTION_ALERT_EVIDENCE_HELP);
+
+    buffer_json_member_add_array(wb, "data");
+    {
+        struct ae_list list = { .wb = wb };
+        const time_t now = now_realtime_sec();
+        DICTIONARY *nodes = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
+        dictionary_set(nodes, localhost->machine_guid, NULL, 0);
+        sql_alert_transitions(nodes, now - AE_LIST_WINDOW_S, now, NULL, NULL, NULL, ae_list_cb, &list, false);
+        dictionary_destroy(nodes);
+    }
+    buffer_json_array_close(wb);
+
+    buffer_json_member_add_object(wb, "columns");
+    {
+        size_t field_id = 0;
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Transition", "Transition ID: ask for its evidence with alert-evidence transition:<id>",
+                                    RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_NONE,
+                                    RRDF_FIELD_OPTS_VISIBLE | RRDF_FIELD_OPTS_UNIQUE_KEY, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "When", "Time of the transition",
+                                    RRDF_FIELD_TYPE_TIMESTAMP, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_DATETIME_USEC,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_DESCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_MAX, RRDF_FIELD_FILTER_NONE,
+                                    RRDF_FIELD_OPTS_VISIBLE, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Alert", "Alert name",
+                                    RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                                    RRDF_FIELD_OPTS_VISIBLE | RRDF_FIELD_OPTS_STICKY, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Instance", "Chart the alert runs on",
+                                    RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                                    RRDF_FIELD_OPTS_VISIBLE, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Status", "Status the alert moved to",
+                                    RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                                    RRDF_FIELD_OPTS_VISIBLE, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "From", "Status the alert moved from",
+                                    RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_MULTISELECT,
+                                    RRDF_FIELD_OPTS_VISIBLE, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Value", "Alert value at the transition",
+                                    RRDF_FIELD_TYPE_INTEGER, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NUMBER,
+                                    2, NULL, NAN, RRDF_FIELD_SORT_DESCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_MAX, RRDF_FIELD_FILTER_NONE,
+                                    RRDF_FIELD_OPTS_VISIBLE, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "Units", "Units of the value",
+                                    RRDF_FIELD_TYPE_STRING, RRDF_FIELD_VISUAL_VALUE, RRDF_FIELD_TRANSFORM_NONE,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_ASCENDING, NULL,
+                                    RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_NONE,
+                                    RRDF_FIELD_OPTS_VISIBLE, NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "rowOptions", "rowOptions",
+                                    RRDF_FIELD_TYPE_NONE, RRDR_FIELD_VISUAL_ROW_OPTIONS, RRDF_FIELD_TRANSFORM_NONE,
+                                    0, NULL, NAN, RRDF_FIELD_SORT_FIXED, NULL,
+                                    RRDF_FIELD_SUMMARY_COUNT, RRDF_FIELD_FILTER_NONE,
+                                    RRDF_FIELD_OPTS_DUMMY, NULL);
+    }
+    buffer_json_object_close(wb); // columns
+    buffer_json_member_add_string(wb, "default_sort_column", "When");
+
+    buffer_json_finalize(wb);
+    return HTTP_RESP_OK;
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -400,8 +538,13 @@ int function_alert_evidence(BUFFER *wb, const char *function, BUFFER *payload __
             transition = w + sizeof("transition:") - 1;
     }
 
+    if(!transition) {
+        freez(function_copy);
+        return ae_transitions_table(wb);
+    }
+
     nd_uuid_t transition_uuid;
-    if(!transition || !*transition || uuid_parse(transition, transition_uuid) != 0) {
+    if(!*transition || uuid_parse(transition, transition_uuid) != 0) {
         freez(function_copy);
         return ae_error(wb, HTTP_RESP_BAD_REQUEST, "give the transition as transition:<transition id>");
     }
@@ -474,7 +617,10 @@ int function_alert_evidence(BUFFER *wb, const char *function, BUFFER *payload __
 
         ae_section_connections(wb, T);
 
-        ae_section_host_changes(wb, T - ALERT_EVIDENCE_HOST_CHANGES_BEFORE_S, T, call_source);
+        // an alert leaving UNINITIALIZED is a first evaluation, usually right after the agent started
+        const time_t startup_before =
+            (tr.old_status == RRDCALC_STATUS_UNINITIALIZED) ? T + ALERT_EVIDENCE_HOST_CHANGES_STARTUP_S : 0;
+        ae_section_host_changes(wb, T - ALERT_EVIDENCE_HOST_CHANGES_BEFORE_S, T, startup_before, call_source);
 
         buffer_json_member_add_object(wb, "journal");
         {

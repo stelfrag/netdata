@@ -3,7 +3,7 @@
 ## Quick Info
 
 - **Provided by**: the Netdata Agent itself
-- **Type**: JSON document (not a table)
+- **Type**: JSON document for one transition; a table of recent transitions when called without one
 - **Availability**: every Agent; the process and connection evidence needs Linux and a disk-based database (`dbengine`)
 - **Required Access**: signed-in users of the same space, with access to sensitive data
 - **MCP tool**: `get_alert_evidence`
@@ -19,7 +19,7 @@ answers, for one alert transition, with everything the Agent kept for that momen
 | `processes_at`       | the processes at the moment of the alert, busiest first                                         | the [recorded past](processes.md#recorded-past-linux) of `processes`         |
 | `processes_window`   | the processes from 10 minutes before to 2 minutes after, with how many started and exited       | the same                                                                     |
 | `connections`        | the open connections captured when the alert fired                                              | `network-connections`, captured by the Agent at the time                     |
-| `host_changes`       | host changes in the 24 hours before the alert (reboot, kernel, OS, Netdata version, CPUs, RAM…) | [host change events](/src/libnetdata/log/README.md#host-change-events)       |
+| `host_changes`       | host changes in the 24 hours before the alert (reboot, kernel, OS, Netdata version, CPUs, RAM…) | [host change events](/src/libnetdata/log/README.md#host-change-events) in the systemd journal |
 | `journal`            | the time range to read in the logs                                                              | a pointer for the `systemd-journal` Function                                 |
 | `correlated_metrics` | the metrics that changed most in the 10 minutes before the alert, against the 40 minutes before | a pointer for `/api/v2/weights` or the MCP tool `find_correlated_metrics`    |
 
@@ -40,8 +40,10 @@ answers, for one alert transition, with everything the Agent kept for that momen
 alert-evidence transition:<transition id>
 ```
 
-Get the transition id from the alert transitions (for example the MCP tool `list_alert_transitions`, or
-`/api/v2/alert_transitions`).
+Called without a transition, for example from the Functions tab of the dashboard, `alert-evidence` answers with a table
+of this Agent's WARNING and CRITICAL transitions of the last 24 hours (at most 500, newest first): transition id, time,
+alert, instance, new and previous status, value. Take the id from there, or from the alert transitions (the MCP tool
+`list_alert_transitions`, or `/api/v2/alert_transitions`).
 
 ## Answer
 
@@ -54,7 +56,7 @@ Get the transition id from the alert transitions (for example the MCP tool `list
     "processes_at":       { "status": "ok", "recorded": { "...": "..." }, "rows": [ { "Cmd": "...", "CPU": 99.9, "...": "..." } ] },
     "processes_window":   { "status": "ok", "rows": [ "..." ], "started": 3, "exited": 2 },
     "connections":        { "status": "ok", "captured": 1793020005, "rows": [ "..." ], "total": 120 },
-    "host_changes":       { "status": "ok", "events": [ { "ND_HOST_CHANGE": "kernel", "...": "..." } ] },
+    "host_changes":       { "status": "ok", "includes_startup": false, "events": [ { "ND_HOST_CHANGE": "kernel", "...": "..." } ] },
     "journal":            { "status": "pointer", "function": "systemd-journal", "after": 1793019400, "before": 1793020120 },
     "correlated_metrics": { "status": "pointer", "api": "/api/v2/weights", "method": "ks2", "...": "..." }
   }
@@ -78,6 +80,11 @@ Process rows show at most 50 processes and connection rows at most 1000; `total`
 were. `started` and `exited` are counted over the busiest 1000 processes of the window; `counts_partial` is true when
 there were more. `processes_at` is `ok` only when the recorder has a sample from the minute before the alert. Command
 lines are never included.
+
+`host_changes` reads the systemd journal. It is `unavailable` when the Agent logs to files instead; the changes are
+then in its daemon log. The changes the Agent finds at startup are logged once it is running, which can be after the
+first alerts it evaluates: for an alert leaving `UNINITIALIZED`, the window also covers the 2 minutes after the alert,
+and `includes_startup` is true.
 
 ## Configuration
 

@@ -21,13 +21,13 @@ connections were open, and did the host change before it?
    agents_load_env
    ```
 
-2. Find the transition id of the alert (the last day, WARNING and CRITICAL raises):
+2. Find the transition id of the alert. Called without a transition, the Function lists this Agent's WARNING and
+   CRITICAL transitions of the last day:
 
    ```bash
    agents_query_agent --node "$NODE_UUID" --host "$AGENT_HOST" --machine-guid "$MACHINE_GUID" \
-       GET '/api/v2/alert_transitions?after=-86400&before=0&last=50' \
-     | jq -r '.transitions[] | select(.new.status == "WARNING" or .new.status == "CRITICAL")
-              | [.transition_id, .when, .alert, .instance, .new.status] | @tsv'
+       GET '/api/v3/function?function=alert-evidence' \
+     | jq -r '.data[] | [.[0], (.[1] / 1000000 | todate), .[2], .[3], .[4]] | @tsv'
    ```
 
 3. Ask for the evidence of one transition:
@@ -35,7 +35,7 @@ connections were open, and did the host change before it?
    ```bash
    TRANSITION_ID=<from step 2>
    agents_query_agent --node "$NODE_UUID" --host "$AGENT_HOST" --machine-guid "$MACHINE_GUID" \
-       POST "/api/v3/function?function=alert-evidence%20transition:${TRANSITION_ID}" \
+       GET "/api/v3/function?function=alert-evidence%20transition:${TRANSITION_ID}" \
      > "$REPO_ROOT/.local/audits/query-netdata-agents/alert-evidence.json"
    ```
 
@@ -63,6 +63,8 @@ connections were open, and did the host change before it?
 
 ## Notes / gotchas
 
+- Use GET: the Agent closes a POST that has no body and no `Content-Length` without answering.
+- `host_changes` is `unavailable` when the Agent logs to files instead of the systemd journal.
 - Check each section's `status` before its data: `not_saved` (nothing recorded near the alert), `not_captured` or
   `expired` (connections), `unavailable` (the source does not run on this node), `disabled`, `other_node`.
 - Ask the Agent that evaluated the alert. A parent's own transitions for a child answer `other_node`: query the child.
