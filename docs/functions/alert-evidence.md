@@ -3,7 +3,7 @@
 ## Quick Info
 
 - **Provided by**: the Netdata Agent itself
-- **Type**: JSON document for one transition; a table of recent transitions when called without one
+- **Type**: JSON document for one transition; tables (recent alerts, processes around one alert) in the dashboard
 - **Availability**: every Agent; the process and connection evidence needs Linux and a disk-based database (`dbengine`)
 - **Required Access**: signed-in users of the same space, with access to sensitive data
 - **MCP tool**: `get_alert_evidence`
@@ -40,10 +40,20 @@ answers, for one alert transition, with everything the Agent kept for that momen
 alert-evidence transition:<transition id>
 ```
 
-Called without a transition, for example from the Functions tab of the dashboard, `alert-evidence` answers with a table
-of this Agent's WARNING and CRITICAL transitions of the last 24 hours (at most 500, newest first): transition id, time,
-alert, instance, new and previous status, value. Take the id from there, or from the alert transitions (the MCP tool
-`list_alert_transitions`, or `/api/v2/alert_transitions`).
+Get the transition id from the alert transitions (the MCP tool `list_alert_transitions`, or
+`/api/v2/alert_transitions`), or from the dashboard view below.
+
+### In the dashboard
+
+Open **Alert Evidence** in the Functions tab. It has an **Alert** picker:
+
+- **Recent alerts** (the default) lists this Agent's WARNING and CRITICAL transitions of the last 24 hours (at most
+  500, newest first): transition id, time, alert, instance, new and previous status, value.
+- Pick one of the last 100 alerts to see the processes from 10 minutes before to 2 minutes after it: average and peak
+  CPU, peak memory, first and last seen, and whether each process started or exited in that time. Command lines are not
+  shown.
+
+The same views answer `alert-evidence` (or `alert-evidence alert:all`) and `alert-evidence alert:<transition id>`.
 
 ## Answer
 

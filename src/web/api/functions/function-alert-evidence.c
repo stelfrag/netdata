@@ -6,8 +6,9 @@
 // With a transition, the answer is a JSON document, not a table: one section per kind of evidence, each with a status.
 // The processes come from the apps.plugin flight recorder, the connections from the snapshots taken when the save was
 // triggered, the host changes from the systemd-journal Function; the journal range and the correlated metrics are
-// pointers. Without a transition (the dashboard lists the Function and calls it bare), the answer is a table of this
-// agent's recent WARNING and CRITICAL transitions, so their ids can be picked from it.
+// pointers. Without a transition (the dashboard lists the Function and calls it bare), the answer is a table with an
+// alert picker: by default this agent's recent WARNING and CRITICAL transitions, or for one picked alert the processes
+// around it.
 
 #define AE_HOST_CHANGE_MSGID        "adfd0357c3d6490fb5c7cd9337492f11"
 #define AE_PROCESS_ROWS_MAX         50
@@ -16,6 +17,7 @@
 #define AE_AT_MAX_AGE_S             60      // processes_at answers with the newest sample before T: older is not evidence
 #define AE_LIST_WINDOW_S            86400   // the transitions table without a transition
 #define AE_LIST_ROWS_MAX            500
+#define AE_PICKER_OPTIONS_MAX       100     // alerts offered in the dashboard's picker
 
 // what the inner calls may see: the access this Function requires; command lines stay hidden (no VIEW_AGENT_CONFIG)
 #define AE_INNER_ACCESS (HTTP_ACCESS_SIGNED_ID | HTTP_ACCESS_SAME_SPACE | HTTP_ACCESS_SENSITIVE_DATA)
@@ -79,6 +81,7 @@ static int ae_error(BUFFER *wb, int status, const char *error) {
     buffer_json_member_add_string(wb, "type", "alert-evidence");
     buffer_json_member_add_string(wb, "help", FUNCTION_ALERT_EVIDENCE_HELP);
     buffer_json_member_add_string(wb, "error", error);
+    buffer_json_member_add_string(wb, "errorMessage", error); // what the dashboard shows
     buffer_json_finalize(wb);
     return status;
 }
@@ -408,37 +411,62 @@ static void ae_section_host_changes(BUFFER *wb, time_t after, time_t before, tim
 }
 
 // --------------------------------------------------------------------------------------------------------------------
-// the table of transitions, when no transition is given
+// the dashboard view: a picker of this agent's recent alerts; `all` lists them, one alert shows the processes around it
+
+struct ae_list_row {
+    nd_uuid_t id;
+    time_t when;
+    char *alert;
+    char *chart;
+    char *units;
+    int new_status;
+    int old_status;
+    NETDATA_DOUBLE value;
+};
 
 struct ae_list {
-    BUFFER *wb;
-    size_t rows;
+    struct ae_list_row *rows;
+    size_t used;
 };
 
 static void ae_list_cb(struct sql_alert_transition_data *t, void *data) {
     struct ae_list *list = data;
-    if(list->rows >= AE_LIST_ROWS_MAX ||
+    if(list->used >= AE_LIST_ROWS_MAX ||
        (t->new_status != RRDCALC_STATUS_WARNING && t->new_status != RRDCALC_STATUS_CRITICAL))
         return;
 
-    BUFFER *wb = list->wb;
-    buffer_json_add_array_item_array(wb);
-    buffer_json_add_array_item_uuid(wb, t->transition_id);
-    buffer_json_add_array_item_uint64(wb, (uint64_t)t->when_key * USEC_PER_SEC);
-    buffer_json_add_array_item_string(wb, t->alert_name);
-    buffer_json_add_array_item_string(wb, t->chart);
-    buffer_json_add_array_item_string(wb, rrdcalc_status2string(t->new_status));
-    buffer_json_add_array_item_string(wb, rrdcalc_status2string(t->old_status));
-    buffer_json_add_array_item_double(wb, t->new_value);
-    buffer_json_add_array_item_string(wb, t->units);
-    buffer_json_add_array_item_object(wb);
-    buffer_json_member_add_string(wb, "severity", t->new_status == RRDCALC_STATUS_CRITICAL ? "critical" : "warning");
-    buffer_json_object_close(wb);
-    buffer_json_array_close(wb);
-    list->rows++;
+    struct ae_list_row *r = &list->rows[list->used++];
+    uuid_copy(r->id, *t->transition_id);
+    r->when = t->when_key;
+    r->alert = strdupz(t->alert_name ? t->alert_name : "");
+    r->chart = strdupz(t->chart ? t->chart : "");
+    r->units = strdupz(t->units ? t->units : "");
+    r->new_status = t->new_status;
+    r->old_status = t->old_status;
+    r->value = t->new_value;
 }
 
-static int ae_transitions_table(BUFFER *wb) {
+static void ae_list_load(struct ae_list *list) {
+    list->rows = callocz(AE_LIST_ROWS_MAX, sizeof(*list->rows));
+    list->used = 0;
+
+    const time_t now = now_realtime_sec();
+    DICTIONARY *nodes = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
+    dictionary_set(nodes, localhost->machine_guid, NULL, 0);
+    sql_alert_transitions(nodes, now - AE_LIST_WINDOW_S, now, NULL, NULL, NULL, ae_list_cb, list, false);
+    dictionary_destroy(nodes);
+}
+
+static void ae_list_free(struct ae_list *list) {
+    for(size_t i = 0; i < list->used; i++) {
+        freez(list->rows[i].alert);
+        freez(list->rows[i].chart);
+        freez(list->rows[i].units);
+    }
+    freez(list->rows);
+}
+
+static void ae_table_preamble(BUFFER *wb, const char *help) {
     buffer_flush(wb);
     wb->content_type = CT_APPLICATION_JSON;
     buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
@@ -447,16 +475,68 @@ static int ae_transitions_table(BUFFER *wb) {
     buffer_json_member_add_string(wb, "type", "table");
     buffer_json_member_add_time_t(wb, "update_every", 10);
     buffer_json_member_add_boolean(wb, "has_history", false);
-    buffer_json_member_add_string(wb, "help", FUNCTION_ALERT_EVIDENCE_HELP);
+    buffer_json_member_add_string(wb, "help", help);
+}
 
-    buffer_json_member_add_array(wb, "data");
+// the alert picker; the dashboard sends the choice back as `alert:<id>`
+static void ae_picker_params(BUFFER *wb, struct ae_list *list) {
+    buffer_json_member_add_array(wb, "accepted_params");
+    buffer_json_add_array_item_string(wb, "alert");
+    buffer_json_array_close(wb);
+
+    buffer_json_member_add_array(wb, "required_params");
+    buffer_json_add_array_item_object(wb);
     {
-        struct ae_list list = { .wb = wb };
-        const time_t now = now_realtime_sec();
-        DICTIONARY *nodes = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
-        dictionary_set(nodes, localhost->machine_guid, NULL, 0);
-        sql_alert_transitions(nodes, now - AE_LIST_WINDOW_S, now, NULL, NULL, NULL, ae_list_cb, &list, false);
-        dictionary_destroy(nodes);
+        buffer_json_member_add_string(wb, "id", "alert");
+        buffer_json_member_add_string(wb, "name", "Alert");
+        buffer_json_member_add_string(wb, "help", "Pick an alert to see the processes around it");
+        buffer_json_member_add_boolean(wb, "unique_view", true);
+        buffer_json_member_add_string(wb, "type", "select");
+        buffer_json_member_add_array(wb, "options");
+        {
+            buffer_json_add_array_item_object(wb);
+            buffer_json_member_add_string(wb, "id", "all");
+            buffer_json_member_add_string(wb, "name", "Recent alerts");
+            buffer_json_object_close(wb);
+
+            for(size_t i = 0; i < list->used && i < AE_PICKER_OPTIONS_MAX; i++) {
+                struct ae_list_row *r = &list->rows[i];
+                char id[UUID_STR_LEN], when[32], name[512];
+                uuid_unparse_lower(r->id, id);
+                struct tm tm;
+                strftime(when, sizeof(when), "%m-%d %H:%M:%S", localtime_r(&r->when, &tm));
+                snprintfz(name, sizeof(name), "%s %s %s on %s (%.2f %s)", when, rrdcalc_status2string(r->new_status),
+                          r->alert, r->chart, (double)r->value, r->units);
+
+                buffer_json_add_array_item_object(wb);
+                buffer_json_member_add_string(wb, "id", id);
+                buffer_json_member_add_string(wb, "name", name);
+                buffer_json_object_close(wb);
+            }
+        }
+        buffer_json_array_close(wb);
+    }
+    buffer_json_object_close(wb);
+    buffer_json_array_close(wb);
+}
+
+static void ae_list_table(BUFFER *wb, struct ae_list *list) {
+    buffer_json_member_add_array(wb, "data");
+    for(size_t i = 0; i < list->used; i++) {
+        struct ae_list_row *r = &list->rows[i];
+        buffer_json_add_array_item_array(wb);
+        buffer_json_add_array_item_uuid(wb, &r->id);
+        buffer_json_add_array_item_uint64(wb, (uint64_t)r->when * USEC_PER_SEC);
+        buffer_json_add_array_item_string(wb, r->alert);
+        buffer_json_add_array_item_string(wb, r->chart);
+        buffer_json_add_array_item_string(wb, rrdcalc_status2string(r->new_status));
+        buffer_json_add_array_item_string(wb, rrdcalc_status2string(r->old_status));
+        buffer_json_add_array_item_double(wb, r->value);
+        buffer_json_add_array_item_string(wb, r->units);
+        buffer_json_add_array_item_object(wb);
+        buffer_json_member_add_string(wb, "severity", r->new_status == RRDCALC_STATUS_CRITICAL ? "critical" : "warning");
+        buffer_json_object_close(wb);
+        buffer_json_array_close(wb);
     }
     buffer_json_array_close(wb);
 
@@ -520,9 +600,144 @@ static int ae_transitions_table(BUFFER *wb) {
     }
     buffer_json_object_close(wb); // columns
     buffer_json_member_add_string(wb, "default_sort_column", "When");
+}
 
+// a table answer of another Function, copied without one column (the indexes renumbered)
+static void ae_table_passthrough(BUFFER *wb, struct json_object *answer, const char *drop) {
+    struct json_object *columns = NULL, *data = NULL;
+    if(!json_object_object_get_ex(answer, "columns", &columns) || !json_object_is_type(columns, json_type_object))
+        columns = NULL;
+    if(!json_object_object_get_ex(answer, "data", &data) || !json_object_is_type(data, json_type_array))
+        data = NULL;
+
+    size_t ncols = 0;
+    if(columns) {
+        json_object_object_foreach(columns, cname, cdef) {
+            (void)cname; (void)cdef;
+            ncols++;
+        }
+    }
+    int64_t *from = callocz(ncols ? ncols : 1, sizeof(*from));
+
+    size_t used = 0;
+    buffer_json_member_add_object(wb, "columns");
+    if(columns) {
+        json_object_object_foreach(columns, name, def) {
+            struct json_object *idx;
+            if(!json_object_is_type(def, json_type_object) || !json_object_object_get_ex(def, "index", &idx) ||
+               (drop && !strcmp(name, drop)))
+                continue;
+
+            from[used] = json_object_get_int64(idx);
+            buffer_json_member_add_object(wb, name);
+            json_object_object_foreach(def, k, v) {
+                if(!strcmp(k, "index"))
+                    buffer_json_member_add_uint64(wb, "index", used);
+                else
+                    ae_json_value(wb, k, v);
+            }
+            buffer_json_object_close(wb);
+            used++;
+        }
+    }
+    buffer_json_object_close(wb);
+
+    buffer_json_member_add_array(wb, "data");
+    for(size_t r = 0; data && r < json_object_array_length(data); r++) {
+        struct json_object *row = json_object_array_get_idx(data, r);
+        if(!json_object_is_type(row, json_type_array))
+            continue;
+
+        buffer_json_add_array_item_array(wb);
+        for(size_t c = 0; c < used; c++)
+            ae_json_value(wb, NULL, json_object_array_get_idx(row, from[c]));
+        buffer_json_array_close(wb);
+    }
+    buffer_json_array_close(wb);
+
+    freez(from);
+}
+
+static int ae_processes_view(BUFFER *wb, struct ae_list *list, const struct ae_transition *tr, const char *source) {
+    const time_t T = tr->when;
+    char cmd[128];
+    snprintfz(cmd, sizeof(cmd), "processes after:%lld before:%lld",
+              (long long)(T - ALERT_EVIDENCE_PROCESSES_BEFORE_S), (long long)(T + ALERT_EVIDENCE_PROCESSES_AFTER_S));
+
+    struct json_object *jobj = NULL, *recorded = NULL;
+    bool available;
+    int code = ae_call(cmd, NULL, 20, source, &jobj, &available);
+
+    // an answer without `recorded` is the live table, not the past
+    if(jobj && !json_object_object_get_ex(jobj, "recorded", &recorded)) {
+        json_object_put(jobj);
+        return ae_error(wb, HTTP_RESP_SERVICE_UNAVAILABLE, "this agent has no process flight recorder");
+    }
+    if(!jobj) {
+        if(!available || code == HTTP_RESP_SERVICE_UNAVAILABLE)
+            return ae_error(wb, HTTP_RESP_SERVICE_UNAVAILABLE, "this agent has no process flight recorder");
+        if(code == HTTP_RESP_NOT_FOUND)
+            return ae_error(wb, HTTP_RESP_NOT_FOUND, "no process history was saved around this alert");
+        if(code == HTTP_RESP_OK)
+            return ae_error(wb, HTTP_RESP_INTERNAL_SERVER_ERROR, "the processes Function answered with invalid JSON");
+        return ae_error(wb, code, "the processes Function answered with an error");
+    }
+
+    char when[32], help[512];
+    struct tm tm;
+    strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", localtime_r(&T, &tm));
+    snprintfz(help, sizeof(help),
+              "Processes from 10 minutes before to 2 minutes after %s went %s on %s at %s: average and peak CPU, "
+              "peak memory, and whether each started or exited in that time.",
+              tr->alert, rrdcalc_status2string(tr->new_status), tr->chart, when);
+
+    ae_table_preamble(wb, help);
+    ae_picker_params(wb, list);
+    // decision 3: command lines need VIEW_AGENT_CONFIG; apps.plugin options can lift that for `processes`, not here
+    ae_table_passthrough(wb, jobj, "CmdLine");
+    buffer_json_member_add_string(wb, "default_sort_column", "AvgCPU");
     buffer_json_finalize(wb);
+
+    json_object_put(jobj);
     return HTTP_RESP_OK;
+}
+
+static void ae_transition_lookup(const char *transition, struct ae_transition *tr) {
+    DICTIONARY *nodes = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
+    sql_alert_transitions(nodes, 0, 0, NULL, NULL, transition, ae_transition_cb, tr, false);
+    dictionary_destroy(nodes);
+}
+
+// no transition: the alert picker; `info` (the dashboard asking for the parameters), `alert:all` or nothing lists the
+// recent alerts, `alert:<id>` shows the processes around that one
+static int ae_dashboard_view(BUFFER *wb, const char *alert, bool info, const char *source) {
+    struct ae_list list;
+    ae_list_load(&list);
+
+    int code = HTTP_RESP_OK;
+    nd_uuid_t alert_uuid;
+    if(!info && alert && strcmp(alert, "all") != 0) {
+        struct ae_transition tr = { 0 };
+        if(uuid_parse(alert, alert_uuid) == 0)
+            ae_transition_lookup(alert, &tr);
+
+        if(!tr.found || uuid_compare(tr.host_id, localhost->host_id.uuid) != 0)
+            code = ae_error(wb, HTTP_RESP_NOT_FOUND, "this agent has no alert of its own with this id");
+        else
+            code = ae_processes_view(wb, &list, &tr, source);
+
+        ae_transition_free(&tr);
+    }
+    else {
+        ae_table_preamble(wb, FUNCTION_ALERT_EVIDENCE_HELP);
+        ae_picker_params(wb, &list);
+        if(!info)
+            ae_list_table(wb, &list);
+        buffer_json_finalize(wb);
+    }
+
+    ae_list_free(&list);
+    return code;
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -531,16 +746,27 @@ int function_alert_evidence(BUFFER *wb, const char *function, BUFFER *payload __
     char *function_copy = strdupz(function ? function : "");
     char *words[64];
     size_t num_words = quoted_strings_splitter_whitespace(function_copy, words, _countof(words));
-    const char *transition = NULL;
+    const char *transition = NULL, *alert = NULL;
+    bool info = false;
     for(size_t i = 1; i < num_words; i++) {
         const char *w = get_word(words, num_words, i);
-        if(w && !strncmp(w, "transition:", sizeof("transition:") - 1))
+        if(!w)
+            continue;
+        if(!strncmp(w, "transition:", sizeof("transition:") - 1))
             transition = w + sizeof("transition:") - 1;
+        else if(!strncmp(w, "alert:", sizeof("alert:") - 1))
+            alert = w + sizeof("alert:") - 1;
+        else if(!strcmp(w, "info"))
+            info = true;
     }
 
+    char call_source[256];
+    snprintfz(call_source, sizeof(call_source), "%s,alert-evidence", source ? source : "");
+
     if(!transition) {
+        int code = ae_dashboard_view(wb, alert, info, call_source);
         freez(function_copy);
-        return ae_transitions_table(wb);
+        return code;
     }
 
     nd_uuid_t transition_uuid;
@@ -550,17 +776,12 @@ int function_alert_evidence(BUFFER *wb, const char *function, BUFFER *payload __
     }
 
     struct ae_transition tr = { 0 };
-    DICTIONARY *nodes = dictionary_create(DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE);
-    sql_alert_transitions(nodes, 0, 0, NULL, NULL, transition, ae_transition_cb, &tr, false);
-    dictionary_destroy(nodes);
+    ae_transition_lookup(transition, &tr);
 
     if(!tr.found) {
         freez(function_copy);
         return ae_error(wb, HTTP_RESP_NOT_FOUND, "this agent has no alert transition with this id");
     }
-
-    char call_source[256];
-    snprintfz(call_source, sizeof(call_source), "%s,alert-evidence", source ? source : "");
 
     const time_t T = tr.when;
     char host_guid[UUID_STR_LEN];
