@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../apps_recorder_format.h"
+#include "../apps_recorder_store.h"
 
 static const uint8_t boot_id[16] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
 
@@ -371,12 +372,142 @@ static bool test_limits(void) {
     return ok;
 }
 
+// a sealed chunk of `frames` empty frames starting at first_ut
+static APPS_REC_CHUNK_HDR *test_chunk(uint64_t first_ut, size_t frames, size_t *size) {
+    APPS_REC_BUILDER b;
+    apps_rec_builder_init(&b);
+    for(size_t i = 0; i < frames; i++) {
+        APPS_REC_FRAME_HDR h = { .time_ut = first_ut + i * USEC_PER_SEC, .pids = (uint32_t)i };
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0);
+    }
+    APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, boot_id, size);
+    apps_rec_builder_destroy(&b);
+    return hdr;
+}
+
+static bool write_file(const char *dir, const char *name, const void *data, size_t len) {
+    char path[FILENAME_MAX + 1];
+    snprintfz(path, sizeof(path), "%s/%s", dir, name);
+    FILE *fp = fopen(path, "w");
+    if(!fp) return false;
+    bool ok = fwrite(data, 1, len, fp) == len;
+    return fclose(fp) == 0 && ok;
+}
+
+static bool test_store(void) {
+    char dir[] = "/tmp/apps-recorder-store-test-XXXXXX";
+    if(!mkdtemp(dir)) {
+        fprintf(stderr, "store: cannot create a temporary directory\n");
+        return false;
+    }
+
+    bool ok = true;
+    size_t size;
+    APPS_REC_CHUNK_HDR *c[4];
+    size_t sizes[4];
+    for(size_t i = 0; i < 4; i++)
+        c[i] = test_chunk(1000000000ULL * (i + 1), 60, &sizes[i]);
+
+    // the cap fits three chunks
+    uint64_t cap = sizes[0] + sizes[1] + sizes[2];
+
+    APPS_REC_STORE st;
+    if(!apps_rec_store_open(&st, dir, cap)) {
+        fprintf(stderr, "store: open failed\n");
+        return false;
+    }
+
+    for(size_t i = 0; i < 4; i++) {
+        if(!apps_rec_store_write(&st, c[i], sizes[i])) {
+            fprintf(stderr, "store: write %zu failed\n", i);
+            ok = false;
+        }
+    }
+
+    // the oldest was evicted
+    if(st.used != 3 || apps_rec_store_has(&st, c[0]->first_ut) || !apps_rec_store_has(&st, c[3]->first_ut) ||
+        st.bytes > cap) {
+        fprintf(stderr, "store: eviction kept %zu chunks, %" PRIu64 " bytes\n", st.used, st.bytes);
+        ok = false;
+    }
+
+    APPS_REC_CHUNK_HDR *back = apps_rec_store_read(&st, c[2]->first_ut, &size);
+    if(!back || size != sizes[2] || memcmp(back, c[2], size) != 0) {
+        fprintf(stderr, "store: read back differs\n");
+        ok = false;
+    }
+    freez(back);
+    apps_rec_store_close(&st);
+
+    // leftovers: an interrupted write, a truncated chunk, and an unrelated file
+    write_file(dir, "00000000000000000001.ndpr.tmp", c[0], sizes[0]);
+    char name[64];
+    snprintfz(name, sizeof(name), "%020" PRIu64 ".ndpr", c[0]->first_ut);
+    write_file(dir, name, c[0], sizes[0] - 1);
+    write_file(dir, "notes.txt", "x", 1);
+
+    if(!apps_rec_store_open(&st, dir, cap) || st.used != 3 || apps_rec_store_has(&st, c[0]->first_ut)) {
+        fprintf(stderr, "store: reopen indexed %zu chunks\n", st.used);
+        ok = false;
+    }
+
+    char path[FILENAME_MAX + 1];
+    snprintfz(path, sizeof(path), "%s/00000000000000000001.ndpr.tmp", dir);
+    if(access(path, F_OK) == 0) {
+        fprintf(stderr, "store: leftover temporary file was not removed\n");
+        ok = false;
+    }
+    snprintfz(path, sizeof(path), "%s/%s", dir, name);
+    if(access(path, F_OK) == 0) {
+        fprintf(stderr, "store: truncated chunk was not removed\n");
+        ok = false;
+    }
+
+    // a chunk corrupted after indexing is dropped on read
+    snprintfz(path, sizeof(path), "%s/%020" PRIu64 ".ndpr", dir, c[1]->first_ut);
+    FILE *fp = fopen(path, "r+");
+    if(fp) {
+        fseek(fp, (long)sizes[1] - 1, SEEK_SET);
+        fputc(~((uint8_t *)c[1])[sizes[1] - 1], fp);
+        fclose(fp);
+    }
+    if(apps_rec_store_read(&st, c[1]->first_ut, &size) || apps_rec_store_has(&st, c[1]->first_ut) ||
+        access(path, F_OK) == 0) {
+        fprintf(stderr, "store: corrupted chunk was not dropped\n");
+        ok = false;
+    }
+
+    apps_rec_store_close(&st);
+
+    // a zero cap disables the store
+    if(apps_rec_store_open(&st, dir, 0)) {
+        fprintf(stderr, "store: opened with a zero cap\n");
+        ok = false;
+    }
+
+    // cleanup
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    while(d && (de = readdir(d))) {
+        if(de->d_name[0] == '.') continue;
+        snprintfz(path, sizeof(path), "%s/%s", dir, de->d_name);
+        unlink(path);
+    }
+    if(d) closedir(d);
+    rmdir(dir);
+
+    for(size_t i = 0; i < 4; i++)
+        freez(c[i]);
+    return ok;
+}
+
 int main(void) {
     bool ok = true;
     ok &= test_round_trip();
     ok &= test_corruption();
     ok &= test_bounds();
     ok &= test_limits();
+    ok &= test_store();
 
     fprintf(stderr, "%s\n", ok ? "apps-recorder-format-test: OK" : "apps-recorder-format-test: FAILED");
     return ok ? 0 : 1;

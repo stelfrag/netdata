@@ -27,8 +27,12 @@ if(ENABLE_PLUGIN_APPS)
             src/collectors/apps.plugin/apps_os_windows_nt.c
             src/collectors/apps.plugin/apps_pid_match.c
             src/collectors/apps.plugin/apps_recorder.c
+            src/collectors/apps.plugin/apps_recorder.h
             src/collectors/apps.plugin/apps_recorder_format.c
             src/collectors/apps.plugin/apps_recorder_format.h
+            src/collectors/apps.plugin/apps_recorder_query.c
+            src/collectors/apps.plugin/apps_recorder_store.c
+            src/collectors/apps.plugin/apps_recorder_store.h
     )
 
     if(OS_LINUX)

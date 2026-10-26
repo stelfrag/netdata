@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "apps_plugin.h"
+#include "apps_recorder.h"
 #if defined(OS_LINUX)
 #include "apps-cgroups-enrichment.h"
 #endif
@@ -57,6 +58,21 @@ static void apps_plugin_function_processes_help(const char *transaction) {
                    "\n"
 #endif
                    "Filters can be combined. Each filter can be given only one time.\n"
+#if defined(OS_LINUX)
+                   "\n"
+                   "The past, from the process flight recorder (the processes holding most of the CPU,\n"
+                   "the largest by memory and by I/O, and every start and exit; filters do not apply):\n"
+                   "\n"
+                   "   at:TIME\n"
+                   "      The recorded table at or before TIME.\n"
+                   "\n"
+                   "   after:TIME before:TIME\n"
+                   "      The processes recorded in the range: average and peak CPU, peak memory,\n"
+                   "      first and last seen, started and exited. Either may be omitted\n"
+                   "      (before defaults to now, after to 10 minutes before `before`).\n"
+                   "\n"
+                   "TIME is a unix epoch in seconds, or relative to now when zero or negative (-300 = 5 minutes ago).\n"
+#endif
     );
 
     wb->response_code = HTTP_RESP_OK;
@@ -979,6 +995,13 @@ static void function_processes_locked(const char *transaction, char *function, H
             info = true;
         }
     }
+
+#if defined(OS_LINUX)
+    if(!info && apps_recorder_processes_wants_history(words, num_words)) {
+        apps_recorder_function_processes(transaction, words, num_words, show_cmdline);
+        return;
+    }
+#endif
 
     BUFFER *wb = buffer_create(4096, NULL);
     buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_MINIFY);

@@ -3,13 +3,29 @@
 #include "apps_plugin.h"
 #include "apps-cgroups-lookup-client.h"
 #include "apps-lookup-netipc.h"
+#include "apps_recorder.h"
 #include "libnetdata/parsers/duration.h"
+
+#if defined(OS_LINUX)
+// restricted (the "__" prefix): hidden from users, called only by the daemon
+#define APPS_PLUGIN_RECORDER_FUNCTIONS() do {                                                                  \
+    if(apps_recorder_enabled)                                                                                   \
+        fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " GLOBAL \"%s\" %d \"%s\" \"top\" "HTTP_ACCESS_FORMAT" %d\n",  \
+                APPS_RECORDER_SAVE_FUNCTION, PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT,                                 \
+                "Save the recorded processes around a moment to disk",                                          \
+                (HTTP_ACCESS_FORMAT_CAST)(HTTP_ACCESS_SIGNED_ID|HTTP_ACCESS_SAME_SPACE|HTTP_ACCESS_SENSITIVE_DATA|HTTP_ACCESS_VIEW_AGENT_CONFIG), \
+                NRPC_PRIORITY_DEFAULT / 10);                                                                    \
+} while(0)
+#else
+#define APPS_PLUGIN_RECORDER_FUNCTIONS() do { } while(0)
+#endif
 
 #define APPS_PLUGIN_GLOBAL_FUNCTIONS() do { \
     fprintf(stdout, PLUGINSD_KEYWORD_FUNCTION " GLOBAL \"processes\" %d \"%s\" \"top\" "HTTP_ACCESS_FORMAT" %d\n",  \
             PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT, APPS_PLUGIN_PROCESSES_FUNCTION_DESCRIPTION,                          \
             (HTTP_ACCESS_FORMAT_CAST)(HTTP_ACCESS_SIGNED_ID|HTTP_ACCESS_SAME_SPACE|HTTP_ACCESS_SENSITIVE_DATA),     \
             NRPC_PRIORITY_DEFAULT / 10);                                                                    \
+    APPS_PLUGIN_RECORDER_FUNCTIONS();                                                                       \
 } while(0)
 
 // ----------------------------------------------------------------------------
@@ -524,6 +540,29 @@ static void parse_args(int argc, char **argv)
             continue;
         }
 
+#if defined(OS_LINUX)
+        if(strcmp("without-recorder", argv[i]) == 0) {
+            apps_recorder_enabled = false;
+            continue;
+        }
+
+        if(strcmp("with-recorder-cmdline", argv[i]) == 0) {
+            apps_recorder_record_cmdline = true;
+            continue;
+        }
+
+        if(strcmp("recorder-disk-mb", argv[i]) == 0) {
+            if(argc <= i + 1) {
+                fprintf(stderr, "Parameter 'recorder-disk-mb' requires a number as argument.\n");
+                exit(1);
+            }
+            i++;
+            apps_recorder_disk_mb = str2i(argv[i]);
+            if(apps_recorder_disk_mb < 0) apps_recorder_disk_mb = 0;
+            continue;
+        }
+#endif
+
         if(strcmp("-h", argv[i]) == 0 || strcmp("--help", argv[i]) == 0) {
             fprintf(stderr,
                     "\n"
@@ -579,6 +618,16 @@ static void parse_args(int argc, char **argv)
                     " with-detailed-uptime   enable reporting min/avg/max uptime charts\n"
                     "\n"
 #if defined(OS_LINUX)
+                    " without-recorder       disable the process flight recorder, which keeps the last\n"
+                    "                        30 minutes of the busiest processes in memory\n"
+                    "\n"
+                    " recorder-disk-mb N     the disk space for process history the agent saves around\n"
+                    "                        alerts and anomalies; 0 disables saving\n"
+                    "                        (default is %d MiB)\n"
+                    "\n"
+                    " with-recorder-cmdline  also record full command lines; they may include\n"
+                    "                        sensitive data such as passwords and tokens\n"
+                    "\n"
                     " fds-cache-secs N       cache the files of processed for N seconds\n"
                     "                        caching is adaptive per file (when a file\n"
                     "                        is found, it starts at 0 and while the file\n"
@@ -597,6 +646,7 @@ static void parse_args(int argc, char **argv)
                     "\n"
                     , NETDATA_VERSION
 #if defined(OS_LINUX)
+                    , APPS_RECORDER_DISK_MB_DEFAULT
                     , max_fds_cache_seconds
 #endif
             );
@@ -823,6 +873,9 @@ int main(int argc, char **argv) {
     apps_pids_init();
     OS_FUNCTION(apps_os_init)();
     apps_cgroups_lookup_init();
+#if defined(OS_LINUX)
+    apps_recorder_init();
+#endif
     int exit_status = 0;
 
     // ------------------------------------------------------------------------
@@ -832,6 +885,11 @@ int main(int argc, char **argv) {
         functions_evloop_init(1, "APPS", &apps_and_stdout_mutex, &apps_plugin_exit, &exit_status);
 
     functions_evloop_add_function(wg, "processes", function_processes, PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT, NULL);
+#if defined(OS_LINUX)
+    if(apps_recorder_enabled)
+        functions_evloop_add_function(wg, APPS_RECORDER_SAVE_FUNCTION, apps_recorder_function_save,
+                                      PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT, NULL);
+#endif
 
     // ------------------------------------------------------------------------
 

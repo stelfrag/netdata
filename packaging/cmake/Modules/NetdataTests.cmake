@@ -64,7 +64,8 @@ if(OS_LINUX)
 
     add_executable(apps-recorder-format-test EXCLUDE_FROM_ALL
             src/collectors/apps.plugin/tests/test_apps_recorder_format.c
-            src/collectors/apps.plugin/apps_recorder_format.c)
+            src/collectors/apps.plugin/apps_recorder_format.c
+            src/collectors/apps.plugin/apps_recorder_store.c)
     target_link_libraries(apps-recorder-format-test libnetdata)
 
     add_executable(apps-lookup-protocol-test EXCLUDE_FROM_ALL
