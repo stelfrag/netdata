@@ -67,6 +67,7 @@ extern "C" {
 #include "static_threads.h"
 #include "signal-handler.h"
 #include "commands.h"
+#include "process-history.h"
 #include "pipename.h"
 #include "analytics.h"
 

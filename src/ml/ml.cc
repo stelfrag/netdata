@@ -9,6 +9,7 @@
 #include "ad_charts.h"
 #include "sqlite3.h"
 #include "streaming/stream-control.h"
+#include "daemon/process-history.h"
 
 #define WORKER_TRAIN_QUEUE_POP         0
 #define WORKER_TRAIN_ACQUIRE_DIMENSION 1
@@ -1479,6 +1480,9 @@ ml_host_detect_once(ml_host_t *host, ONEWAYALLOC *owa)
         host->host_anomaly_rate = host_anomaly_rate;
         mls_copy = host_mls;
         netdata_mutex_unlock(&host->mutex);
+
+        if (host->rh == localhost)
+            process_history_anomaly_rate(host_anomaly_rate);
 
         worker_is_busy(WORKER_JOB_DETECTION_DIM_CHART);
         ml_update_dimensions_chart(host, mls_copy);

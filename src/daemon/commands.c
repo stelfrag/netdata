@@ -89,6 +89,7 @@ static cmd_status_t cmd_dumpconfig(char *args, char **message);
 static cmd_status_t cmd_remove_stale_node(char *args, char **message);
 static cmd_status_t cmd_mark_stale_nodes_ephemeral(char *args, char **message);
 static cmd_status_t cmd_update_node_info(char *args, char **message);
+static cmd_status_t cmd_save_process_history(char *args, char **message);
 
 static command_info_t command_info_array[] = {
     {"help", "", "Show this help menu.", cmd_help_execute, CMD_TYPE_HIGH_PRIORITY, CMD_INIT_STATUS_INIT},                // show help menu
@@ -109,6 +110,7 @@ static command_info_t command_info_array[] = {
     {"remove-stale-node", "<node_id | machine_guid | hostname | ALL_NODES>",
      "Marks one or all disconnected nodes as ephemeral, and removes them\n      so that they are no longer available for queries, from both this\n      Netdata Agent dashboard and Netdata Cloud.", cmd_remove_stale_node, CMD_TYPE_ORTHOGONAL, CMD_INIT_STATUS_FULL},
     {"update-node-info", "", "Schedules an node update message for localhost to Netdata Cloud.", cmd_update_node_info, CMD_TYPE_ORTHOGONAL, CMD_INIT_STATUS_FULL},
+    {"save-process-history", "[reason]", "Saves the recorded process history of the last 10 minutes and the next 2 minutes to disk.", cmd_save_process_history, CMD_TYPE_ORTHOGONAL, CMD_INIT_STATUS_FULL},
 };
 
 /* Mutexes for commands of type CMD_TYPE_ORTHOGONAL */
@@ -604,6 +606,21 @@ static cmd_status_t cmd_update_node_info(char *args __maybe_unused, char **messa
     }
     else
         *message = strdupz("Agent is not connected to Netdata Cloud");
+    return CMD_STATUS_SUCCESS;
+}
+
+static cmd_status_t cmd_save_process_history(char *args, char **message)
+{
+    if(!process_history_enabled()) {
+        *message = strdupz("Saving process history is disabled on this agent "
+                           "(it needs Linux, the dbengine database mode and a profile other than iot).");
+        return CMD_STATUS_FAILURE;
+    }
+
+    char reason[128];
+    snprintfz(reason, sizeof(reason), "manual:%s", (args && *args) ? args : "netdatacli");
+    process_history_request(now_realtime_sec(), reason);
+    *message = strdupz("Requested; the process history from 10 minutes ago to 2 minutes from now is being saved.");
     return CMD_STATUS_SUCCESS;
 }
 

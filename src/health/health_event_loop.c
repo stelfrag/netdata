@@ -756,6 +756,13 @@ static void health_event_loop_for_host(RRDHOST *host, bool apply_hibernation_del
                 health_alarm_log_add_entry(host, transition_ae, false);
                 health_log_alert(host, transition_ae);
 
+                // a local alert raised to WARNING or CRITICAL keeps the process history around it
+                if(host == localhost && status > rc->status && status >= RRDCALC_STATUS_WARNING) {
+                    char reason[256];
+                    snprintfz(reason, sizeof(reason), "alert:%s:%s", ae_name(transition_ae), ae_chart_id(transition_ae));
+                    process_history_request(now, reason);
+                }
+
                 nd_log(NDLS_DAEMON, NDLP_DEBUG,
                        "[%s]: Alert event for [%s.%s], value [%s], status [%s].",
                        rrdhost_hostname(host), ae_chart_id(transition_ae), ae_name(transition_ae),

@@ -47,6 +47,16 @@ static const struct netdata_static_thread static_threads_linux[] = {
         .start_routine = cgroups_main
     },
     {
+        .name = "PROCESS_HISTORY",
+        .config_section = NULL,
+        .config_name = NULL,
+        .enable_routine = process_history_enabled,
+        .enabled = 0,
+        .thread = NULL,
+        .init_routine = NULL,
+        .start_routine = process_history_main
+    },
+    {
         .name = "P[timex]",
         .config_section = CONFIG_SECTION_PLUGINS,
         .config_name = "timex",

@@ -52,6 +52,8 @@ set(DAEMON_FILES
         src/daemon/static_threads.c
         src/daemon/static_threads.h
         src/daemon/commands.c
+        src/daemon/process-history.c
+        src/daemon/process-history.h
         src/daemon/commands.h
         src/daemon/pipename.c
         src/daemon/pipename.h

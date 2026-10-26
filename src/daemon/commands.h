@@ -23,6 +23,7 @@ typedef enum cmd {
     CMD_REMOVE_NODE,
     CMD_MARK_NODE,
     CMD_UPDATE_NODE_INFO,
+    CMD_SAVE_PROCESS_HISTORY,
     CMD_TOTAL_COMMANDS
 } cmd_t;
 
