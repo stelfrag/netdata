@@ -55,6 +55,8 @@ agents_query_agent \
 
 The `processes` handler in `src/collectors/apps.plugin/apps_functions.c` ignores JSON payload fields. For process
 rows, use the `processes` command and its supported command-word filters; JSON `last` and `timeout` do not limit it.
+On Linux, the words `at:TIME` or `after:TIME before:TIME` ask for the recorded past instead; see
+[find-past-process-cpu-spike-direct.md](how-tos/find-past-process-cpu-spike-direct.md).
 
 The wrapper writes the response JSON to stdout; stderr shows the
 curl invocation with `<AGENT_BEARER>` masked. Internal authentication is captured privately; endpoint responses are

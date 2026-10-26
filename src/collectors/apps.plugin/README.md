@@ -342,6 +342,51 @@ The `--pss` option controls PSS sampling behavior:
 - **Default (PSS disabled):** Shows only "Memory RSS usage" charts
 - The `processes` function API exposes additional columns (PSS, PssAge, SharedRatio) when PSS is enabled
 
+### Process flight recorder (Linux)
+
+`apps.plugin` keeps the recent past of the process table in memory, so you can still see which process was
+busy after it has exited. It is on by default on Linux.
+
+**What it records**, every collection iteration:
+
+- the processes holding 95% of the CPU used by all processes (at least 50 and at most 150 of them);
+- the 10 largest processes by memory and the 10 largest by I/O;
+- every process that started or exited.
+
+For each recorded process it keeps the PID, parent PID, user ID, name, executable, category, CPU, memory, swap,
+I/O, threads and state. It does not keep command lines unless you enable `with-recorder-cmdline`.
+
+**Memory and CPU**: the last 30 minutes (at `update every = 1`) stay in memory, compressed: typically 0.4 to
+0.7 MiB. Recording costs well under 0.1% of one CPU core.
+
+**Saving to disk**: the Netdata Agent asks `apps.plugin` to save the recorded window (10 minutes before to 2 minutes
+after) when:
+
+- an alert of this node is raised to WARNING or CRITICAL;
+- the node's ML anomaly rate stays above 10% for a minute;
+- you run `netdatacli save-process-history [reason]`.
+
+Saved windows go to `/var/cache/netdata/apps-recorder/` (the Agent's cache directory) and overlapping windows share
+their data. When the store reaches its size limit, the oldest data is deleted. A saved incident is typically 0.1 to
+0.5 MiB. Nothing is written to disk unless one of the above happens, and the Agent never saves when its database
+mode is `ram`, `alloc` or `none`, or when it runs with the `iot` profile.
+
+**Querying**: the `processes` Function answers for the past with `at:` or `after:`/`before:`. See
+[the processes Function](/docs/functions/processes.md#recorded-past-linux).
+
+**Options** (in `command options`):
+
+| Option                  | Default | Description                                                                         |
+|-------------------------|---------|-------------------------------------------------------------------------------------|
+| `without-recorder`      | -       | Disables the flight recorder, its memory and its disk store.                        |
+| `recorder-disk-mb N`    | `32`    | The size limit of the disk store, in MiB. `0` disables saving to disk.              |
+| `with-recorder-cmdline` | -       | Also records full command lines. They may contain passwords or tokens.              |
+
+```text
+[plugin:apps]
+  command options = recorder-disk-mb 64
+```
+
 ### Integration with eBPF
 
 `apps.plugin` receives per-PID eBPF counters (page-cache hits and socket statistics) from `ebpfgo.plugin` via a shared-memory segment. When `ebpfgo.plugin` is running with the `cachestat` or `socket` programs enabled (configured via `ebpf.d/cachestat.conf` and `ebpf.d/socket.conf` respectively), `apps.plugin` merges those counters into its per-application view and emits eBPF charts under the **eBPF syscall** section.

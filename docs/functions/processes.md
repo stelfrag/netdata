@@ -3,7 +3,7 @@
 ## Quick Info
 
 - **Plugin**: `apps.plugin`
-- **Type**: Simple Table (real-time snapshot)
+- **Type**: Simple Table (real-time snapshot; the recorded past on Linux, see [Recorded Past](#recorded-past-linux))
 - **Availability**: Linux, Windows, FreeBSD, macOS
 - **Required Access**: View Agent Config for command line visibility
 
@@ -212,18 +212,58 @@ Use full-text search in `CmdLine` to find processes launched with specific param
 - **Custom Grouping**: `apps_groups.conf` allows defining custom spawn managers and individual processes of interest
 - **Comprehensive FD Breakdown**: Detailed categorization of all file descriptor types for leak detection
 
+## Recorded Past (Linux)
+
+On Linux, `apps.plugin` keeps a flight recorder of the process table (see
+[the apps.plugin documentation](/src/collectors/apps.plugin/README.md#process-flight-recorder-linux)), so `processes`
+can answer for moments that have passed, including processes that have already exited.
+
+| Parameter               | Answer                                                                                        |
+|-------------------------|-----------------------------------------------------------------------------------------------|
+| `at:TIME`               | The recorded table at the last sample at or before `TIME`.                                    |
+| `after:TIME before:TIME` | The processes recorded in the range, one row per process (PID and start time).               |
+
+- `TIME` is a unix epoch in seconds, or relative to now when zero or negative (`-300` is 5 minutes ago).
+- With only `before:`, the range starts 10 minutes earlier; with only `after:`, it ends now.
+- The other filters (`category:`, `pid:`, ...) do not apply to the recorded past.
+
+**What the recorded past contains**: not every process. Each sample keeps the processes holding 95% of the CPU of
+all processes (50 to 150 of them), the 10 largest by memory and by I/O, and every start and exit. Every answer has a
+`recorded` object that says how complete it is:
+
+| Field                         | Meaning                                                                             |
+|-------------------------------|-------------------------------------------------------------------------------------|
+| `mode`                        | `at` or `range`                                                                     |
+| `from_ut`, `to_ut`            | The requested time, in microseconds                                                 |
+| `sample_ut`                   | `at` only: the time of the sample returned                                          |
+| `samples`                     | The number of samples used                                                          |
+| `cpu_coverage`                | The share of all-process CPU held by the recorded processes, in percent             |
+| `cpu_coverage_min`            | The lowest coverage of any sample used                                              |
+| `source`                      | `ram` (the last 30 minutes) and/or `disk` (windows the Agent saved around incidents) |
+
+`at:` returns `PID`, `Cmd`, `Exe`, `PPID`, `Category`, `Uid`, `CPU`, `RSS`, `Swap`, `LReads`, `LWrites`, `PReads`,
+`PWrites`, `Threads`, `State` and `RecordedFor` (why the process was kept: `cpu`, `memory`, `io`).
+
+`after:`/`before:` returns per process `AvgCPU` (over the whole range, counting 0 while the process was not
+recorded), `PeakCPU`, `PeakRSS`, `Samples`, `FirstSeen`, `LastSeen`, `Started` and `Exited` (within the range), plus
+the identity columns. Rows are sorted by `AvgCPU`; at most 1000 are returned, and `processes_total` /
+`processes_shown` say how many there were.
+
+`CmdLine` appears only when command lines are recorded (`with-recorder-cmdline`) and the caller may see them. The
+response keeps `has_history: false`: these answers are a separate view, not a time series.
+
 ## Performance Considerations
 
 - Function executes with minimal overhead using efficient process enumeration
 - Large process counts (>1000) may increase response time
 - Command line access requires additional security permissions
-- No historical data - shows current snapshot only
+- Without `at:` or `after:`/`before:`, shows the current snapshot only
 
 ## Requirements and Limitations
 
 - **Operating System**: Linux, Windows, FreeBSD, macOS
 - **Permissions**: Standard user can see basic data; elevated access needed for command lines
-- **Data Type**: Real-time snapshot (no historical data)
+- **Data Type**: Real-time snapshot; on Linux, also the recorded past of the busiest processes (see above)
 - **Child Processes**: Only terminated children are accumulated; running children appear separately
 - **Platform Variations**: Some fields may not be available on all operating systems (e.g., certain I/O metrics on macOS)
 

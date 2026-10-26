@@ -50,6 +50,8 @@ skill-verification harness questions for `verify/questions.md`; replace each
 
 - `discover-registered-functions.md` (stub -- not yet authored)
 - `call-function-info.md` (stub -- not yet authored)
+- [find-past-process-cpu-spike-direct.md](find-past-process-cpu-spike-direct.md): which processes used the CPU
+  at a past moment, including ones that exited (`processes at:` / `after: before:`)
 
 ### Logs
 
