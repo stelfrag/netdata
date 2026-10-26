@@ -260,8 +260,11 @@ Example logrotate configuration:
 |              `ND_REQUEST`              |           `request`            |           `Request`           |  63   | the full request during which the event happened                                                          |
 |               `MESSAGE`                |             `msg`              |           `Message`           |  64   | the event message                                                                                         |
 |            `ND_STACK_TRACE`            |         `stack_trace`          |         `StackTrace`          |  65   | stack trace at time of logging (on fatal errors)                                                          |
+|            `ND_HOST_CHANGE`            |         `host_change`          |         `HostChange`          |  66   | what changed on the host, see [host change events](#host-change-events)                                   |
+|          `ND_HOST_CHANGE_OLD`          |       `host_change_old`        |        `HostChangeOld`        |  67   | the previous value of what changed                                                                        |
+|          `ND_HOST_CHANGE_NEW`          |       `host_change_new`        |        `HostChangeNew`        |  68   | the new value of what changed                                                                             |
 
-For `wel` (Windows Event Logs), all logs have an array of 64 fields strings, and their index number provides their meaning.
+For `wel` (Windows Event Logs), all logs have an array of field strings, and their index number provides their meaning.
 For `etw` (Event Tracing for Windows), Netdata logs in a structured way, and field names are available.
 
 </details>
@@ -284,6 +287,7 @@ Netdata assigns unique UUIDs to specific event types for easy filtering and corr
 | `ec87a561-20d5-431b-ace5-1e2fb8bba243` | Log Flood Protection | Log flooding detected and suppressed          |
 | `d1f59606-dd4d-41e3-b217-a0cfcae8e632` | Extreme Cardinality  | Metric cardinality exceeds safe limits        |
 | `4fdf4081-6c12-4623-a032-b7fe73beacb8` | User Configuration   | Dynamic configuration changed by user         |
+| `adfd0357-c3d6-490f-b5c7-cd9337492f11` | Host Change          | Something changed on the host, see below      |
 
 You can view these events using the Netdata systemd-journal.plugin at the `MESSAGE_ID` filter,
 or using `journalctl` like this:
@@ -298,6 +302,44 @@ journalctl MESSAGE_ID=9ce0cb58-ab8b-44df-82c4-bf1ad9ee22de + MESSAGE_ID=6db0018e
 
 # Query with time range
 journalctl MESSAGE_ID=9ce0cb58-ab8b-44df-82c4-bf1ad9ee22de --since "1 hour ago"
+```
+
+#### Host change events
+
+The Netdata Agent logs one host change event (message ID `adfd0357-c3d6-490f-b5c7-cd9337492f11`, priority `notice`)
+for each change it notices on the host, so "what changed before the incident?" can be answered from the logs.
+`ND_HOST_CHANGE` names what changed; `ND_HOST_CHANGE_OLD` and `ND_HOST_CHANGE_NEW` hold the values.
+
+At startup, the Agent compares the host with what it saw before it last stopped:
+
+| `ND_HOST_CHANGE`  | What changed                                                   |
+|-------------------|----------------------------------------------------------------|
+| `reboot`          | the boot id: the host rebooted                                 |
+| `kernel`          | the kernel version                                             |
+| `os`              | the operating system name or version                           |
+| `netdata_version` | the Netdata Agent version                                      |
+| `cpus`            | the number of CPUs                                             |
+| `ram`             | the total RAM in bytes (differences under 1% are not reported) |
+
+While running, the Agent re-detects these every 30 minutes (the first time 5 minutes after it starts):
+
+| `ND_HOST_CHANGE`   | What changed                               |
+|--------------------|--------------------------------------------|
+| `cpus`             | the number of CPUs                         |
+| `ram`              | the total RAM in bytes (under 1% ignored)  |
+| `disk_space`       | the total disk space in bytes              |
+| `default_iface`    | the network interface of the default route |
+| `default_iface_ip` | the IP address of that interface           |
+
+A runtime value that appears or disappears is a change, logged with an empty old or new value: for example
+`default_iface` with an empty new value when the host lost its default route. Nothing is logged on the first start
+of the Agent, when a value could not be detected, or when nothing changed.
+
+```bash
+# What changed on this host in the last week
+# (the journal stores this message ID without dashes)
+journalctl MESSAGE_ID=adfd0357c3d6490fb5c7cd9337492f11 --since "7 days ago" \
+    -o verbose --output-fields=ND_HOST_CHANGE,ND_HOST_CHANGE_OLD,ND_HOST_CHANGE_NEW
 ```
 
 ## Platform-Specific Log Access

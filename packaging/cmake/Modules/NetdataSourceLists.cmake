@@ -40,6 +40,8 @@ set(DAEMON_FILES
         src/daemon/main.h
         src/daemon/environment.c
         src/daemon/system-info.c
+        src/daemon/host-changes.c
+        src/daemon/host-changes.h
         src/daemon/win_system-info.c
         src/daemon/win_system-info.h
         src/daemon/signal-handler.c

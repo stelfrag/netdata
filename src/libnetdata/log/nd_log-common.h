@@ -120,6 +120,9 @@ typedef enum __attribute__((__packed__)) {
     NDF_REQUEST = 63,                               // the request we are currently working on
     NDF_MESSAGE = 64,                               // the log message, if any
     NDF_STACK_TRACE = 65,                           // stack trace of the thread logging
+    NDF_HOST_CHANGE = 66,                           // what changed on the host (host change events)
+    NDF_HOST_CHANGE_OLD = 67,                       // its previous value
+    NDF_HOST_CHANGE_NEW = 68,                       // its new value
 
     // put new items here
     // NEVER RENUMBER FIELDS - RENUMBERING BREAKS EXISTING WINDOWS MESSAGES

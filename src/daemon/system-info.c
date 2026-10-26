@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common.h"
+#include "host-changes.h"
 
 static void system_info_cleanup(void *ptr) {
     struct netdata_static_thread *thread = CLEANUP_FUNCTION_GET_PTR(ptr);
@@ -34,7 +35,10 @@ void system_info_main(void *ptr) {
         bool valid = rrdhost_system_info_detect_runtime(candidate);
         if (valid && service_running(SERVICE_SYSTEM_INFO)) {
             worker_is_busy(1);
-            rrdhost_refresh_system_info(localhost, candidate);
+            RRDHOST_SYSTEM_INFO_CHANGES changes = { 0 };
+            rrdhost_refresh_system_info(localhost, candidate, &changes);
+            host_changes_log_system_info(&changes);
+            rrdhost_system_info_changes_free(&changes);
         }
         rrdhost_system_info_free(candidate);
         next = now_monotonic_usec() + interval;

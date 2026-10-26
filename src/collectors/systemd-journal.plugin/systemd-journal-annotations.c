@@ -697,6 +697,7 @@ static void nd_sd_journal_message_ids_init(void)
     msgid_into_dict("d1f59606dd4d41e3b217a0cfcae8e632", "Netdata extreme cardinality");
     msgid_into_dict("02f47d350af5449197bf7a95b605a468", "Netdata exit reason");
     msgid_into_dict("4fdf40816c124623a032b7fe73beacb8", "Netdata dynamic configuration");
+    msgid_into_dict("adfd0357c3d6490fb5c7cd9337492f11", "Netdata host change");
 }
 
 void nd_sd_journal_transform_message_id(

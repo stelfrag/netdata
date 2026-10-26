@@ -4,6 +4,7 @@
 #include "buildinfo.h"
 #include "daemon-shutdown-watcher.h"
 #include "status-file.h"
+#include "host-changes.h"
 #include "static_threads.h"
 #include "web/api/queries/backfill.h"
 #include "web/mcp/mcp.h"
@@ -554,6 +555,7 @@ int netdata_main(int argc, char **argv) {
                             if (rrdhost_labels_unittest()) return 1;
                             if (rrdhost_system_info_unittest()) return 1;
                             if (build_info_system_info_unittest()) return 1;
+                            if (host_changes_unittest()) return 1;
                             if (ctx_unittest()) return 1;
                             if (query_plan_unittest()) return 1;
                             if (uuid_unittest()) return 1;
@@ -666,6 +668,7 @@ int netdata_main(int argc, char **argv) {
                             rrdlabels_aral_init(true);
                             int rc = rrdhost_system_info_unittest();
                             rc += build_info_system_info_unittest();
+                            rc += host_changes_unittest();
                             rrdlabels_aral_destroy(true);
                             return rc;
                         }
@@ -1481,6 +1484,7 @@ int netdata_main(int argc, char **argv) {
     nd_log_register_fatal_final_cb(netdata_exit_fatal);
     daemon_status_file_startup_step(NULL);
     daemon_status_file_update_status(DAEMON_STATUS_RUNNING);
+    daemon_status_file_log_host_changes();
     return 10;
 }
 

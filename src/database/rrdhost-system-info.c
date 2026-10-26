@@ -145,12 +145,36 @@ bool rrdhost_system_info_label_is_runtime(const char *name) {
     return false;
 }
 
-bool rrdhost_system_info_update(struct rrdhost_system_info *dst, struct rrdhost_system_info *candidate) {
+bool rrdhost_system_info_update(struct rrdhost_system_info *dst, struct rrdhost_system_info *candidate, RRDHOST_SYSTEM_INFO_CHANGES *changes) {
     bool changed = false;
-    for (size_t i = 0; i < _countof(system_info_fields); i++)
-        if (system_info_fields[i].runtime && (candidate->detected_fields & (UINT64_C(1) << i)))
-            changed |= system_info_replace(system_info_field_ptr(dst, i), *system_info_field_ptr(candidate, i));
+    for (size_t i = 0; i < _countof(system_info_fields); i++) {
+        if (!system_info_fields[i].runtime || !(candidate->detected_fields & (UINT64_C(1) << i)))
+            continue;
+
+        char **field = system_info_field_ptr(dst, i);
+        const char *value = *system_info_field_ptr(candidate, i);
+        char *old = changes ? system_info_strdupz(*field) : NULL;
+        if (system_info_replace(field, value)) {
+            changed = true;
+            if (changes && changes->used < RRDHOST_SYSTEM_INFO_CHANGES_MAX) {
+                changes->items[changes->used].label = system_info_fields[i].label;
+                changes->items[changes->used].old_value = old;
+                changes->items[changes->used].new_value = system_info_strdupz(value);
+                changes->used++;
+                old = NULL;
+            }
+        }
+        freez(old);
+    }
     return changed;
+}
+
+void rrdhost_system_info_changes_free(RRDHOST_SYSTEM_INFO_CHANGES *changes) {
+    for (size_t i = 0; i < changes->used; i++) {
+        freez(changes->items[i].old_value);
+        freez(changes->items[i].new_value);
+    }
+    changes->used = 0;
 }
 
 static bool system_info_update_from_labels(struct rrdhost_system_info *dst, RRDLABELS *old_labels,
@@ -344,10 +368,15 @@ int rrdhost_system_info_unittest(void) {
     dst->kernel_name = strdupz("Linux");
     BUFFER *b = system_info_test_response("NETDATA_SYSTEM_TOTAL_RAM", 'V', "2048");
     SI_CHECK(system_info_parse_runtime(candidate, (char *)buffer_tostring(b)));
-    SI_CHECK(rrdhost_system_info_update(dst, candidate));
+    RRDHOST_SYSTEM_INFO_CHANGES changes = { 0 };
+    SI_CHECK(rrdhost_system_info_update(dst, candidate, &changes));
     SI_CHECK(!strcmp(dst->host_ram_total, "2048"));
+    SI_CHECK(changes.used == 1 && !strcmp(changes.items[0].label, "_system_ram_total") &&
+             changes.items[0].old_value && !strcmp(changes.items[0].old_value, "1024") &&
+             changes.items[0].new_value && !strcmp(changes.items[0].new_value, "2048"));
+    rrdhost_system_info_changes_free(&changes);
     SI_CHECK(dst->host_l4t_version && !strcmp(dst->host_l4t_version, "36.5.0"));
-    SI_CHECK(!rrdhost_system_info_update(dst, candidate));
+    SI_CHECK(!rrdhost_system_info_update(dst, candidate, &changes) && changes.used == 0);
     SI_CHECK(dst->hops == 7 && dst->ml_enabled && dst->ml_capable && dst->mc_version == 3);
     SI_CHECK(!strcmp(dst->install_type, "fixture") && !strcmp(dst->kernel_name, "Linux"));
     buffer_free(b);
@@ -361,12 +390,15 @@ int rrdhost_system_info_unittest(void) {
     candidate->detected_fields = 0;
     b = system_info_test_response("NETDATA_SYSTEM_TOTAL_RAM", 'F', NULL);
     SI_CHECK(system_info_parse_runtime(candidate, (char *)buffer_tostring(b)));
-    SI_CHECK(!rrdhost_system_info_update(dst, candidate));
+    SI_CHECK(!rrdhost_system_info_update(dst, candidate, &changes) && changes.used == 0);
     SI_CHECK(!strcmp(dst->host_ram_total, "2048"));
     buffer_free(b);
     b = system_info_test_response("NETDATA_SYSTEM_TOTAL_RAM", 'A', NULL);
     SI_CHECK(system_info_parse_runtime(candidate, (char *)buffer_tostring(b)));
-    SI_CHECK(rrdhost_system_info_update(dst, candidate) && !dst->host_ram_total);
+    SI_CHECK(rrdhost_system_info_update(dst, candidate, &changes) && !dst->host_ram_total);
+    SI_CHECK(changes.used == 1 && changes.items[0].old_value && !strcmp(changes.items[0].old_value, "2048") &&
+             !changes.items[0].new_value);
+    rrdhost_system_info_changes_free(&changes);
     buffer_free(b);
     b = system_info_test_response("NETDATA_SYSTEM_TOTAL_RAM", 'F', "unexpected");
     SI_CHECK(!system_info_parse_runtime(candidate, (char *)buffer_tostring(b)));
@@ -452,7 +484,7 @@ int rrdhost_system_info_unittest(void) {
                  !startup->network_default_iface_detection);
         for (size_t i = 0; i < _countof(network_keys); i++)
             SI_CHECK(getenv(network_keys[i]) && !strcmp(getenv(network_keys[i]), i == 2 ? absence_methods[m] : "unknown"));
-        SI_CHECK(!rrdhost_system_info_update(startup, absent));
+        SI_CHECK(!rrdhost_system_info_update(startup, absent, NULL));
     }
     for (size_t i = 0; i < _countof(network_keys); i++) {
         if (saved_env[i]) nd_setenv(network_keys[i], saved_env[i], 1);

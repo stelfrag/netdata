@@ -10,6 +10,7 @@
 #include <openssl/err.h>
 #include "status-file-dmi.h"
 #include "status-file-product.h"
+#include "host-changes.h"
 
 #ifdef ENABLE_SENTRY
 #include "sentry-native/sentry-native.h"
@@ -1327,7 +1328,8 @@ void daemon_status_file_init(void) {
     if(last_session_status.v <= 26)
         fill_dmi_info(&last_session_status);
 
-    if(last_session_status.v <= 27)
+    // version 27 added system_cpus
+    if(last_session_status.v < 27)
         last_session_status.system_cpus = os_get_system_cpus();
 
     // Regenerate RFC3339 strings from loaded timestamps for async-signal-safe compatibility
@@ -1602,6 +1604,38 @@ void daemon_status_file_check_crash(void) {
 }
 
 NEVER_INLINE
+// --------------------------------------------------------------------------------------------------------------------
+// host changes since the previous session
+
+void daemon_status_file_log_host_changes(void) {
+    // without a previous session there is nothing to compare with
+    if(last_session_status.status == DAEMON_STATUS_NONE)
+        return;
+
+    HOST_CHANGES_SNAPSHOT old = {
+        .boot_id = last_session_status.boot_id,
+        .kernel = last_session_status.kernel_version,
+        .os_name = last_session_status.os_name,
+        .os_version = last_session_status.os_version,
+        .netdata_version = last_session_status.version,
+        .cpus = last_session_status.system_cpus,
+        .ram_bytes = OS_SYSTEM_MEMORY_OK(last_session_status.memory) ? last_session_status.memory.ram_total_bytes : 0,
+    };
+
+    // called on the main thread right after the refresh that filled them, like the other session getters
+    HOST_CHANGES_SNAPSHOT now = {
+        .boot_id = session_status.boot_id,
+        .kernel = session_status.kernel_version,
+        .os_name = session_status.os_name,
+        .os_version = session_status.os_version,
+        .netdata_version = session_status.version,
+        .cpus = session_status.system_cpus,
+        .ram_bytes = OS_SYSTEM_MEMORY_OK(session_status.memory) ? session_status.memory.ram_total_bytes : 0,
+    };
+
+    host_changes_compare(&old, &now, host_change_log, NULL);
+}
+
 static void daemon_status_file_save_twice_if_we_can_get_stack_trace(BUFFER *wb, DAEMON_STATUS_FILE *ds, bool force) {
     // IMPORTANT: NO LOCKS OR ALLOCATIONS HERE, THIS FUNCTION IS CALLED FROM SIGNAL HANDLERS
     // THIS FUNCTION MUST USE ONLY ASYNC-SIGNAL-SAFE OPERATIONS

@@ -5,15 +5,16 @@
 
 #include "libnetdata/libnetdata.h"
 #include "rrdlabels.h"
+#include "rrdhost-system-info.h"
 
 struct rrdhost;
-struct rrdhost_system_info;
 
 void reload_host_labels(void);
 void rrdhost_set_is_parent_label(void);
 void rrdhost_labels_changed(struct rrdhost *host);
 void rrdhost_system_info_changed(struct rrdhost *host);
-bool rrdhost_refresh_system_info(struct rrdhost *host, struct rrdhost_system_info *candidate);
+// changes may be NULL; otherwise it receives the runtime fields that changed (free with rrdhost_system_info_changes_free)
+bool rrdhost_refresh_system_info(struct rrdhost *host, struct rrdhost_system_info *candidate, RRDHOST_SYSTEM_INFO_CHANGES *changes);
 struct rrdhost_system_info *rrdhost_system_info_labels_snapshot(struct rrdhost *host, RRDLABELS **labels);
 int rrdhost_labels_unittest(void);
 

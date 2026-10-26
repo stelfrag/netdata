@@ -56,6 +56,8 @@ skill-verification harness questions for `verify/questions.md`; replace each
 - `tail-namespace-direct.md` (stub -- not yet authored)
 - `last-status-file-log-direct.md` (stub -- not yet authored)
 - `histogram-by-priority.md` (stub -- not yet authored)
+- [find-host-changes-before-incident-direct.md](find-host-changes-before-incident-direct.md): what changed on the
+  host before an incident (reboot, kernel, OS, versions, CPUs, RAM, disk, default interface)
 
 ### Alerts
 

@@ -1713,7 +1713,7 @@ int build_info_system_info_unittest(void) {
         struct rrdhost_system_info *candidate = rrdhost_system_info_create();
         rrdhost_system_info_detected_set(candidate, "NETDATA_SYSTEM_TOTAL_RAM", values[i]);
         spinlock_lock(&host.rrdhost_update_lock);
-        rrdhost_system_info_update(host.system_info, candidate);
+        rrdhost_system_info_update(host.system_info, candidate, NULL);
         spinlock_unlock(&host.rrdhost_update_lock);
         rrdhost_system_info_free(candidate);
         buffer_flush(b);

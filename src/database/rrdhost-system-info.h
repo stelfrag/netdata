@@ -82,7 +82,20 @@ int rrdhost_system_info_detect(struct rrdhost_system_info *system_info);
 bool rrdhost_system_info_detect_runtime(struct rrdhost_system_info *candidate);
 bool rrdhost_system_info_detected_set(struct rrdhost_system_info *si, const char *key, const char *value);
 // Publication callers hold the host update lock. Only detected candidate fields are copied.
-bool rrdhost_system_info_update(struct rrdhost_system_info *dst, struct rrdhost_system_info *candidate);
+// the runtime fields a refresh changed, copied so they can be logged outside the host lock
+#define RRDHOST_SYSTEM_INFO_CHANGES_MAX 8
+typedef struct {
+    size_t used;
+    struct {
+        const char *label;      // the system-info label of the field
+        char *old_value;        // NULL when it was absent
+        char *new_value;        // NULL when it is absent now
+    } items[RRDHOST_SYSTEM_INFO_CHANGES_MAX];
+} RRDHOST_SYSTEM_INFO_CHANGES;
+void rrdhost_system_info_changes_free(RRDHOST_SYSTEM_INFO_CHANGES *changes);
+
+// changes may be NULL
+bool rrdhost_system_info_update(struct rrdhost_system_info *dst, struct rrdhost_system_info *candidate, RRDHOST_SYSTEM_INFO_CHANGES *changes);
 bool rrdhost_system_info_update_from_labels(struct rrdhost_system_info *dst, RRDLABELS *old_labels, RRDLABELS *new_labels);
 bool rrdhost_system_info_label_is_owned(const char *name);
 bool rrdhost_system_info_label_is_runtime(const char *name);

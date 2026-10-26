@@ -629,6 +629,7 @@ impl FieldTransformation for MessageIdTransformation {
             "d1f59606dd4d41e3b217a0cfcae8e632" => "Netdata extreme cardinality",
             "02f47d350af5449197bf7a95b605a468" => "Netdata exit reason",
             "4fdf40816c124623a032b7fe73beacb8" => "Netdata dynamic configuration",
+            "adfd0357c3d6490fb5c7cd9337492f11" => "Netdata host change",
             _ => return raw_value.to_string(),
         };
 

@@ -722,6 +722,21 @@ __thread struct log_field thread_log_fields[_NDF_MAX] = {
             .eventlog = "StackTrace",
             .logfmt = NULL,
     },
+    [NDF_HOST_CHANGE] = {
+        .journal = "ND_HOST_CHANGE",
+        .eventlog = "HostChange",
+        .logfmt = "host_change",
+    },
+    [NDF_HOST_CHANGE_OLD] = {
+        .journal = "ND_HOST_CHANGE_OLD",
+        .eventlog = "HostChangeOld",
+        .logfmt = "host_change_old",
+    },
+    [NDF_HOST_CHANGE_NEW] = {
+        .journal = "ND_HOST_CHANGE_NEW",
+        .eventlog = "HostChangeNew",
+        .logfmt = "host_change_new",
+    },
 
     // put new items here
 };

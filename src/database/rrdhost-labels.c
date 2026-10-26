@@ -293,10 +293,10 @@ struct rrdhost_system_info *rrdhost_system_info_labels_snapshot(RRDHOST *host, R
     return info;
 }
 
-bool rrdhost_refresh_system_info(RRDHOST *host, struct rrdhost_system_info *candidate) {
+bool rrdhost_refresh_system_info(RRDHOST *host, struct rrdhost_system_info *candidate, RRDHOST_SYSTEM_INFO_CHANGES *changes) {
     RRDLABELS *labels = rrdlabels_create();
     spinlock_lock(&host->rrdhost_update_lock);
-    bool info_changed = rrdhost_system_info_update(host->system_info, candidate);
+    bool info_changed = rrdhost_system_info_update(host->system_info, candidate, changes);
     rrdhost_system_info_to_rrdlabels(host->system_info, labels);
     bool labels_changed = rrdlabels_replace_subset(host->rrdlabels, labels, system_info_owns_label, NULL);
     if (info_changed)
@@ -547,7 +547,7 @@ static int system_info_publication_unittest(void) {
     REFRESH_CHECK(rrdhost_system_info_detected_set(candidate, "NETDATA_SYSTEM_TOTAL_RAM", "2048"));
     REFRESH_CHECK(rrdhost_system_info_detected_set(candidate, "NETDATA_SYSTEM_DEFAULT_INTERFACE_NAME", "eth1"));
     REFRESH_CHECK(rrdhost_system_info_detected_set(candidate, "NETDATA_SYSTEM_DEFAULT_INTERFACE_IP", "192.0.2.1"));
-    REFRESH_CHECK(rrdhost_refresh_system_info(&host, candidate));
+    REFRESH_CHECK(rrdhost_refresh_system_info(&host, candidate, NULL));
     REFRESH_CHECK(rrdhost_flag_check(&host, RRDHOST_FLAG_METADATA_INFO));
     REFRESH_CHECK(rrdhost_flag_check(&host, RRDHOST_FLAG_METADATA_LABELS));
     REFRESH_CHECK(refresh_test_label(host.rrdlabels, "_system_ram_total", "2048"));
@@ -557,7 +557,7 @@ static int system_info_publication_unittest(void) {
         RRDHOST_FLAG_METADATA_UPDATE | RRDHOST_FLAG_PENDING_LABEL_RECHECK;
     rrdhost_flag_clear(&host, flags);
     uint32_t version = rrdlabels_version(host.rrdlabels);
-    REFRESH_CHECK(!rrdhost_refresh_system_info(&host, candidate));
+    REFRESH_CHECK(!rrdhost_refresh_system_info(&host, candidate, NULL));
     REFRESH_CHECK(!rrdhost_flag_check(&host, flags));
     REFRESH_CHECK(rrdlabels_version(host.rrdlabels) == version);
 
@@ -573,7 +573,7 @@ static int system_info_publication_unittest(void) {
         while (!__atomic_load_n(&test.ready, __ATOMIC_ACQUIRE))
             sleep_usec(100);
         for (size_t i = 0; i < 1000; i++)
-            rrdhost_refresh_system_info(&host, i % 2 ? candidate : other);
+            rrdhost_refresh_system_info(&host, i % 2 ? candidate : other, NULL);
         __atomic_store_n(&test.done, true, __ATOMIC_RELEASE);
         nd_thread_join(reader);
         REFRESH_CHECK(test.snapshots > 0 && test.errors == 0);
@@ -582,7 +582,7 @@ static int system_info_publication_unittest(void) {
 
     REFRESH_CHECK(rrdhost_system_info_detected_set(candidate, "NETDATA_SYSTEM_DEFAULT_INTERFACE_NAME", NULL));
     REFRESH_CHECK(rrdhost_system_info_detected_set(candidate, "NETDATA_SYSTEM_DEFAULT_INTERFACE_IP", NULL));
-    REFRESH_CHECK(rrdhost_refresh_system_info(&host, candidate));
+    REFRESH_CHECK(rrdhost_refresh_system_info(&host, candidate, NULL));
     REFRESH_CHECK(refresh_test_label(host.rrdlabels, "_net_default_iface", NULL));
     REFRESH_CHECK(refresh_test_label(host.rrdlabels, "_net_default_iface_ip", NULL));
     REFRESH_CHECK(refresh_test_label(host.rrdlabels, "custom", "keep"));
@@ -630,7 +630,7 @@ static int reloaded_labels_unittest(void) {
     rrdlabels_add(k8s, "k8s", "partial-failed-output", RRDLABEL_SRC_AUTO | RRDLABEL_SRC_K8S);
     struct rrdhost_system_info *candidate = rrdhost_system_info_create();
     rrdhost_system_info_detected_set(candidate, "NETDATA_SYSTEM_TOTAL_RAM", "2048");
-    RELOAD_CHECK(rrdhost_refresh_system_info(&host, candidate));
+    RELOAD_CHECK(rrdhost_refresh_system_info(&host, candidate, NULL));
     rrdlabels_add(host.rrdlabels, "_stream_egress_iface", "wan1", RRDLABEL_SRC_AUTO);
     rrdlabels_add(host.rrdlabels, "_aclk_test", "live", RRDLABEL_SRC_AUTO);
     rrdhost_commit_reloaded_labels(&host, config, k8s, false);
