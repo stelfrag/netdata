@@ -903,6 +903,10 @@ int main(int argc, char **argv) {
         normalize_utilization(apps_groups_root_target);
 #endif
 
+#if defined(OS_LINUX)
+        apps_recorder_collect();
+#endif
+
         if(unlikely(print_tree_and_exit)) {
             print_hierarchy(root_of_pids());
             netdata_mutex_unlock(&apps_and_stdout_mutex);
@@ -917,6 +921,9 @@ int main(int argc, char **argv) {
             send_resource_usage_to_netdata(dt);
             apps_cgroups_lookup_send_charts_to_netdata(dt);
             apps_lookup_netipc_send_charts_to_netdata(dt);
+#if defined(OS_LINUX)
+            apps_recorder_send_charts_to_netdata(dt);
+#endif
         }
 
 #if (PROCESSES_HAVE_STATE == 1)
@@ -965,6 +972,9 @@ int main(int argc, char **argv) {
     functions_evloop_cancel_threads(wg);
     functions_evloop_join_threads(wg);
 
+#if defined(OS_LINUX)
+    apps_recorder_cleanup();
+#endif
     apps_lookup_netipc_cleanup();
     apps_cgroups_lookup_cleanup();
     exit(exit_status);

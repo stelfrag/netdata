@@ -585,6 +585,8 @@ struct pid_stat {
     STRING *cgroup_path;            // /proc/PID/cgroup selected lookup key
     struct cgroup_lookup_entry *cgroup_cache; // borrowed pointer, protected by apps_pids_mutex
     uint64_t starttime;             // raw /proc/PID/stat field 21, in clock ticks
+    STRING *exe;                    // /proc/PID/exe, read once by the flight recorder
+    uint64_t exe_starttime;         // the starttime exe was read for
 #endif
 
 #if defined(OS_WINDOWS)
@@ -837,6 +839,14 @@ void function_processes(const char *transaction, char *function,
                         const char *source __maybe_unused, void *data __maybe_unused);
 
 #if defined(OS_LINUX)
+// the flight recorder (apps_recorder.c)
+extern bool apps_recorder_enabled;
+extern bool apps_recorder_record_cmdline;
+void apps_recorder_init(void);
+void apps_recorder_collect(void);
+void apps_recorder_cleanup(void);
+void apps_recorder_send_charts_to_netdata(usec_t dt);
+
 bool apps_ebpf_shared_memory_refresh(void);
 bool apps_ebpf_sync_pid_stat(struct pid_stat *p);
 void apps_ebpf_accumulate_cachestat(void);

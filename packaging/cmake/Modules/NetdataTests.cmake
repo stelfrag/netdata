@@ -62,6 +62,11 @@ if(OS_LINUX)
             src/collectors/common-cgroups/cgroup-topology-rules.c)
     target_link_libraries(cgroup-topology-rules-test libnetdata)
 
+    add_executable(apps-recorder-format-test EXCLUDE_FROM_ALL
+            src/collectors/apps.plugin/tests/test_apps_recorder_format.c
+            src/collectors/apps.plugin/apps_recorder_format.c)
+    target_link_libraries(apps-recorder-format-test libnetdata)
+
     add_executable(apps-lookup-protocol-test EXCLUDE_FROM_ALL
             src/collectors/apps.plugin/tests/test_apps_lookup_protocol.c)
     target_link_libraries(apps-lookup-protocol-test libnetdata)

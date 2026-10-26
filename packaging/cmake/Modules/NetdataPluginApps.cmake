@@ -26,6 +26,9 @@ if(ENABLE_PLUGIN_APPS)
             src/collectors/apps.plugin/apps_incremental_collection.c
             src/collectors/apps.plugin/apps_os_windows_nt.c
             src/collectors/apps.plugin/apps_pid_match.c
+            src/collectors/apps.plugin/apps_recorder.c
+            src/collectors/apps.plugin/apps_recorder_format.c
+            src/collectors/apps.plugin/apps_recorder_format.h
     )
 
     if(OS_LINUX)

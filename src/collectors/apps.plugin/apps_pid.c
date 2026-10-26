@@ -160,6 +160,7 @@ void del_pid_entry(pid_t pid) {
 #if defined(OS_LINUX)
     apps_cgroups_lookup_unlink_pid(p);
     string_freez(p->cgroup_path);
+    string_freez(p->exe);
 #endif
 
     string_freez(p->comm_orig);
