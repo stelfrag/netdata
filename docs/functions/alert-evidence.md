@@ -106,6 +106,9 @@ becomes `ok`. When the data is gone, the section's own `status` is `not_saved` w
 When the filesystem is full, the Agent deletes its own oldest saved process history and connection snapshots to make
 room for the new ones, once per disk-full episode. It never deletes anything else.
 
+`processes_window` also copies `exit_status` from the recorder: whether the processes' `ExitStatus` (exit code or
+signal) and `ExitedAt` were available, and how many exit events were lost.
+
 `running` is every process on the host (at the alert, or `min`/`avg`/`max` over the window); `recorded_processes` is
 the ones the recorder kept in detail: the busiest by CPU, memory and I/O, and every process that started or exited.
 `recorded.totals` adds the CPU and memory of all processes. Process rows show at most 50 of the recorded processes and

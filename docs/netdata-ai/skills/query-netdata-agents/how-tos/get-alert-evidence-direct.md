@@ -46,7 +46,8 @@ connections were open, and did the host change before it?
    jq '.transition | {alert, when, new_status}' "$F"
    jq '.evidence | map_values(.status)' "$F"
    jq '.evidence.processes_at.rows[:5] | map({Cmd, PID, CPU, RSS, RecordedFor})' "$F"
-   jq '.evidence.processes_window | {running, recorded_processes, started, exited, top: (.rows[:5] | map({Cmd, PeakCPU, Started, Exited}))}' "$F"
+   jq '.evidence.processes_window | {running, recorded_processes, started, exited, exit_status, top: (.rows[:5] | map({Cmd, PeakCPU, Started, Exited, ExitStatus}))}' "$F"
+   jq '[.evidence.processes_window.rows[] | select(.ExitStatus != "-" and .ExitStatus != "exit 0")] | map({Cmd, PID, ExitStatus, ExitedAt})' "$F"
    jq '.evidence.files | {status, total, list: (.list // [] | map({process, path, mount, bytes_first, bytes_last, deleted}))}' "$F"
    jq '.evidence.connection_events | {status, total, lost, netns_other, by_process: (.by_process // [])[:5]}' "$F"
    jq '.evidence.host_changes.events' "$F"
@@ -56,7 +57,8 @@ connections were open, and did the host change before it?
 
 - `processes_at`: the table at the alert (`recorded.sample_ut` is the sample used), busiest first.
 - `processes_window`: 10 minutes before to 2 minutes after; `Started` / `Exited` mark processes that began or ended
-  inside it, and `started` / `exited` count them.
+  inside it, and `started` / `exited` count them. `ExitStatus` says how a process ended (`exit 3`, `SIGKILL`) when
+  `exit_status.status` is `available`; otherwise it is `unknown`.
 - `files`: the files the busiest processes by I/O were writing in the window, with the mount point and the size
   when first and last recorded; the most grown first. `deleted: true` is a file still written after it was deleted
   (its space is not freed until the process closes it).

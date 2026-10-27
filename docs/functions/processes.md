@@ -252,10 +252,19 @@ that says how complete it is:
 
 `after:`/`before:` returns per process `AvgCPU` (over the whole range, counting 0 while the process was not
 recorded), `PeakCPU`, `PeakRSS`, `PeakSockets`, `Samples`, `FirstSeen`, `LastSeen`, `Started` and `Exited` (within the range), plus
-the identity columns. `Exited` is `yes` when the exit was recorded, `no` when the samples are continuous from the last
+the identity columns, `StartedAt` (the process's start time, from the kernel), and `ExitedAt` and `ExitStatus` (see
+below). `Exited` is `yes` when the exit was recorded, `no` when the samples are continuous from the last
 time the process was seen to the end of the range, and `unknown` when a gap follows that: the process may have exited
 when nothing was being kept. Rows are sorted by `AvgCPU`; at most 1000 are returned, and `processes_total` /
 `processes_shown` say how many there were.
+
+When `apps.plugin` receives the kernel's process events, exits carry their status and exact time, and processes that
+started and exited between two samples are listed too (with `Started` and `Exited` both `yes` and no samples).
+`ExitStatus` is `exit N`, the signal that ended the process (`SIGKILL`, `SIGSEGV (core dumped)`), `unknown` when the
+exit was found without a status, or `-` while the process runs. `ExitedAt` is 0 when the status is unknown. The
+answer's `exit_status` object says whether statuses were available: `status` is `available` (every sample),
+`partial` or `unavailable` (kernels before 6.6 without `CAP_NET_ADMIN`, or `without-recorder-proc-events`), and
+`lost` counts exits whose event was lost.
 
 Both answers also have a `files` object: the regular files that the processes kept for I/O held open for writing,
 up to 8 per process (the ones that grew most since the previous sample, then the largest).

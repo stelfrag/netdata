@@ -357,6 +357,11 @@ static const char *ae_section_processes(BUFFER *wb, const char *key, const char 
 
         int64_t total = ae_json_int(jobj, "processes_total", (int64_t)rows);
         buffer_json_member_add_uint64(wb, "recorded_processes", (uint64_t)total);
+
+        // the window answer says whether exits carry their status (the kernel's process events)
+        struct json_object *exit_status;
+        if(json_object_object_get_ex(jobj, "exit_status", &exit_status))
+            ae_json_value(wb, "exit_status", exit_status);
         buffer_json_member_add_boolean(wb, "truncated", truncated || (uint64_t)total > rows);
 
         // the window answer marks processes that started or exited inside it; counted over the rows it returned

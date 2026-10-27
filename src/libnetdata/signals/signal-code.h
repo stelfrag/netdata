@@ -18,6 +18,9 @@ SIGNAL_CODE signal_code(int signo, int si_code);
 // Extract the signal code from a SIGNAL_CODE
 #define SIGNAL_CODE_GET_SI_CODE(code) ((int)((code) & 0xFFFFFFFF))
 
+// the name of a signal number (SIGKILL), NULL when it has none
+const char *signal_name(int signo);
+
 // convert a signal code to string, by name or hex (if no name is available)
 void SIGNAL_CODE_2str_h(SIGNAL_CODE code, char *buf, size_t size);
 

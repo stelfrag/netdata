@@ -386,6 +386,23 @@ It also keeps the TCP connections processes open and close, in the network names
 
 Like the files, connections need the open files `apps.plugin` reads for its file charts (`with-files`).
 
+**Exits**: `apps.plugin` also listens to the kernel's process events, so it records how each process ended (its exit
+code, or the signal that killed it) and the exact time, and it sees processes that start and exit between two
+iterations, naming them from `/proc` at their start. Without the events it finds exits by polling, as before: no exit
+status, and processes shorter than an iteration are missed.
+
+- Kernels 6.6 and later allow any user to listen. Older kernels require `CAP_NET_ADMIN`, which the Netdata packages
+  do not grant to `apps.plugin`; there it listens only when it runs as root or the capability was added by hand:
+
+  ```bash
+  sudo setcap cap_dac_read_search,cap_sys_ptrace,cap_net_admin+ep /usr/libexec/netdata/plugins.d/apps.plugin
+  ```
+
+  The process that starts `apps.plugin` (the Netdata service) must allow `CAP_NET_ADMIN`, otherwise the kernel refuses
+  to start a binary with that capability. `apps.plugin` uses the capability once at startup, before it starts any
+  thread, and then drops it.
+- Answers say whether exit statuses were available (`exit_status`).
+
 **Memory and CPU**: the last 30 minutes (at `update every = 1`) stay in memory, compressed: typically 0.4 to
 0.7 MiB. Recording costs well under 0.1% of one CPU core.
 
@@ -428,6 +445,7 @@ changes the Agent kept.
 | `with-recorder-cmdline` | -       | Also records full command lines. They may contain passwords or tokens.              |
 | `without-recorder-files` | -      | Does not record the files the busiest processes by I/O hold open for writing.       |
 | `without-recorder-connections` | - | Does not record the TCP connections processes open and close.                     |
+| `without-recorder-proc-events` | - | Does not listen to the kernel's process events: no exit statuses, no processes shorter than an iteration. |
 
 ```text
 [plugin:apps]

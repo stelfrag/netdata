@@ -189,6 +189,11 @@ ENUM_STR_DEFINE_FUNCTIONS(SIGNAL_CODE, SIG_NOT_FOUND, NULL);
 
 // --------------------------------------------------------------------------------------------------------------------
 
+const char *signal_name(int signo) {
+    const char *s = SIGNAL_NUM_2str(signo);
+    return (s && *s) ? s : NULL;
+}
+
 void SIGNAL_CODE_2str_h(SIGNAL_CODE code, char *buf, size_t size) {
     if(!buf || !size) return;
     if(size < 3 || code == 0) {

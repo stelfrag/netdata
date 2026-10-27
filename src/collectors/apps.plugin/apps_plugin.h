@@ -858,6 +858,7 @@ extern bool apps_recorder_enabled;
 extern bool apps_recorder_record_cmdline;
 extern bool apps_recorder_record_files;
 extern bool apps_recorder_record_connections;
+extern bool apps_recorder_record_proc_events;
 void apps_recorder_init(void);
 void apps_recorder_collect(void);
 void apps_recorder_cleanup(void);

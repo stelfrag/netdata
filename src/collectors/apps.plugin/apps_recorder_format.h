@@ -10,7 +10,7 @@
 // Chunks are host-local caches: integers are stored in native byte order and the version guards the layout.
 
 #define APPS_REC_MAGIC              0x5250444eU // "NDPR"
-#define APPS_REC_VERSION            3
+#define APPS_REC_VERSION            4
 #define APPS_REC_FRAMES_PER_CHUNK   60
 #define APPS_REC_STRING_NONE        UINT16_MAX
 #define APPS_REC_STRINGS_MAX        (UINT16_MAX - 1)
@@ -28,6 +28,10 @@
 #define APPS_REC_FRAME_FILES        0x0001  // the open files of the I/O rows were looked at
 #define APPS_REC_FRAME_SOCKETS      0x0002  // the rows carry their socket counts
 #define APPS_REC_FRAME_CONNS        0x0004  // TCP connections were recorded (the close listener was running)
+#define APPS_REC_FRAME_PROC_EVENTS  0x0008  // the kernel's process events were received: exits carry their status
+
+// APPS_REC_EXIT.flags
+#define APPS_REC_EXIT_STATUS        0x01    // status and exit_ut are known
 
 // APPS_REC_FILE.flags
 #define APPS_REC_FILE_DELETED       0x01    // no name left on the filesystem (st_nlink == 0)
@@ -82,6 +86,9 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     int32_t pid;
     uint64_t starttime;
+    uint64_t exit_ut;           // realtime of the exit, when APPS_REC_EXIT_STATUS
+    int32_t status;             // the wait status (exit code << 8, or the signal), when APPS_REC_EXIT_STATUS
+    uint8_t flags;              // APPS_REC_EXIT_*
 } APPS_REC_EXIT;
 
 // a regular file a row holds open for writing
@@ -114,6 +121,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct __attribute__((packed)) {
     uint64_t time_ut;           // realtime of the sample
+    uint64_t boot_ut;           // realtime of the boot: starttime / system HZ is the time since then
     uint32_t pids;              // running processes
     uint32_t host_cpu;          // 1/10000 of a core, from the system totals (0 when unknown)
     uint32_t procs_cpu;         // 1/10000 of a core, all processes
@@ -127,6 +135,7 @@ typedef struct __attribute__((packed)) {
     uint16_t conns;
     uint16_t conns_lost;        // connection events since the previous frame not recorded (over the cap, kernel overrun)
     uint16_t netns_other;       // processes with sockets in network namespaces the socket dumps do not see
+    uint16_t proc_lost;         // process exits since the previous frame whose event was lost
     uint16_t flags;             // APPS_REC_FRAME_*
 } APPS_REC_FRAME_HDR;
 

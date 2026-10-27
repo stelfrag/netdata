@@ -475,6 +475,10 @@ typedef struct {
     uint16_t sockets_max;
     usec_t first_ut, last_ut;
     bool started, exited;
+    uint64_t boot_ut;           // of the frame it was first seen in, to turn starttime into a time
+    usec_t exit_ut;             // when the exit status is known
+    int32_t status;
+    bool status_known;
 } REC_AGG;
 
 // a connection event of the range, with its time and process identity
@@ -515,6 +519,8 @@ typedef struct {
     REC_COVERAGE coverage;
     REC_GAPS gaps;
     size_t exits_unknown;       // exits of processes the range has no identity for
+    size_t proc_event_frames;   // frames with the kernel's process events
+    size_t proc_lost;
 
     REC_RANGE_FILE *files;
     size_t files_size;          // power of 2
@@ -848,6 +854,10 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
     uint64_t boot;
     memcpy(&boot, f->boot_id, sizeof(boot));
     coverage_add(&r->coverage, f->hdr);
+    if(f->hdr->flags & APPS_REC_FRAME_PROC_EVENTS) {
+        r->proc_event_frames++;
+        r->proc_lost += f->hdr->proc_lost;
+    }
 
     // the frames arrive in time order
     gaps_add(&r->gaps, r->gaps.prev_ut, t);
@@ -857,6 +867,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         APPS_REC_START s = f->starts[i];
         REC_AGG *a = agg_find(r, s.pid, s.starttime, boot, true);
         if(!a->first_ut) a->first_ut = t;
+        if(!a->boot_ut) a->boot_ut = f->hdr->boot_ut;
         a->last_ut = MAX(a->last_ut, t);
         a->started = true;
         agg_identity(a, strings, s.ppid, s.uid, s.comm, s.exe, s.group, s.cmdline);
@@ -866,6 +877,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         APPS_REC_ROW row = f->rows[i];
         REC_AGG *a = agg_find(r, row.pid, row.starttime, boot, true);
         if(!a->first_ut) a->first_ut = t;
+        if(!a->boot_ut) a->boot_ut = f->hdr->boot_ut;
         a->last_ut = MAX(a->last_ut, t);
         a->samples++;
         a->cpu_sum += row.cpu;
@@ -884,6 +896,11 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         }
         a->exited = true;
         a->last_ut = MAX(a->last_ut, t);
+        if(e.flags & APPS_REC_EXIT_STATUS) {
+            a->status_known = true;
+            a->status = e.status;
+            a->exit_ut = e.exit_ut;
+        }
     }
 
     range_files(r, f, strings, boot);
@@ -915,7 +932,38 @@ static const REC_COLUMN range_columns[] = {
     COL_TIME("LastSeen", "Last Seen in the range", OPT_VIS),
     COL_STR("Started", "Started within the range", OPT_VIS),
     COL_STR("Exited", "Exited within the range (unknown: last seen before a time with no samples)", OPT_VIS),
+    COL_TIME("StartedAt", "Process Start Time", RRDF_FIELD_OPTS_NONE),
+    COL_TIME("ExitedAt", "Process Exit Time (when the exit status is known)", RRDF_FIELD_OPTS_NONE),
+    COL_STR("ExitStatus", "Exit Status (exit code, or the signal that ended it)", OPT_VIS),
 };
+
+// "exit N", the signal that ended it ("SIGKILL", "SIGSEGV (core dumped)"), "unknown" when exited without a known
+// status, "-" while running
+static void exit_status_txt(const REC_AGG *a, char *buf, size_t size) {
+    if(!a->exited) {
+        strncpyz(buf, "-", size - 1);
+        return;
+    }
+    if(!a->status_known) {
+        strncpyz(buf, "unknown", size - 1);
+        return;
+    }
+
+    int st = a->status;
+    if(WIFEXITED(st))
+        snprintfz(buf, size, "exit %d", WEXITSTATUS(st));
+    else if(WIFSIGNALED(st)) {
+        const char *name = signal_name(WTERMSIG(st));
+        char num[32];
+        if(!name) {
+            snprintfz(num, sizeof(num), "signal %d", WTERMSIG(st));
+            name = num;
+        }
+        snprintfz(buf, size, "%s%s", name, WCOREDUMP(st) ? " (core dumped)" : "");
+    }
+    else
+        snprintfz(buf, size, "status %d", st);
+}
 
 static void query_range(const char *transaction, usec_t after_ut, usec_t before_ut, bool show_cmdline) {
     REC_RANGE r = { 0 };
@@ -947,6 +995,13 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     buffer_json_member_add_uint64(wb, "processes_shown", emitted);
     buffer_json_member_add_uint64(wb, "exits_unidentified", r.exits_unknown);
 
+    // whether exits carry their status: the kernel's process events were received in all, some or none of the samples
+    buffer_json_member_add_object(wb, "exit_status");
+    buffer_json_member_add_string(wb, "status",
+        r.proc_event_frames == r.coverage.frames ? "available" : r.proc_event_frames ? "partial" : "unavailable");
+    buffer_json_member_add_uint64(wb, "lost", r.proc_lost);
+    buffer_json_object_close(wb);
+
     buffer_json_member_add_array(wb, "data");
     for(size_t i = 0; i < emitted; i++) {
         const REC_AGG *a = sorted[i];
@@ -972,6 +1027,14 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
         buffer_json_add_array_item_string(wb, a->started ? "yes" : "no");
         // every exit is recorded while sampling; after a gap the process may have exited unseen
         buffer_json_add_array_item_string(wb, a->exited ? "yes" : (r.gaps.last_gap_from_ut >= a->last_ut ? "unknown" : "no"));
+
+        // starttime counts clock ticks since boot
+        buffer_json_add_array_item_uint64(wb, (a->boot_ut && system_hz) ?
+            a->boot_ut + a->starttime * USEC_PER_SEC / system_hz : 0);
+        buffer_json_add_array_item_uint64(wb, a->status_known ? a->exit_ut : 0);
+        char status[64];
+        exit_status_txt(a, status, sizeof(status));
+        buffer_json_add_array_item_string(wb, status);
         buffer_json_array_close(wb);
     }
     buffer_json_array_close(wb);

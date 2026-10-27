@@ -16,6 +16,7 @@
 #include "apps_recorder.h"
 #include "apps_recorder_store.h"
 #include "apps_recorder_conns.h"
+#include "apps_recorder_procs.h"
 
 #if defined(OS_LINUX)
 
@@ -41,6 +42,7 @@ bool apps_recorder_enabled = true;
 bool apps_recorder_record_cmdline = false;
 bool apps_recorder_record_files = true;
 bool apps_recorder_record_connections = true;
+bool apps_recorder_record_proc_events = true;
 int apps_recorder_disk_mb = APPS_RECORDER_DISK_MB_DEFAULT;
 
 typedef struct {
@@ -116,6 +118,16 @@ static struct {
     size_t starts_size;
     APPS_REC_EXIT *exits;
     size_t exits_size;
+
+    // the kernel's process exits: this iteration's, after the ones carried from the previous one
+    APPS_REC_PROC_EXIT *pexits;
+    size_t pexits_size, pexits_used;
+    APPS_REC_PROC_EXIT *shorts;     // processes that started and exited between two iterations
+    size_t shorts_size;
+    APPS_REC_EXIT *missed;          // the previous iteration's exits found by polling without a status, sorted
+    size_t missed_size, missed_used;
+    bool proc_events;
+    size_t proc_lost;
     APPS_REC_ROW rows[APPS_REC_ROWS_MAX];
     APPS_REC_FILE files[APPS_REC_FILES_MAX];
     APPS_REC_CONN conns[APPS_REC_CONNS_MAX];
@@ -699,6 +711,107 @@ static uint16_t row_files(struct pid_stat *p, uint16_t row, uint16_t nfiles) {
     return nfiles;
 }
 
+static int cmp_pexit(const void *a, const void *b) {
+    const APPS_REC_PROC_EXIT *x = a, *y = b;
+    if(x->pid != y->pid) return (x->pid > y->pid) - (x->pid < y->pid);
+    return (x->exit_ut > y->exit_ut) - (x->exit_ut < y->exit_ut);
+}
+
+static int cmp_exit(const void *a, const void *b) {
+    const APPS_REC_EXIT *x = a, *y = b;
+    if(x->pid != y->pid) return (x->pid > y->pid) - (x->pid < y->pid);
+    return (x->starttime > y->starttime) - (x->starttime < y->starttime);
+}
+
+// whether this iteration's /proc scan saw a process with this pid (rec.cur is sorted by pid)
+static bool pid_running(int32_t pid, size_t n) {
+    size_t lo = 0, hi = n;
+    while(lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if(rec.cur[mid].pid < pid) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo < n && rec.cur[lo].pid == pid;
+}
+
+// The kernel's process exits give the exits found by polling their status and time, and add the processes that
+// started and exited between two iterations (into rec.shorts, with their exits appended to rec.exits). An exit of a
+// process the scan still saw waits one iteration: it exited after the scan. Returns the processes added.
+static size_t proc_exits(size_t n, size_t *nexits) {
+    size_t lost;
+    rec.proc_events = apps_rec_procs_drain(&rec.pexits, &rec.pexits_size, &rec.pexits_used, &lost);
+    rec.proc_lost = lost;
+    if(!rec.proc_events)
+        return 0;
+
+    qsort(rec.pexits, rec.pexits_used, sizeof(*rec.pexits), cmp_pexit);
+
+    // the exits found by polling: the earliest unmatched event of the same pid (and starttime, when it is known)
+    for(size_t i = 0; i < *nexits; i++) {
+        APPS_REC_EXIT *x = &rec.exits[i];
+        APPS_REC_PROC_EXIT key = { .pid = x->pid };
+        size_t lo = 0, hi = rec.pexits_used;
+        while(lo < hi) {
+            size_t mid = (lo + hi) / 2;
+            if(cmp_pexit(&rec.pexits[mid], &key) < 0) lo = mid + 1;
+            else hi = mid;
+        }
+        for(size_t k = lo; k < rec.pexits_used && rec.pexits[k].pid == x->pid; k++) {
+            APPS_REC_PROC_EXIT *e = &rec.pexits[k];
+            if(e->matched || (e->identity && e->starttime != x->starttime))
+                continue;
+            e->matched = true;
+            x->exit_ut = e->exit_ut;
+            x->status = e->status;
+            x->flags = APPS_REC_EXIT_STATUS;
+            break;
+        }
+    }
+
+    size_t kept = 0, nshort = 0;
+    for(size_t k = 0; k < rec.pexits_used; k++) {
+        APPS_REC_PROC_EXIT e = rec.pexits[k];
+        if(e.matched)
+            continue;
+
+        if(pid_running(e.pid, n)) {
+            if(!e.carried) {
+                e.carried = true;
+                rec.pexits[kept++] = e;
+            }
+            continue;
+        }
+
+        // without its identity it cannot be named; with it, it may be the late event of an exit polling found
+        // in the previous iteration, which that iteration already recorded without a status
+        APPS_REC_EXIT missed = { .pid = e.pid, .starttime = e.starttime };
+        if(!e.identity || (rec.missed_used &&
+            bsearch(&missed, rec.missed, rec.missed_used, sizeof(*rec.missed), cmp_exit)))
+            continue;
+
+        ensure((void **)&rec.exits, &rec.exits_size, *nexits + 1, sizeof(*rec.exits));
+        rec.exits[(*nexits)++] = (APPS_REC_EXIT){
+            .pid = e.pid, .starttime = e.starttime, .exit_ut = e.exit_ut, .status = e.status,
+            .flags = APPS_REC_EXIT_STATUS,
+        };
+        ensure((void **)&rec.shorts, &rec.shorts_size, nshort + 1, sizeof(*rec.shorts));
+        rec.shorts[nshort++] = e;
+    }
+    rec.pexits_used = kept;
+
+    // this iteration's exits without a status, for the late events of the next one
+    rec.missed_used = 0;
+    for(size_t i = 0; i < *nexits; i++) {
+        if(rec.exits[i].flags & APPS_REC_EXIT_STATUS)
+            continue;
+        ensure((void **)&rec.missed, &rec.missed_size, rec.missed_used + 1, sizeof(*rec.missed));
+        rec.missed[rec.missed_used++] = rec.exits[i];
+    }
+    qsort(rec.missed, rec.missed_used, sizeof(*rec.missed), cmp_exit);
+
+    return nshort;
+}
+
 void apps_recorder_collect(void) {
     if(!apps_recorder_enabled)
         return;
@@ -743,16 +856,18 @@ void apps_recorder_collect(void) {
             }
         }
     }
+    size_t nshort = proc_exits(n, &nexits);
     nstarted = MIN(nstarted, (size_t)UINT16_MAX);
+    nshort = MIN(nshort, (size_t)UINT16_MAX - nstarted);
     nexits = MIN(nexits, (size_t)UINT16_MAX);
 
     // a frame interns up to 4 strings per start and per row, 2 per file, 1 per connection; seal first when the chunk
     // cannot take them
     if(apps_rec_builder_full(&rec.builder,
-                             (nstarted + APPS_REC_ROWS_MAX) * 4 + APPS_REC_FILES_MAX * 2 + APPS_REC_CONNS_MAX))
+                             (nstarted + nshort + APPS_REC_ROWS_MAX) * 4 + APPS_REC_FILES_MAX * 2 + APPS_REC_CONNS_MAX))
         seal_chunk();
 
-    ensure((void **)&rec.starts, &rec.starts_size, nstarted + 1, sizeof(*rec.starts));
+    ensure((void **)&rec.starts, &rec.starts_size, nstarted + nshort + 1, sizeof(*rec.starts));
     for(size_t i = 0; i < nstarted; i++) {
         struct pid_stat *p = started[i];
         REC_IDENTITY id = pid_identity(p);
@@ -762,6 +877,19 @@ void apps_recorder_collect(void) {
         };
     }
     freez(started);
+
+    // processes that lived less than an iteration: their name from /proc at their fork or exec
+    for(size_t i = 0; i < nshort; i++) {
+        const APPS_REC_PROC_EXIT *e = &rec.shorts[i];
+        STRING *comm = e->comm[0] ? string_strdupz(e->comm) : NULL;
+        rec.starts[nstarted + i] = (APPS_REC_START){
+            .pid = e->pid, .ppid = e->ppid, .starttime = e->starttime, .uid = e->uid,
+            .comm = apps_rec_builder_string(&rec.builder, comm), .exe = APPS_REC_STRING_NONE,
+            .group = APPS_REC_STRING_NONE, .cmdline = APPS_REC_STRING_NONE,
+        };
+        string_freez(comm);
+    }
+    nstarted += nshort;
 
     // rows: by CPU until the coverage target, then the largest by memory and by I/O
     uint16_t nrows = 0;
@@ -821,11 +949,14 @@ void apps_recorder_collect(void) {
         .procs_cpu = cpu_permyriad(procs_cpu),
         .rows_cpu = cpu_permyriad(rows_cpu),
         .procs_rss_kib = procs_rss / 1024,
+        .boot_ut = now_realtime_usec() - now_boottime_usec(),
+        .proc_lost = (uint16_t)MIN(rec.proc_lost, UINT16_MAX),
         .conns_lost = cf.lost,
         .netns_other = cf.netns_other,
         .flags = (files ? APPS_REC_FRAME_FILES : 0) |
                  (enable_file_charts ? APPS_REC_FRAME_SOCKETS : 0) |
-                 (cf.recorded ? APPS_REC_FRAME_CONNS : 0),
+                 (cf.recorded ? APPS_REC_FRAME_CONNS : 0) |
+                 (rec.proc_events ? APPS_REC_FRAME_PROC_EVENTS : 0),
     };
     rec.last.rows = nrows;
     rec.last.starts = (uint16_t)nstarted;
@@ -1248,6 +1379,11 @@ const char *apps_recorder_save_str(APPS_REC_SAVE s) {
 
 // --------------------------------------------------------------------------------------------------------------------
 
+void apps_recorder_subscribe_proc_events(void) {
+    if(apps_recorder_enabled && apps_recorder_record_proc_events)
+        apps_rec_procs_subscribe();
+}
+
 void apps_recorder_init(void) {
     if(rec.initialized || !apps_recorder_enabled)
         return;
@@ -1268,6 +1404,8 @@ void apps_recorder_init(void) {
     if(apps_recorder_record_connections)
         apps_rec_conns_start();
 
+    apps_rec_procs_start();
+
     rec.initialized = true;
 }
 
@@ -1280,6 +1418,7 @@ void apps_recorder_cleanup(void) {
         seal_chunk();
 
     apps_rec_conns_stop();
+    apps_rec_procs_stop();
 
     if(rec.store_open)
         apps_rec_store_close(&rec.store);
@@ -1295,6 +1434,9 @@ void apps_recorder_cleanup(void) {
     freez(rec.sorted);
     freez(rec.starts);
     freez(rec.exits);
+    freez(rec.pexits);
+    freez(rec.shorts);
+    freez(rec.missed);
     freez(rec.sizes_prev);
     freez(rec.sizes_cur);
     mounts_free();

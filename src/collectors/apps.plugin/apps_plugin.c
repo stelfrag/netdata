@@ -561,6 +561,11 @@ static void parse_args(int argc, char **argv)
             continue;
         }
 
+        if(strcmp("without-recorder-proc-events", argv[i]) == 0) {
+            apps_recorder_record_proc_events = false;
+            continue;
+        }
+
         if(strcmp("recorder-disk-mb", argv[i]) == 0) {
             if(argc <= i + 1) {
                 fprintf(stderr, "Parameter 'recorder-disk-mb' requires a number as argument.\n");
@@ -644,6 +649,11 @@ static void parse_args(int argc, char **argv)
                     " without-recorder-connections\n"
                     "                        do not record the TCP connections processes open\n"
                     "                        and close (needs with-files)\n"
+                    "\n"
+                    " without-recorder-proc-events\n"
+                    "                        do not listen to the kernel's process events, which\n"
+                    "                        give exit statuses and processes shorter than an\n"
+                    "                        iteration\n"
                     "\n"
                     " fds-cache-secs N       cache the files of processed for N seconds\n"
                     "                        caching is adaptive per file (when a file\n"
@@ -871,6 +881,11 @@ int main(int argc, char **argv) {
                           , uid, euid, argv[0], argv[0]);
 #endif
     }
+#endif
+
+#if defined(OS_LINUX)
+    // before any thread starts: the subscription may need CAP_NET_ADMIN, dropped right after it
+    apps_recorder_subscribe_proc_events();
 #endif
 
     netdata_log_info("started on pid %d", getpid());

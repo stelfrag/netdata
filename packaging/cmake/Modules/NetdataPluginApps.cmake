@@ -54,6 +54,8 @@ if(ENABLE_PLUGIN_APPS)
                 src/collectors/apps.plugin/apps-lookup-netipc.h
                 src/collectors/apps.plugin/apps_recorder_conns.c
                 src/collectors/apps.plugin/apps_recorder_conns.h
+                src/collectors/apps.plugin/apps_recorder_procs.c
+                src/collectors/apps.plugin/apps_recorder_procs.h
                 src/libnetdata/local-sockets/local-sockets.h
         )
     endif()

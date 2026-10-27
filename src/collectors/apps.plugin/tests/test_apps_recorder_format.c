@@ -50,12 +50,13 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
 
     if(f->hdr->time_ut != e->hdr.time_ut || f->hdr->pids != e->hdr.pids || f->hdr->host_cpu != e->hdr.host_cpu ||
         f->hdr->procs_cpu != e->hdr.procs_cpu || f->hdr->rows_cpu != e->hdr.rows_cpu ||
-        f->hdr->procs_rss_kib != e->hdr.procs_rss_kib)
+        f->hdr->procs_rss_kib != e->hdr.procs_rss_kib || f->hdr->boot_ut != e->hdr.boot_ut)
         return fail(w, "totals differ", i);
 
     if(f->hdr->starts != e->hdr.starts || f->hdr->exits != e->hdr.exits || f->hdr->rows != e->hdr.rows ||
         f->hdr->files != e->hdr.files || f->hdr->conns != e->hdr.conns || f->hdr->conns_lost != e->hdr.conns_lost ||
-        f->hdr->netns_other != e->hdr.netns_other || f->hdr->flags != e->hdr.flags)
+        f->hdr->netns_other != e->hdr.netns_other || f->hdr->proc_lost != e->hdr.proc_lost ||
+        f->hdr->flags != e->hdr.flags)
         return fail(w, "counts differ", i);
 
     for(uint16_t k = 0; k < f->hdr->starts; k++) {
@@ -69,7 +70,8 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
 
     for(uint16_t k = 0; k < f->hdr->exits; k++) {
         APPS_REC_EXIT got = f->exits[k];
-        if(got.pid != e->exits[k].pid || got.starttime != e->exits[k].starttime)
+        if(got.pid != e->exits[k].pid || got.starttime != e->exits[k].starttime || got.exit_ut != e->exits[k].exit_ut ||
+            got.status != e->exits[k].status || got.flags != e->exits[k].flags)
             return fail(w, "exit differs", i);
     }
 
@@ -126,7 +128,7 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
         memset(f, 0, sizeof(*f));
         f->hdr = (APPS_REC_FRAME_HDR){
             .time_ut = 1000000ULL * (i + 1), .pids = 300 + i, .host_cpu = 12000, .procs_cpu = 11000,
-            .rows_cpu = 10500, .procs_rss_kib = 1ULL << 33,
+            .rows_cpu = 10500, .procs_rss_kib = 1ULL << 33, .boot_ut = 123456789ULL,
         };
 
         // frame 1 has no starts, frame 2 exits only
@@ -141,7 +143,8 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
         // frame 3 has connections: an attributed open and a close of an unknown process, with one lost
         f->hdr.conns = (i == 2) ? 2 : 0;
         if(i == 2) {
-            f->hdr.flags |= APPS_REC_FRAME_SOCKETS | APPS_REC_FRAME_CONNS;
+            f->hdr.flags |= APPS_REC_FRAME_SOCKETS | APPS_REC_FRAME_CONNS | APPS_REC_FRAME_PROC_EVENTS;
+            f->hdr.proc_lost = 2;
             f->hdr.conns_lost = 1;
             f->hdr.netns_other = 3;
         }
@@ -157,7 +160,10 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
         }
 
         for(uint16_t k = 0; k < f->hdr.exits; k++)
-            f->exits[k] = (APPS_REC_EXIT){ .pid = 200 + k, .starttime = 7000 + k };
+            f->exits[k] = (APPS_REC_EXIT){
+                .pid = 200 + k, .starttime = 7000 + k, .exit_ut = k ? 0 : 3000000ULL, .status = k ? 0 : (3 << 8),
+                .flags = k ? 0 : APPS_REC_EXIT_STATUS,
+            };
 
         for(uint16_t k = 0; k < f->hdr.rows; k++) {
             STRING *comm = (k == 1) ? cc1 : bash;
