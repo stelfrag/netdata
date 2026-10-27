@@ -7,6 +7,9 @@
 //
 // A save request (APPS_RECORDER_SAVE_FUNCTION, called only by the daemon) writes the chunks around a moment to the
 // disk store (apps_recorder_store.h); the part of the window still in the future is written as its chunks seal.
+// A chunk that cannot be written (a full disk) stays wanted: every seal tries the unwritten chunks again, and when
+// the ring needs its slot it moves to a hold of the same size, so a full disk loses nothing until the hold is full
+// too. Queries report such windows as not saved, with the reason.
 //
 // All functions here run under apps_and_stdout_mutex: the collection loop and the Function workers hold it.
 
@@ -23,6 +26,8 @@
 #define APPS_REC_IO_ROWS            10
 #define APPS_REC_ROWS_MAX           (APPS_REC_CPU_ROWS_MAX + APPS_REC_MEM_ROWS + APPS_REC_IO_ROWS)
 #define APPS_REC_PENDING_MAX        16
+#define APPS_REC_HELD_MAX           APPS_REC_RING_CHUNKS
+#define APPS_REC_LOST_MAX           16
 
 bool apps_recorder_enabled = true;
 bool apps_recorder_record_cmdline = false;
@@ -37,13 +42,21 @@ typedef struct {
 typedef struct {
     APPS_REC_CHUNK_HDR *hdr;
     size_t size;
+    bool wanted;            // a saved window covers it
     bool stored;            // already in the disk store
+    APPS_REC_STORE_RESULT failure;  // why the last attempt to write it failed
 } REC_SEALED;
 
 typedef struct {
     usec_t from_ut;
     usec_t to_ut;
 } REC_WINDOW;
+
+typedef struct {
+    usec_t from_ut;
+    usec_t to_ut;
+    APPS_REC_STORE_RESULT reason;
+} REC_LOST;
 
 static struct {
     bool initialized;
@@ -55,6 +68,15 @@ static struct {
 
     APPS_REC_STORE store;
     bool store_open;
+    APPS_REC_STORE_RESULT last_failure; // why the newest failed write failed
+
+    // wanted chunks that could not be written and left the ring, oldest first
+    REC_SEALED held[APPS_REC_HELD_MAX];
+    size_t held_used;
+
+    // wanted chunks dropped from the hold unwritten, newest last
+    REC_LOST lost[APPS_REC_LOST_MAX];
+    size_t lost_used;
 
     // saved windows that end after the newest sealed chunk
     REC_WINDOW pending[APPS_REC_PENDING_MAX];
@@ -169,18 +191,101 @@ static inline bool chunk_overlaps(const APPS_REC_CHUNK_HDR *hdr, usec_t from_ut,
     return hdr->first_ut <= to_ut && hdr->last_ut >= from_ut;
 }
 
+// making room on a full disk must not delete what is still in RAM: it would only be written again (or reported
+// saved while it is not)
+static uint64_t oldest_in_ram_ut(void) {
+    uint64_t oldest = UINT64_MAX;
+    for(size_t i = 0; i < rec.held_used; i++)
+        oldest = MIN(oldest, rec.held[i].hdr->first_ut);
+    for(size_t i = 0; i < APPS_REC_RING_CHUNKS; i++)
+        if(rec.ring[i].hdr)
+            oldest = MIN(oldest, rec.ring[i].hdr->first_ut);
+    return oldest;
+}
+
 static bool persist_slot(REC_SEALED *slot) {
+    slot->wanted = true;
     if(slot->stored)
         return true;
 
-    if(!rec.store_open)
+    if(!rec.store_open) {
+        slot->failure = APPS_REC_STORE_ERROR;
         return false;
+    }
 
-    if(apps_rec_store_has(&rec.store, slot->hdr->first_ut) ||
-        apps_rec_store_write(&rec.store, slot->hdr, slot->size))
+    if(apps_rec_store_has(&rec.store, slot->hdr->first_ut))
         slot->stored = true;
+    else {
+        APPS_REC_STORE_RESULT r = apps_rec_store_write(&rec.store, slot->hdr, slot->size, oldest_in_ram_ut());
+        slot->stored = (r == APPS_REC_STORE_OK);
+        if(!slot->stored)
+            slot->failure = rec.last_failure = r;
+    }
 
     return slot->stored;
+}
+
+static inline bool slot_unwritten(const REC_SEALED *slot) {
+    return slot->hdr && slot->wanted && !slot->stored;
+}
+
+// the unwritten chunks, oldest first: the hold, then the ring; stops at the first failure, the disk is still full
+static void retry_unwritten(void) {
+    if(!rec.store_open)
+        return;
+
+    size_t kept = 0;
+    bool failed = false;
+    for(size_t i = 0; i < rec.held_used; i++) {
+        REC_SEALED *h = &rec.held[i];
+        if(!failed && persist_slot(h)) {
+            freez(h->hdr);
+            continue;
+        }
+        failed = true;
+        rec.held[kept++] = *h;
+    }
+    rec.held_used = kept;
+
+    for(size_t k = 0; k < APPS_REC_RING_CHUNKS && !failed; k++) {
+        REC_SEALED *slot = &rec.ring[(rec.ring_next + k) % APPS_REC_RING_CHUNKS];
+        if(slot_unwritten(slot) && !persist_slot(slot))
+            failed = true;
+    }
+}
+
+static void lost_add(const REC_SEALED *slot) {
+    if(rec.lost_used && rec.lost[rec.lost_used - 1].to_ut >= slot->hdr->first_ut - (usec_t)update_every * 2 * USEC_PER_SEC &&
+       rec.lost[rec.lost_used - 1].reason == slot->failure) {
+        rec.lost[rec.lost_used - 1].to_ut = MAX(rec.lost[rec.lost_used - 1].to_ut, slot->hdr->last_ut);
+        return;
+    }
+
+    if(rec.lost_used == APPS_REC_LOST_MAX) {
+        memmove(&rec.lost[0], &rec.lost[1], (APPS_REC_LOST_MAX - 1) * sizeof(rec.lost[0]));
+        rec.lost_used--;
+    }
+    rec.lost[rec.lost_used++] = (REC_LOST){
+        .from_ut = slot->hdr->first_ut, .to_ut = slot->hdr->last_ut, .reason = slot->failure };
+}
+
+// an unwritten chunk leaving the ring goes to the hold; when the hold is full, its oldest chunk is lost
+static void hold_slot(REC_SEALED *slot) {
+    if(rec.held_used == APPS_REC_HELD_MAX) {
+        REC_SEALED *oldest = &rec.held[0];
+        lost_add(oldest);
+        nd_log_limit_static_global_var(erl, 60, 0);
+        nd_log_limit(&erl, NDLS_COLLECTORS, NDLP_ERR,
+                     "apps.plugin recorder: dropping saved process history from %llu to %llu that could not be written (%s)",
+                     (unsigned long long)(oldest->hdr->first_ut / USEC_PER_SEC),
+                     (unsigned long long)(oldest->hdr->last_ut / USEC_PER_SEC),
+                     apps_rec_store_result_str(oldest->failure));
+        freez(oldest->hdr);
+        memmove(&rec.held[0], &rec.held[1], (APPS_REC_HELD_MAX - 1) * sizeof(rec.held[0]));
+        rec.held_used--;
+    }
+    rec.held[rec.held_used++] = *slot;
+    slot->hdr = NULL;
 }
 
 // a newly sealed chunk is written when a pending window covers it; windows it completes are dropped
@@ -218,7 +323,11 @@ static void pending_windows_add(usec_t from_ut, usec_t to_ut) {
 }
 
 static void ring_push(APPS_REC_CHUNK_HDR *hdr, size_t size) {
+    retry_unwritten();
+
     REC_SEALED *slot = &rec.ring[rec.ring_next];
+    if(slot_unwritten(slot))
+        hold_slot(slot);
     freez(slot->hdr);
     *slot = (REC_SEALED){ .hdr = hdr, .size = size };
     rec.ring_next = (rec.ring_next + 1) % APPS_REC_RING_CHUNKS;
@@ -442,6 +551,7 @@ void apps_recorder_send_charts_to_netdata(usec_t dt) {
                 "CHART netdata.apps_recorder_memory '' 'Apps Plugin Flight Recorder Memory' 'bytes' apps.plugin netdata.apps_recorder.memory stacked 140040 %1$d\n"
                 "DIMENSION sealed '' absolute 1 1\n"
                 "DIMENSION building '' absolute 1 1\n"
+                "DIMENSION unwritten '' absolute 1 1\n"
                 "CHART netdata.apps_recorder_frame '' 'Apps Plugin Flight Recorder Frame' 'processes' apps.plugin netdata.apps_recorder.frame line 140041 %1$d\n"
                 "DIMENSION rows '' absolute 1 1\n"
                 "DIMENSION starts '' absolute 1 1\n"
@@ -454,14 +564,19 @@ void apps_recorder_send_charts_to_netdata(usec_t dt) {
                 , update_every);
     }
 
-    size_t sealed = 0;
-    for(size_t i = 0; i < APPS_REC_RING_CHUNKS; i++)
+    size_t sealed = 0, unwritten = 0;
+    for(size_t i = 0; i < APPS_REC_RING_CHUNKS; i++) {
         sealed += rec.ring[i].size;
+        if(slot_unwritten(&rec.ring[i])) unwritten += rec.ring[i].size;
+    }
+    for(size_t i = 0; i < rec.held_used; i++)
+        unwritten += rec.held[i].size;
 
     fprintf(stdout,
             "BEGIN netdata.apps_recorder_memory %"PRIu64"\n"
             "SET sealed = %zu\n"
             "SET building = %zu\n"
+            "SET unwritten = %zu\n"
             "END\n"
             "BEGIN netdata.apps_recorder_frame %"PRIu64"\n"
             "SET rows = %u\n"
@@ -475,7 +590,7 @@ void apps_recorder_send_charts_to_netdata(usec_t dt) {
             "SET used = %"PRIu64"\n"
             "SET cap = %"PRIu64"\n"
             "END\n"
-            , dt, sealed, buffer_strlen(rec.builder.payload)
+            , dt, sealed, buffer_strlen(rec.builder.payload), unwritten
             , dt, (unsigned)rec.last.rows, (unsigned)rec.last.starts, (unsigned)rec.last.exits
             , dt, (unsigned)rec.last.cpu_coverage
             , dt, rec.store_open ? rec.store.bytes : 0, rec.store_open ? rec.store.cap_bytes : 0);
@@ -484,15 +599,17 @@ void apps_recorder_send_charts_to_netdata(usec_t dt) {
 // --------------------------------------------------------------------------------------------------------------------
 // saving
 
-static void save_window(usec_t from_ut, usec_t to_ut, size_t *stored, bool *pending) {
+static void save_window(usec_t from_ut, usec_t to_ut, size_t *stored, size_t *unwritten, bool *pending) {
     *stored = 0;
+    *unwritten = 0;
     usec_t newest_sealed_ut = 0;
     for(size_t i = 0; i < APPS_REC_RING_CHUNKS; i++) {
         REC_SEALED *slot = &rec.ring[i];
         if(!slot->hdr) continue;
         newest_sealed_ut = MAX(newest_sealed_ut, slot->hdr->last_ut);
-        if(chunk_overlaps(slot->hdr, from_ut, to_ut) && persist_slot(slot))
-            (*stored)++;
+        if(!chunk_overlaps(slot->hdr, from_ut, to_ut)) continue;
+        if(persist_slot(slot)) (*stored)++;
+        else (*unwritten)++;
     }
 
     *pending = to_ut > newest_sealed_ut;
@@ -577,13 +694,15 @@ void apps_recorder_function_save(const char *transaction, char *function,
 
     usec_t from_ut = (usec_t)MAX(at_s - (time_t)before_s, 0) * USEC_PER_SEC;
     usec_t to_ut = (usec_t)(at_s + (time_t)after_s) * USEC_PER_SEC;
-    size_t stored;
+    size_t stored, unwritten;
     bool pending;
-    save_window(from_ut, to_ut, &stored, &pending);
+    save_window(from_ut, to_ut, &stored, &unwritten, &pending);
 
-    nd_log(NDLS_COLLECTORS, NDLP_INFO,
-           "apps.plugin recorder: saving processes from %lld to %lld, reason '%s': %zu chunks written%s",
+    nd_log(NDLS_COLLECTORS, unwritten ? NDLP_WARNING : NDLP_INFO,
+           "apps.plugin recorder: saving processes from %lld to %lld, reason '%s': %zu chunks written%s%s%s",
            (long long)(from_ut / USEC_PER_SEC), (long long)(to_ut / USEC_PER_SEC), reason, stored,
+           unwritten ? ", the rest kept in RAM until it can be written: " : "",
+           unwritten ? apps_rec_store_result_str(rec.last_failure) : "",
            pending ? ", the rest as it is recorded" : "");
 
     BUFFER *wb = buffer_create(1024, NULL);
@@ -592,6 +711,9 @@ void apps_recorder_function_save(const char *transaction, char *function,
     buffer_json_member_add_time_t(wb, "from", (time_t)(from_ut / USEC_PER_SEC));
     buffer_json_member_add_time_t(wb, "to", (time_t)(to_ut / USEC_PER_SEC));
     buffer_json_member_add_uint64(wb, "chunks_written", stored);
+    buffer_json_member_add_uint64(wb, "chunks_unwritten", unwritten);
+    if(unwritten)
+        buffer_json_member_add_string(wb, "unwritten_reason", apps_rec_store_result_str(rec.last_failure));
     buffer_json_member_add_boolean(wb, "pending", pending);
     buffer_json_member_add_object(wb, "store");
     {
@@ -615,10 +737,10 @@ void apps_recorder_function_save(const char *transaction, char *function,
 // reading
 
 typedef struct {
-    enum { SRC_RING, SRC_STORE, SRC_BUILDING } type;
+    enum { SRC_RING, SRC_HELD, SRC_STORE, SRC_BUILDING } type;
     uint64_t first_ut;
     uint64_t last_ut;
-    size_t ring_slot;
+    size_t slot;            // in the ring or the hold
 } REC_SOURCE;
 
 typedef struct {
@@ -664,14 +786,20 @@ APPS_REC_SOURCE apps_recorder_foreach_frame(usec_t after_ut, usec_t before_ut, a
     if(!rec.initialized || after_ut > before_ut)
         return 0;
 
-    size_t max = APPS_REC_RING_CHUNKS + 1 + (rec.store_open ? rec.store.used : 0);
+    size_t max = APPS_REC_RING_CHUNKS + rec.held_used + 1 + (rec.store_open ? rec.store.used : 0);
     REC_SOURCE *src = mallocz(max * sizeof(*src));
     size_t n = 0;
 
     for(size_t i = 0; i < APPS_REC_RING_CHUNKS; i++) {
         const APPS_REC_CHUNK_HDR *h = rec.ring[i].hdr;
         if(h && chunk_overlaps(h, after_ut, before_ut))
-            src[n++] = (REC_SOURCE){ .type = SRC_RING, .first_ut = h->first_ut, .last_ut = h->last_ut, .ring_slot = i };
+            src[n++] = (REC_SOURCE){ .type = SRC_RING, .first_ut = h->first_ut, .last_ut = h->last_ut, .slot = i };
+    }
+
+    for(size_t i = 0; i < rec.held_used; i++) {
+        const APPS_REC_CHUNK_HDR *h = rec.held[i].hdr;
+        if(chunk_overlaps(h, after_ut, before_ut))
+            src[n++] = (REC_SOURCE){ .type = SRC_HELD, .first_ut = h->first_ut, .last_ut = h->last_ut, .slot = i };
     }
 
     if(rec.builder.frames && rec.builder.first_ut <= before_ut && rec.builder.last_ut >= after_ut)
@@ -692,8 +820,9 @@ APPS_REC_SOURCE apps_recorder_foreach_frame(usec_t after_ut, usec_t before_ut, a
     for(size_t i = 0; i < n && !w.stopped; i++) {
         size_t delivered = w.delivered;
         switch(src[i].type) {
-            case SRC_RING: {
-                REC_SEALED *slot = &rec.ring[src[i].ring_slot];
+            case SRC_RING:
+            case SRC_HELD: {
+                REC_SEALED *slot = (src[i].type == SRC_RING) ? &rec.ring[src[i].slot] : &rec.held[src[i].slot];
                 apps_rec_chunk_foreach_frame(slot->hdr, slot->size, walk_frame, &w);
                 break;
             }
@@ -733,6 +862,12 @@ void apps_recorder_span(usec_t *first_ut, usec_t *last_ut) {
         *last_ut = MAX(*last_ut, h->last_ut);
     }
 
+    for(size_t i = 0; i < rec.held_used; i++) {
+        const APPS_REC_CHUNK_HDR *h = rec.held[i].hdr;
+        if(!*first_ut || h->first_ut < *first_ut) *first_ut = h->first_ut;
+        *last_ut = MAX(*last_ut, h->last_ut);
+    }
+
     if(rec.builder.frames) {
         if(!*first_ut || rec.builder.first_ut < *first_ut) *first_ut = rec.builder.first_ut;
         *last_ut = MAX(*last_ut, rec.builder.last_ut);
@@ -741,6 +876,60 @@ void apps_recorder_span(usec_t *first_ut, usec_t *last_ut) {
     if(rec.store_open && rec.store.used) {
         if(!*first_ut || rec.store.items[0].first_ut < *first_ut) *first_ut = rec.store.items[0].first_ut;
         *last_ut = MAX(*last_ut, rec.store.items[rec.store.used - 1].last_ut);
+    }
+}
+
+APPS_REC_SAVE apps_recorder_save_status(usec_t from_ut, usec_t to_ut, const char **reason) {
+    *reason = NULL;
+    if(!rec.initialized || from_ut > to_ut)
+        return APPS_REC_SAVE_NOT_REQUESTED;
+
+    for(size_t i = 0; i < rec.held_used; i++) {
+        if(chunk_overlaps(rec.held[i].hdr, from_ut, to_ut)) {
+            *reason = apps_rec_store_result_str(rec.held[i].failure);
+            return APPS_REC_SAVE_IN_RAM;
+        }
+    }
+
+    bool saved = false;
+    for(size_t i = 0; i < APPS_REC_RING_CHUNKS; i++) {
+        const REC_SEALED *slot = &rec.ring[i];
+        if(!slot->hdr || !chunk_overlaps(slot->hdr, from_ut, to_ut))
+            continue;
+
+        if(slot_unwritten(slot)) {
+            *reason = apps_rec_store_result_str(slot->failure);
+            return APPS_REC_SAVE_IN_RAM;
+        }
+        saved = saved || slot->stored;
+    }
+
+    for(size_t i = rec.lost_used; i > 0; i--) {
+        const REC_LOST *l = &rec.lost[i - 1];
+        if(l->from_ut <= to_ut && l->to_ut >= from_ut) {
+            *reason = apps_rec_store_result_str(l->reason);
+            return APPS_REC_SAVE_LOST;
+        }
+    }
+
+    for(size_t i = 0; i < rec.pending_used; i++)
+        if(rec.pending[i].from_ut <= to_ut && rec.pending[i].to_ut >= from_ut)
+            return APPS_REC_SAVE_PENDING;
+
+    for(size_t i = 0; !saved && rec.store_open && i < rec.store.used; i++)
+        saved = rec.store.items[i].first_ut <= to_ut && rec.store.items[i].last_ut >= from_ut;
+
+    return saved ? APPS_REC_SAVE_OK : APPS_REC_SAVE_NOT_REQUESTED;
+}
+
+const char *apps_recorder_save_str(APPS_REC_SAVE s) {
+    switch(s) {
+        case APPS_REC_SAVE_OK:          return "ok";
+        case APPS_REC_SAVE_PENDING:     return "pending";
+        case APPS_REC_SAVE_IN_RAM:      return "not_saved";
+        case APPS_REC_SAVE_LOST:        return "not_saved";
+        default:
+        case APPS_REC_SAVE_NOT_REQUESTED: return "not_requested";
     }
 }
 
@@ -780,6 +969,8 @@ void apps_recorder_cleanup(void) {
     apps_rec_builder_destroy(&rec.builder);
     for(size_t i = 0; i < APPS_REC_RING_CHUNKS; i++)
         freez(rec.ring[i].hdr);
+    for(size_t i = 0; i < rec.held_used; i++)
+        freez(rec.held[i].hdr);
 
     freez(rec.prev);
     freez(rec.cur);

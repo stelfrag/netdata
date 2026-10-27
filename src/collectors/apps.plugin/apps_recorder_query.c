@@ -132,6 +132,34 @@ static void gaps_add(REC_GAPS *g, usec_t from_ut, usec_t to_ut) {
     g->last_gap_from_ut = from_ut;
 }
 
+// whether the time asked is on disk; "reason" and "in_ram" only when a save covered it and could not be written
+static void emit_save(BUFFER *wb, usec_t from_ut, usec_t to_ut) {
+    const char *reason;
+    APPS_REC_SAVE save = apps_recorder_save_status(from_ut, to_ut, &reason);
+    buffer_json_member_add_object(wb, "save");
+    buffer_json_member_add_string(wb, "status", apps_recorder_save_str(save));
+    if(reason) {
+        buffer_json_member_add_string(wb, "reason", reason);
+        buffer_json_member_add_boolean(wb, "in_ram", save == APPS_REC_SAVE_IN_RAM);
+    }
+    buffer_json_object_close(wb);
+}
+
+// a 404 that still says whether a save covered the time and why it is not on disk
+static void not_found(const char *transaction, const char *msg, usec_t from_ut, usec_t to_ut) {
+    BUFFER *wb = buffer_create(256, NULL);
+    buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_MINIFY);
+    buffer_json_member_add_uint64(wb, "status", HTTP_RESP_NOT_FOUND);
+    buffer_json_member_add_string(wb, "error_message", msg);
+    emit_save(wb, from_ut, to_ut);
+    buffer_json_finalize(wb);
+    wb->response_code = HTTP_RESP_NOT_FOUND;
+    wb->content_type = CT_APPLICATION_JSON;
+    wb->expires = now_realtime_sec();
+    pluginsd_function_result_to_stdout(transaction, wb);
+    buffer_free(wb);
+}
+
 static void emit_recorded(BUFFER *wb, const char *mode, usec_t from_ut, usec_t to_ut,
                           const REC_COVERAGE *c, APPS_REC_SOURCE sources, const REC_GAPS *gaps) {
     buffer_json_member_add_object(wb, "recorded");
@@ -194,6 +222,9 @@ static void emit_recorded(BUFFER *wb, const char *mode, usec_t from_ut, usec_t t
         if(sources & APPS_REC_SOURCE_DISK) buffer_json_add_array_item_string(wb, "disk");
         if(sources & APPS_REC_SOURCE_RAM) buffer_json_add_array_item_string(wb, "ram");
         buffer_json_array_close(wb);
+
+        // at: from the sample used to the moment asked, so a sample older than the moment reports what lies between
+        emit_save(wb, c->sample_ut ? MIN(c->sample_ut, from_ut) : from_ut, to_ut);
     }
     buffer_json_object_close(wb);
 }
@@ -320,8 +351,7 @@ static void query_at(const char *transaction, usec_t at_ut, bool show_cmdline) {
         sources = apps_recorder_foreach_frame(0, at_ut, at_frame, &a);
 
     if(!a.hdr.time_ut) {
-        pluginsd_function_json_error_to_stdout(transaction, HTTP_RESP_NOT_FOUND,
-                                               "The process flight recorder has no sample at or before this time.");
+        not_found(transaction, "The process flight recorder has no sample at or before this time.", at_ut, at_ut);
         freez(a.rows);
         return;
     }
@@ -532,8 +562,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     gaps_add(&r.gaps, r.gaps.prev_ut, MIN(before_ut, now_realtime_usec()));
 
     if(!r.coverage.frames) {
-        pluginsd_function_json_error_to_stdout(transaction, HTTP_RESP_NOT_FOUND,
-                                               "The process flight recorder has no samples in this time range.");
+        not_found(transaction, "The process flight recorder has no samples in this time range.", after_ut, before_ut);
         freez(r.slots);
         return;
     }

@@ -208,6 +208,8 @@ void process_history_main(void *ptr) {
         worker_is_idle();
         heartbeat_next(&hb);
 
+        alert_evidence_retry();
+
         time_t now_s = now_realtime_sec();
         if(now_s - last_sent_s < PROCESS_HISTORY_MIN_INTERVAL_S)
             continue;

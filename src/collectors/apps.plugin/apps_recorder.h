@@ -22,6 +22,19 @@ typedef enum {
     APPS_REC_SOURCE_DISK = (1 << 1),
 } APPS_REC_SOURCE;
 
+// whether the recorded time between from_ut and to_ut is on disk
+typedef enum {
+    APPS_REC_SAVE_NOT_REQUESTED = 0,    // in RAM only, no save asked for it
+    APPS_REC_SAVE_OK,                   // written
+    APPS_REC_SAVE_PENDING,              // a save covers it and the rest is written as it is recorded
+    APPS_REC_SAVE_IN_RAM,               // a save covers it, writing failed; still in RAM, retried on every seal
+    APPS_REC_SAVE_LOST,                 // a save covered it, writing failed and it left RAM
+} APPS_REC_SAVE;
+
+// the save state of a time range; *reason is "disk_full" or "write_error" for IN_RAM and LOST, NULL otherwise
+APPS_REC_SAVE apps_recorder_save_status(usec_t from_ut, usec_t to_ut, const char **reason);
+const char *apps_recorder_save_str(APPS_REC_SAVE s);
+
 // walks, oldest first, every recorded frame with after_ut <= time <= before_ut, from disk and RAM, each frame once.
 // Returns the sources that contributed frames. Runs under apps_and_stdout_mutex.
 APPS_REC_SOURCE apps_recorder_foreach_frame(usec_t after_ut, usec_t before_ut, apps_rec_frame_cb_t cb, void *data);

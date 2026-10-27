@@ -71,6 +71,8 @@ connections were open, and did the host change before it?
 - Evidence is kept only on Agents with a disk-based database (`dbengine`), outside the IoT profile; process and
   connection evidence needs Linux.
 - Saved process windows and connection snapshots are capped on disk; old incidents can be gone.
+- A section's `save.status` of `not_saved` with `reason: disk_full` means the Agent recorded the evidence but could
+  not write it. With `in_ram: true` the data is in the answer and is still being retried; otherwise it is gone.
 - Command lines are never in the answer.
 - Through MCP the same answer comes from the tool `get_alert_evidence` (`transition_id`, optional `node`).
 

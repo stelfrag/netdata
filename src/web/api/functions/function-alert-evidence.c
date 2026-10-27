@@ -227,8 +227,12 @@ static size_t ae_table_rows(BUFFER *wb, const char *key, struct json_object *ans
 
 // calls a Function of this agent; *jobj is the parsed answer on success. *available is false when the Function is
 // not registered (its plugin is not running): unavailable evidence, not an error.
-static int ae_call(const char *cmd, BUFFER *payload, int timeout_s, const char *source, struct json_object **jobj, bool *available) {
+// error_body, when not NULL, receives the parsed body of an answer other than 200 (the caller puts it)
+static int ae_call(const char *cmd, BUFFER *payload, int timeout_s, const char *source, struct json_object **jobj,
+                   bool *available, struct json_object **error_body) {
     *jobj = NULL;
+    if(error_body)
+        *error_body = NULL;
     CLEAN_BUFFER *result = buffer_create(0, NULL);
 
     int code = nrpc_method_authorize(rrdhost_nrpc_owner(localhost), result, cmd, AE_INNER_ACCESS, false, NULL);
@@ -251,8 +255,16 @@ static int ae_call(const char *cmd, BUFFER *payload, int timeout_s, const char *
 
     if(code == HTTP_RESP_OK)
         *jobj = json_tokener_parse(buffer_tostring(result));
+    else if(error_body && buffer_strlen(result))
+        *error_body = json_tokener_parse(buffer_tostring(result));
 
     return code;
+}
+
+static const char *ae_json_str(struct json_object *obj, const char *key) {
+    struct json_object *v;
+    return (obj && json_object_object_get_ex(obj, key, &v) && json_object_is_type(v, json_type_string)) ?
+           json_object_get_string(v) : NULL;
 }
 
 static const char *ae_status_from_code(int code, bool available, bool parsed) {
@@ -273,9 +285,9 @@ static int64_t ae_json_int(struct json_object *obj, const char *key, int64_t def
 
 // min_sample_ut: when not 0, a sample older than this is not evidence for the moment asked
 static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, const char *sort_key, usec_t min_sample_ut, const char *source) {
-    struct json_object *jobj = NULL;
+    struct json_object *jobj = NULL, *error_body = NULL, *save = NULL;
     bool available;
-    int code = ae_call(cmd, NULL, 20, source, &jobj, &available);
+    int code = ae_call(cmd, NULL, 20, source, &jobj, &available, &error_body);
 
     // an apps.plugin without the flight recorder answers with the live table: that is not evidence for the past
     struct json_object *recorded = NULL;
@@ -285,16 +297,35 @@ static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, c
         available = false;
     }
 
+    // whether the recorded time is on disk: a save that could not be written says why (disk_full, write_error)
+    if(jobj && recorded && json_object_object_get_ex(recorded, "save", &save))
+        json_object_get(save);
+    else if(error_body && json_object_object_get_ex(error_body, "save", &save))
+        json_object_get(save);
+
     // the recorder falls back to its newest sample before T, however old; nothing saved near T is not_saved
     if(jobj && min_sample_ut && (usec_t)ae_json_int(recorded, "sample_ut", 0) < min_sample_ut) {
         json_object_put(jobj);
         jobj = NULL;
         code = HTTP_RESP_NOT_FOUND;
+
+        // the plugin's save covered [old sample, T]: only a failed save explains the missing time
+        const char *st = ae_json_str(save, "status");
+        if(save && (!st || strcmp(st, "not_saved") != 0)) {
+            json_object_put(save);
+            save = NULL;
+        }
     }
 
     buffer_json_member_add_object(wb, key);
     buffer_json_member_add_string(wb, "status", ae_status_from_code(code, available, jobj != NULL));
     buffer_json_member_add_string(wb, "function", cmd);
+    if(save) {
+        ae_json_value(wb, "save", save);
+        const char *reason = ae_json_str(save, "reason");
+        if(!jobj && reason)
+            buffer_json_member_add_string(wb, "reason", reason);
+    }
     if(!jobj)
         buffer_json_member_add_int64(wb, "code", code);
     else {
@@ -342,17 +373,34 @@ static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, c
 
     if(jobj)
         json_object_put(jobj);
+    if(error_body)
+        json_object_put(error_body);
+    if(save)
+        json_object_put(save);
 }
 
 static void ae_section_connections(BUFFER *wb, time_t when) {
     CLEAN_BUFFER *snapshot = buffer_create(0, NULL);
     time_t captured = 0;
-    ALERT_EVIDENCE_CONNECTIONS_STATUS status = alert_evidence_connections_load(when, snapshot, &captured);
+    const char *unsaved_reason;
+    ALERT_EVIDENCE_CONNECTIONS_STATUS status = alert_evidence_connections_load(when, snapshot, &captured, &unsaved_reason);
     struct json_object *jobj = (status == ALERT_EVIDENCE_CONNECTIONS_OK) ? json_tokener_parse(buffer_tostring(snapshot)) : NULL;
 
     buffer_json_member_add_object(wb, "connections");
     buffer_json_member_add_string(wb, "status", (status == ALERT_EVIDENCE_CONNECTIONS_OK && !jobj) ? "error" :
                                                     alert_evidence_connections_status_str(status));
+    if(unsaved_reason) {
+        // same shape as the processes section: captured but not on disk, and whether RAM still holds it
+        buffer_json_member_add_object(wb, "save");
+        buffer_json_member_add_string(wb, "status", "not_saved");
+        buffer_json_member_add_string(wb, "reason", unsaved_reason);
+        buffer_json_member_add_boolean(wb, "in_ram", status == ALERT_EVIDENCE_CONNECTIONS_OK);
+        buffer_json_object_close(wb);
+        if(status == ALERT_EVIDENCE_CONNECTIONS_NOT_SAVED) {
+            buffer_json_member_add_time_t(wb, "captured", captured);
+            buffer_json_member_add_string(wb, "reason", unsaved_reason);
+        }
+    }
     if(jobj) {
         buffer_json_member_add_time_t(wb, "captured", captured);
         bool truncated;
@@ -400,7 +448,7 @@ static void ae_section_host_changes(BUFFER *wb, time_t after, time_t before, tim
 
     struct json_object *jobj = NULL;
     bool available;
-    int code = ae_call("systemd-journal", payload, 30, source, &jobj, &available);
+    int code = ae_call("systemd-journal", payload, 30, source, &jobj, &available, NULL);
 
     // no saving is involved here: a journal that answers with an error is an error
     const char *status = ae_status_from_code(code, available, jobj != NULL);
@@ -699,9 +747,10 @@ static int ae_processes_view(BUFFER *wb, struct ae_list *list, const struct ae_t
     snprintfz(cmd, sizeof(cmd), "processes after:%lld before:%lld",
               (long long)(T - ALERT_EVIDENCE_PROCESSES_BEFORE_S), (long long)(T + ALERT_EVIDENCE_PROCESSES_AFTER_S));
 
-    struct json_object *jobj = NULL, *recorded = NULL;
+    struct json_object *jobj = NULL, *recorded = NULL, *error_body = NULL, *save = NULL;
     bool available;
-    int code = ae_call(cmd, NULL, 20, source, &jobj, &available);
+    int code = ae_call(cmd, NULL, 20, source, &jobj, &available, &error_body);
+    const char *reason = (error_body && json_object_object_get_ex(error_body, "save", &save)) ? ae_json_str(save, "reason") : NULL;
 
     // an answer without `recorded` is the live table, not the past
     if(jobj && !json_object_object_get_ex(jobj, "recorded", &recorded)) {
@@ -713,12 +762,20 @@ static int ae_processes_view(BUFFER *wb, struct ae_list *list, const struct ae_t
         char message[256];
         if(!available || code == HTTP_RESP_SERVICE_UNAVAILABLE)
             snprintfz(message, sizeof(message), "This agent has no process flight recorder (apps.plugin on Linux).");
+        else if(code == HTTP_RESP_NOT_FOUND && reason && !strcmp(reason, "disk_full"))
+            snprintfz(message, sizeof(message),
+                      "The process history around this alert was recorded but could not be saved: the disk was full.");
+        else if(code == HTTP_RESP_NOT_FOUND && reason)
+            snprintfz(message, sizeof(message),
+                      "The process history around this alert was recorded but could not be saved (%s).", reason);
         else if(code == HTTP_RESP_NOT_FOUND)
             snprintfz(message, sizeof(message),
                       "No process history was saved around this alert: the agent did not record processes then, "
                       "or the saved history was deleted to stay within its disk limit.");
         else
             snprintfz(message, sizeof(message), "The processes Function answered with an error (%d).", code);
+        if(error_body)
+            json_object_put(error_body);
         return ae_message_table(wb, list, message);
     }
 

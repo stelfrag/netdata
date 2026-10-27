@@ -4,6 +4,15 @@
 
 #define APPS_REC_STORE_TMP_SUFFIX ".tmp"
 
+const char *apps_rec_store_result_str(APPS_REC_STORE_RESULT r) {
+    switch(r) {
+        case APPS_REC_STORE_OK:         return "ok";
+        case APPS_REC_STORE_DISK_FULL:  return "disk_full";
+        default:
+        case APPS_REC_STORE_ERROR:      return "write_error";
+    }
+}
+
 static void store_filename(const APPS_REC_STORE *st, uint64_t first_ut, char *dst, size_t size) {
     snprintfz(dst, size, "%s/%020" PRIu64 APPS_REC_STORE_SUFFIX, st->dir, first_ut);
 }
@@ -96,6 +105,7 @@ bool apps_rec_store_open(APPS_REC_STORE *st, const char *dir, uint64_t cap_bytes
 
     strncpyz(st->dir, dir, sizeof(st->dir) - 1);
     st->cap_bytes = cap_bytes;
+    st->write_fn = write;
 
     if(mkdir(st->dir, 0770) != 0 && errno != EEXIST) {
         nd_log(NDLS_COLLECTORS, NDLP_ERR, "apps.plugin recorder: cannot create directory '%s'", st->dir);
@@ -140,10 +150,10 @@ bool apps_rec_store_has(const APPS_REC_STORE *st, uint64_t first_ut) {
     return found;
 }
 
-static bool write_all(int fd, const void *buf, size_t len) {
+static bool write_all(APPS_REC_STORE *st, int fd, const void *buf, size_t len) {
     const uint8_t *p = buf;
     while(len) {
-        ssize_t w = write(fd, p, len);
+        ssize_t w = st->write_fn(fd, p, len);
         if(w < 0) {
             if(errno == EINTR) continue;
             return false;
@@ -154,32 +164,81 @@ static bool write_all(int fd, const void *buf, size_t len) {
     return true;
 }
 
-bool apps_rec_store_write(APPS_REC_STORE *st, const APPS_REC_CHUNK_HDR *hdr, size_t size) {
-    if(!st->cap_bytes || size > st->cap_bytes)
+static inline bool errno_is_disk_full(int e) {
+    return e == ENOSPC || e == EDQUOT;
+}
+
+// one attempt; on failure *err holds the errno of the step that failed
+static bool store_write_once(APPS_REC_STORE *st, const APPS_REC_CHUNK_HDR *hdr, size_t size,
+                             const char *filename, const char *tmp, int *err) {
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0660);
+    if(fd == -1) {
+        *err = errno;
         return false;
+    }
+
+    bool ok = write_all(st, fd, hdr, size);
+    *err = ok ? 0 : errno;
+    if(close(fd) != 0 && ok) {
+        ok = false;
+        *err = errno;
+    }
+
+    if(ok && rename(tmp, filename) != 0) {
+        ok = false;
+        *err = errno;
+    }
+
+    if(!ok)
+        unlink(tmp);
+
+    return ok;
+}
+
+APPS_REC_STORE_RESULT apps_rec_store_write(APPS_REC_STORE *st, const APPS_REC_CHUNK_HDR *hdr, size_t size,
+                                           uint64_t keep_from_ut) {
+    if(!st->cap_bytes || size > st->cap_bytes)
+        return APPS_REC_STORE_ERROR;
 
     char filename[FILENAME_MAX + 1], tmp[FILENAME_MAX + 1];
     store_filename(st, hdr->first_ut, filename, sizeof(filename));
     snprintfz(tmp, sizeof(tmp), "%s" APPS_REC_STORE_TMP_SUFFIX, filename);
 
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0660);
-    if(fd == -1) {
-        nd_log(NDLS_COLLECTORS, NDLP_ERR, "apps.plugin recorder: cannot create '%s'", tmp);
-        return false;
+    int err;
+    bool ok = store_write_once(st, hdr, size, filename, tmp, &err);
+
+    // a full filesystem: make room by deleting our own oldest chunks, then try once more (once per episode)
+    if(!ok && errno_is_disk_full(err) && !st->disk_full) {
+        uint64_t freed = 0;
+        size_t deleted = 0;
+        while(st->used && freed < size && st->items[0].first_ut < keep_from_ut) {
+            freed += st->items[0].size;
+            store_delete(st, 0);
+            deleted++;
+        }
+
+        if(deleted) {
+            nd_log(NDLS_COLLECTORS, NDLP_WARNING,
+                   "apps.plugin recorder: the filesystem of '%s' is full; deleted the %zu oldest saved chunks to make room",
+                   st->dir, deleted);
+
+            ok = store_write_once(st, hdr, size, filename, tmp, &err);
+        }
     }
 
-    bool ok = write_all(fd, hdr, size);
-    if(close(fd) != 0) ok = false;
-
-    if(!ok || rename(tmp, filename) != 0) {
-        nd_log(NDLS_COLLECTORS, NDLP_ERR, "apps.plugin recorder: cannot write '%s'", filename);
-        unlink(tmp);
-        return false;
+    // the episode ends with a successful write; another kind of failure does not end it
+    if(ok) st->disk_full = false;
+    else if(errno_is_disk_full(err)) st->disk_full = true;
+    if(!ok) {
+        nd_log_limit_static_global_var(erl, 60, 0);
+        nd_log_limit(&erl, NDLS_COLLECTORS, NDLP_ERR, "apps.plugin recorder: cannot write '%s': %s",
+                     filename, strerror(err));
+        return errno_is_disk_full(err) ? APPS_REC_STORE_DISK_FULL : APPS_REC_STORE_ERROR;
     }
 
     store_index_add(st, &(APPS_REC_STORE_ITEM){ .first_ut = hdr->first_ut, .last_ut = hdr->last_ut, .size = size });
     store_evict(st);
-    return true;
+    return APPS_REC_STORE_OK;
 }
 
 APPS_REC_CHUNK_HDR *apps_rec_store_read(APPS_REC_STORE *st, uint64_t first_ut, size_t *size) {

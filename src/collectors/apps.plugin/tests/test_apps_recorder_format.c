@@ -458,7 +458,7 @@ static bool test_store(void) {
     }
 
     for(size_t i = 0; i < 4; i++) {
-        if(!apps_rec_store_write(&st, c[i], sizes[i])) {
+        if(apps_rec_store_write(&st, c[i], sizes[i], UINT64_MAX) != APPS_REC_STORE_OK) {
             fprintf(stderr, "store: write %zu failed\n", i);
             ok = false;
         }
@@ -541,6 +541,97 @@ static bool test_store(void) {
     return ok;
 }
 
+// fails the next n writes with ENOSPC (-1: all of them), then writes normally
+static int fake_fail_writes = 0;
+static ssize_t fake_write(int fd, const void *buf, size_t count) {
+    if(fake_fail_writes) {
+        if(fake_fail_writes > 0) fake_fail_writes--;
+        errno = ENOSPC;
+        return -1;
+    }
+    return write(fd, buf, count);
+}
+
+static bool test_store_disk_full(void) {
+    char dir[] = "/tmp/apps-recorder-store-full-XXXXXX";
+    if(!mkdtemp(dir)) {
+        fprintf(stderr, "store full: cannot create a temporary directory\n");
+        return false;
+    }
+
+    bool ok = true;
+    APPS_REC_CHUNK_HDR *c[5];
+    size_t sizes[5];
+    for(size_t i = 0; i < 5; i++)
+        c[i] = test_chunk(1000000000ULL * (i + 1), 10, &sizes[i]);
+
+    APPS_REC_STORE st;
+    ok = apps_rec_store_open(&st, dir, 1ULL << 30);
+    for(size_t i = 0; ok && i < 3; i++)
+        ok = apps_rec_store_write(&st, c[i], sizes[i], UINT64_MAX) == APPS_REC_STORE_OK;
+    if(!ok) fprintf(stderr, "store full: setup failed\n");
+
+    // a full filesystem: the oldest chunk makes room and the second attempt succeeds
+    st.write_fn = fake_write;
+    fake_fail_writes = 1;
+    if(ok && (apps_rec_store_write(&st, c[3], sizes[3], UINT64_MAX) != APPS_REC_STORE_OK || st.used != 3 ||
+              apps_rec_store_has(&st, c[0]->first_ut) || !apps_rec_store_has(&st, c[3]->first_ut) || st.disk_full)) {
+        fprintf(stderr, "store full: making room kept %zu chunks\n", st.used);
+        ok = false;
+    }
+
+    // still full after making room: disk_full, and the next attempts in the episode delete nothing more
+    // (room for c[4] may take more than one chunk: the sizes differ)
+    fake_fail_writes = -1;
+    if(ok && (apps_rec_store_write(&st, c[4], sizes[4], UINT64_MAX) != APPS_REC_STORE_DISK_FULL || st.used >= 3 || !st.disk_full)) {
+        fprintf(stderr, "store full: first failure kept %zu chunks\n", st.used);
+        ok = false;
+    }
+    size_t kept = st.used;
+    if(ok && (apps_rec_store_write(&st, c[4], sizes[4], UINT64_MAX) != APPS_REC_STORE_DISK_FULL || st.used != kept)) {
+        fprintf(stderr, "store full: a retry in the episode deleted more (%zu chunks)\n", st.used);
+        ok = false;
+    }
+
+    // a new episode, but every chunk on disk is still in RAM (keep_from_ut at the oldest): nothing is deleted
+    st.disk_full = false;
+    if(ok && st.used && (apps_rec_store_write(&st, c[4], sizes[4], st.items[0].first_ut) != APPS_REC_STORE_DISK_FULL ||
+              st.used != kept)) {
+        fprintf(stderr, "store full: made room from chunks still in RAM (%zu chunks)\n", st.used);
+        ok = false;
+    }
+
+    // space comes back
+    fake_fail_writes = 0;
+    if(ok && (apps_rec_store_write(&st, c[4], sizes[4], UINT64_MAX) != APPS_REC_STORE_OK || st.used != kept + 1 || st.disk_full)) {
+        fprintf(stderr, "store full: write after space came back failed\n");
+        ok = false;
+    }
+
+    // no leftovers of the failed attempts
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    size_t files = 0;
+    char path[FILENAME_MAX + 1];
+    while(d && (de = readdir(d))) {
+        if(de->d_name[0] == '.') continue;
+        files++;
+        snprintfz(path, sizeof(path), "%s/%s", dir, de->d_name);
+        unlink(path);
+    }
+    if(d) closedir(d);
+    rmdir(dir);
+    if(ok && files != kept + 1) {
+        fprintf(stderr, "store full: %zu files left, expected %zu\n", files, kept + 1);
+        ok = false;
+    }
+
+    apps_rec_store_close(&st);
+    for(size_t i = 0; i < 5; i++)
+        freez(c[i]);
+    return ok;
+}
+
 int main(void) {
     bool ok = true;
     ok &= test_round_trip();
@@ -548,6 +639,7 @@ int main(void) {
     ok &= test_bounds();
     ok &= test_limits();
     ok &= test_store();
+    ok &= test_store_disk_full();
 
     fprintf(stderr, "%s\n", ok ? "apps-recorder-format-test: OK" : "apps-recorder-format-test: FAILED");
     return ok ? 0 : 1;

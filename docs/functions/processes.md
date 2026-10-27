@@ -243,6 +243,7 @@ that says how complete it is:
 | `cpu_coverage_min`            | The lowest coverage of any sample used                                              |
 | `source`                      | `ram` (the last 30 minutes) and/or `disk` (windows the Agent saved around incidents, and the last 30 minutes each time the Agent stopped) |
 | `gaps`                        | `after:`/`before:` only: times in the range with no samples (nothing saved, or the Agent was not running): `count`, `seconds`, and up to 16 `ranges` (`from_ut`, `to_ut`) |
+| `save`                        | Whether the time asked is on disk: `status` is `ok`, `pending`, `not_requested` (only in memory) or `not_saved`, with `reason` (`disk_full`, `write_error`) and `in_ram` when a save could not be written. A `404` answer carries it too. |
 | `totals`                      | All processes, not only the recorded ones, over the samples used: `processes` (running processes: `min`, `avg`, `max`), `processes_cpu` and `host_cpu` (% of one core: `avg`, `max`; `host_cpu` when known), `processes_rss` (MiB: `avg`, `max`) |
 
 `at:` returns `PID`, `Cmd`, `Exe`, `PPID`, `Category`, `Uid`, `CPU`, `RSS`, `Swap`, `LReads`, `LWrites`, `PReads`,

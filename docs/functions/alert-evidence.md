@@ -88,6 +88,20 @@ Every section reports a `status`:
 | `other_node`   | the transition was evaluated for another node; ask that node's Agent                                |
 | `error`        | the source answered with an error; `code` holds the HTTP code                                       |
 
+`processes_at`, `processes_window` and `connections` can also carry a `save` object. It says whether that evidence
+is on disk:
+
+- `status` is `ok` (saved), `pending` (the window is still being recorded and saved as it goes), `not_requested`
+  (only in memory, no save asked for it) or `not_saved` (a save could not be written).
+- When it is `not_saved`, `reason` is `disk_full` or `write_error`, and `in_ram` says whether the Agent still holds
+  the data.
+
+Data still held is in the answer, and the Agent keeps trying to write it. Once the disk has space again, `status`
+becomes `ok`. When the data is gone, the section's own `status` is `not_saved` with the same `reason`.
+
+When the filesystem is full, the Agent deletes its own oldest saved process history and connection snapshots to make
+room for the new ones, once per disk-full episode. It never deletes anything else.
+
 `running` is every process on the host (at the alert, or `min`/`avg`/`max` over the window); `recorded_processes` is
 the ones the recorder kept in detail: the busiest by CPU, memory and I/O, and every process that started or exited.
 `recorded.totals` adds the CPU and memory of all processes. Process rows show at most 50 of the recorded processes and

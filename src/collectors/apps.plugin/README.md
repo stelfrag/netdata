@@ -374,6 +374,12 @@ their data. When the store reaches its size limit, the oldest data is deleted. A
 0.5 MiB. Nothing is written to disk unless one of the above happens, and the Agent never saves when its database
 mode is `ram`, `alloc` or `none`, or when it runs with the `iot` profile.
 
+When the disk is full, `apps.plugin` deletes its own oldest saved chunks to make room, once per disk-full episode,
+and only chunks it no longer holds in memory.
+What still cannot be written stays in memory, up to another 30 minutes. It is retried every minute and written once
+there is space. Answers report such time as not saved, with the reason and whether it is still in memory
+(`recorded.save`).
+
 Answers for a time range say where nothing was saved (`recorded.gaps`). A process last seen before such a gap shows
 `Exited: unknown`: it may have exited while nothing was kept.
 
