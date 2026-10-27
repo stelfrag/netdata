@@ -14,7 +14,11 @@ typedef struct {
     uint16_t netns_other;       // processes with sockets in other network namespaces, at the last dump
 } APPS_REC_CONNS_FRAME;
 
-// starts listening for TCP closes; false (logged once) when the kernel refuses
+// opens the socket that receives TCP closes; false (logged once) when the kernel refuses. Call it before apps.plugin
+// drops CAP_NET_ADMIN, which allows a larger receive buffer.
+bool apps_rec_conns_open(void);
+
+// starts reading the closes, when the socket is open
 bool apps_rec_conns_start(void);
 void apps_rec_conns_stop(void);
 

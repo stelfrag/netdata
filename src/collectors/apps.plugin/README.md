@@ -400,8 +400,15 @@ status, and processes shorter than an iteration are missed.
 
   The process that starts `apps.plugin` (the Netdata service) must allow `CAP_NET_ADMIN`, otherwise the kernel refuses
   to start a binary with that capability. `apps.plugin` uses the capability once at startup, before it starts any
-  thread, and then drops it.
+  thread, and then drops it (also when the recorder is off).
+- Inside a user or pid namespace other than the host's (a container without the host's pid namespace, rootless
+  containers) the kernel sends no process events, so `apps.plugin` does not listen there.
 - Answers say whether exit statuses were available (`exit_status`).
+- **Cost**: `apps.plugin` reads `/proc/PID/stat` of every new process at its fork and again at its exec, so its CPU
+  grows with the host's process creation rate.
+- **Limits**: a process whose main thread exits while other threads keep running, or that calls exec from a thread
+  other than its main one, may be recorded with the status of that event. A process shorter than an iteration whose
+  `/proc` entry was already gone when `apps.plugin` read it is not listed.
 
 **Memory and CPU**: the last 30 minutes (at `update every = 1`) stay in memory, compressed: typically 0.4 to
 0.7 MiB. Recording costs well under 0.1% of one CPU core.

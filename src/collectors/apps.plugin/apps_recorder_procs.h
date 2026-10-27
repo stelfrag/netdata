@@ -20,12 +20,16 @@ typedef struct {
 
     // the recorder's
     bool matched;               // given to an exit found by polling
-    bool carried;               // kept from the previous iteration: polling still saw the process
+    uint16_t carried;           // iterations it waited: polling still saw the process (a zombie not reaped yet)
 } APPS_REC_PROC_EXIT;
 
-// subscribes to the kernel's process events, then drops CAP_NET_ADMIN (which kernels before 6.6 require to
-// subscribe). Capabilities are per thread: call it before apps.plugin starts any thread.
+// subscribes to the kernel's process events (kernels before 6.6 require CAP_NET_ADMIN for it). Not inside a user or
+// pid namespace other than the initial ones, where the kernel accepts the subscription and sends nothing.
 void apps_rec_procs_subscribe(void);
+
+// drops CAP_NET_ADMIN for good, once the sockets that need it are open. Capabilities are per thread: call it before
+// apps.plugin starts any thread.
+void apps_rec_drop_net_admin(void);
 
 // starts reading the events, when subscribed
 void apps_rec_procs_start(void);

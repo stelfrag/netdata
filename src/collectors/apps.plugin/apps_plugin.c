@@ -884,8 +884,8 @@ int main(int argc, char **argv) {
 #endif
 
 #if defined(OS_LINUX)
-    // before any thread starts: the subscription may need CAP_NET_ADMIN, dropped right after it
-    apps_recorder_subscribe_proc_events();
+    // before any thread starts: the recorder's sockets may need CAP_NET_ADMIN, dropped right after them
+    apps_recorder_open_sockets();
 #endif
 
     netdata_log_info("started on pid %d", getpid());

@@ -37,6 +37,8 @@
 #define APPS_REC_MOUNTS_REFRESH_S   60
 #define APPS_REC_MOUNTS_MISS_S      10      // an unknown device reloads the mounts, at most this often
 #define APPS_REC_MOUNTS_CACHED      64
+#define APPS_REC_MISSED_FRAMES      10      // iterations a late process event may still belong to an exit already recorded
+#define APPS_REC_CARRY_MAX          60      // iterations an exit event of an unidentified process waits for polling
 
 bool apps_recorder_enabled = true;
 bool apps_recorder_record_cmdline = false;
@@ -124,8 +126,9 @@ static struct {
     size_t pexits_size, pexits_used;
     APPS_REC_PROC_EXIT *shorts;     // processes that started and exited between two iterations
     size_t shorts_size;
-    APPS_REC_EXIT *missed;          // the previous iteration's exits found by polling without a status, sorted
+    APPS_REC_EXIT *missed;          // the last iterations' exits found by polling without a status, sorted
     size_t missed_size, missed_used;
+    size_t missed_frame[APPS_REC_MISSED_FRAMES]; // how many of them each of those iterations added, newest last
     bool proc_events;
     size_t proc_lost;
     APPS_REC_ROW rows[APPS_REC_ROWS_MAX];
@@ -717,26 +720,29 @@ static int cmp_pexit(const void *a, const void *b) {
     return (x->exit_ut > y->exit_ut) - (x->exit_ut < y->exit_ut);
 }
 
-static int cmp_exit(const void *a, const void *b) {
-    const APPS_REC_EXIT *x = a, *y = b;
-    if(x->pid != y->pid) return (x->pid > y->pid) - (x->pid < y->pid);
-    return (x->starttime > y->starttime) - (x->starttime < y->starttime);
-}
-
-// whether this iteration's /proc scan saw a process with this pid (rec.cur is sorted by pid)
-static bool pid_running(int32_t pid, size_t n) {
+// the process this iteration's /proc scan saw with this pid (rec.cur is sorted by pid), NULL when none
+static const REC_PID *pid_running(int32_t pid, size_t n) {
     size_t lo = 0, hi = n;
     while(lo < hi) {
         size_t mid = (lo + hi) / 2;
         if(rec.cur[mid].pid < pid) lo = mid + 1;
         else hi = mid;
     }
-    return lo < n && rec.cur[lo].pid == pid;
+    return (lo < n && rec.cur[lo].pid == pid) ? &rec.cur[lo] : NULL;
+}
+
+// whether an exit polling found without a status in the last iterations is this process's
+static bool exit_missed(int32_t pid, uint64_t starttime) {
+    for(size_t i = 0; i < rec.missed_used; i++)
+        if(rec.missed[i].pid == pid && rec.missed[i].starttime == starttime)
+            return true;
+    return false;
 }
 
 // The kernel's process exits give the exits found by polling their status and time, and add the processes that
 // started and exited between two iterations (into rec.shorts, with their exits appended to rec.exits). An exit of a
-// process the scan still saw waits one iteration: it exited after the scan. Returns the processes added.
+// process the scan still saw waits: it exited after the scan, or it is a zombie its parent has not reaped yet.
+// Returns the processes added.
 static size_t proc_exits(size_t n, size_t *nexits) {
     size_t lost;
     rec.proc_events = apps_rec_procs_drain(&rec.pexits, &rec.pexits_size, &rec.pexits_used, &lost);
@@ -774,19 +780,21 @@ static size_t proc_exits(size_t n, size_t *nexits) {
         if(e.matched)
             continue;
 
-        if(pid_running(e.pid, n)) {
-            if(!e.carried) {
-                e.carried = true;
+        const REC_PID *running = pid_running(e.pid, n);
+        if(running) {
+            // the same process (a zombie) waits until it is reaped; without the identity, for a while; a process
+            // that took the pid since is someone else
+            bool same = e.identity ? running->starttime == e.starttime : e.carried < APPS_REC_CARRY_MAX;
+            if(same) {
+                e.carried++;
                 rec.pexits[kept++] = e;
             }
             continue;
         }
 
         // without its identity it cannot be named; with it, it may be the late event of an exit polling found
-        // in the previous iteration, which that iteration already recorded without a status
-        APPS_REC_EXIT missed = { .pid = e.pid, .starttime = e.starttime };
-        if(!e.identity || (rec.missed_used &&
-            bsearch(&missed, rec.missed, rec.missed_used, sizeof(*rec.missed), cmp_exit)))
+        // in the last iterations, which already recorded it without a status
+        if(!e.identity || exit_missed(e.pid, e.starttime))
             continue;
 
         ensure((void **)&rec.exits, &rec.exits_size, *nexits + 1, sizeof(*rec.exits));
@@ -799,15 +807,23 @@ static size_t proc_exits(size_t n, size_t *nexits) {
     }
     rec.pexits_used = kept;
 
-    // this iteration's exits without a status, for the late events of the next one
-    rec.missed_used = 0;
+    // the exits without a status of the last APPS_REC_MISSED_FRAMES iterations, for late events: the oldest
+    // iteration's leave (they are the first ones, kept in insertion order), this one's join
+    size_t expired = rec.missed_frame[0];
+    memmove(rec.missed_frame, &rec.missed_frame[1], (APPS_REC_MISSED_FRAMES - 1) * sizeof(*rec.missed_frame));
+    if(expired) {
+        memmove(rec.missed, &rec.missed[expired], (rec.missed_used - expired) * sizeof(*rec.missed));
+        rec.missed_used -= expired;
+    }
+    size_t added = 0;
     for(size_t i = 0; i < *nexits; i++) {
         if(rec.exits[i].flags & APPS_REC_EXIT_STATUS)
             continue;
         ensure((void **)&rec.missed, &rec.missed_size, rec.missed_used + 1, sizeof(*rec.missed));
         rec.missed[rec.missed_used++] = rec.exits[i];
+        added++;
     }
-    qsort(rec.missed, rec.missed_used, sizeof(*rec.missed), cmp_exit);
+    rec.missed_frame[APPS_REC_MISSED_FRAMES - 1] = added;
 
     return nshort;
 }
@@ -1379,9 +1395,15 @@ const char *apps_recorder_save_str(APPS_REC_SAVE s) {
 
 // --------------------------------------------------------------------------------------------------------------------
 
-void apps_recorder_subscribe_proc_events(void) {
+void apps_recorder_open_sockets(void) {
+    if(apps_recorder_enabled && apps_recorder_record_connections)
+        apps_rec_conns_open();
+
     if(apps_recorder_enabled && apps_recorder_record_proc_events)
         apps_rec_procs_subscribe();
+
+    // apps.plugin needs CAP_NET_ADMIN for nothing else
+    apps_rec_drop_net_admin();
 }
 
 void apps_recorder_init(void) {

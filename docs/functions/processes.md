@@ -263,8 +263,9 @@ started and exited between two samples are listed too (with `Started` and `Exite
 `ExitStatus` is `exit N`, the signal that ended the process (`SIGKILL`, `SIGSEGV (core dumped)`), `unknown` when the
 exit was found without a status, or `-` while the process runs. `ExitedAt` is 0 when the status is unknown. The
 answer's `exit_status` object says whether statuses were available: `status` is `available` (every sample),
-`partial` or `unavailable` (kernels before 6.6 without `CAP_NET_ADMIN`, or `without-recorder-proc-events`), and
-`lost` counts exits whose event was lost.
+`partial` or `unavailable` (kernels before 6.6 without `CAP_NET_ADMIN`, a user or pid namespace other than the host's,
+or `without-recorder-proc-events`), and `lost` counts the times the kernel dropped process events (each time at
+least one; the exits among them have status `unknown`).
 
 Both answers also have a `files` object: the regular files that the processes kept for I/O held open for writing,
 up to 8 per process (the ones that grew most since the previous sample, then the largest).

@@ -4,7 +4,8 @@
 // and exact time, including processes that live less than one collection iteration.
 //
 // Kernels before 6.6 let only CAP_NET_ADMIN subscribe. apps.plugin subscribes once at startup, before it starts any
-// thread, and then drops the capability; receiving on the subscribed socket needs nothing.
+// thread, and then drops the capability; receiving on the subscribed socket needs nothing. The kernel ignores
+// subscriptions from user or pid namespaces other than the initial ones, so apps.plugin does not subscribe there.
 //
 // A thread reads the events. At a fork or exec it reads the process's identity from /proc/PID/stat while the process
 // still exists, so a process that exits before the next iteration can still be named; at an exit it queues the
@@ -60,7 +61,7 @@ static struct {
     size_t lost;                    // exits that found the ring full, and kernel overruns (each at least one)
 } procs = { .fd = -1 };
 
-static void drop_net_admin(void) {
+void apps_rec_drop_net_admin(void) {
     REC_CAP_HEADER h = { .version = REC_CAP_VERSION_3, .pid = 0 };
     REC_CAP_DATA d[2];
     if(syscall(SYS_capget, &h, d) != 0)
@@ -78,27 +79,69 @@ static void drop_net_admin(void) {
         nd_log(NDLS_COLLECTORS, NDLP_WARNING, "apps.plugin recorder: cannot drop CAP_NET_ADMIN after subscribing");
 }
 
+// the kernel sends process events only to listeners in the initial user and pid namespaces
+static bool initial_namespaces(void) {
+    char buf[4096];
+
+    // the identity map: 0 0 4294967295
+    if(read_txt_file("/proc/self/uid_map", buf, sizeof(buf)) == 0) {
+        unsigned long inside, outside, count;
+        if(sscanf(buf, "%lu %lu %lu", &inside, &outside, &count) != 3 || inside != 0 || outside != 0 ||
+            count != 4294967295UL)
+            return false;
+    }
+
+    // NSpid lists one pid per nested pid namespace
+    if(read_txt_file("/proc/self/status", buf, sizeof(buf)) == 0) {
+        const char *s = strstr(buf, "\nNSpid:");
+        if(s) {
+            s += 7;
+            while(*s == ' ' || *s == '\t') s++;
+            while(*s >= '0' && *s <= '9') s++;
+            while(*s == ' ' || *s == '\t') s++;
+            if(*s >= '0' && *s <= '9')
+                return false;
+        }
+    }
+
+    return true;
+}
+
+// a PROC_CN_MCAST_LISTEN or PROC_CN_MCAST_IGNORE request
+struct __attribute__((aligned(NLMSG_ALIGNTO))) rec_cn_mcast {
+    struct nlmsghdr nl;
+    struct __attribute__((packed)) {
+        struct cn_msg cn;
+        enum proc_cn_mcast_op op;
+    } body;
+};
+
+static struct rec_cn_mcast cn_mcast(enum proc_cn_mcast_op op) {
+    return (struct rec_cn_mcast){
+        .nl = { .nlmsg_len = sizeof(struct rec_cn_mcast), .nlmsg_type = NLMSG_DONE },
+        .body = {
+            .cn = { .id = { .idx = CN_IDX_PROC, .val = CN_VAL_PROC }, .len = sizeof(enum proc_cn_mcast_op) },
+            .op = op,
+        },
+    };
+}
+
 void apps_rec_procs_subscribe(void) {
     if(procs.subscribed)
         return;
 
+    if(!initial_namespaces()) {
+        errno_clear();
+        nd_log(NDLS_COLLECTORS, NDLP_NOTICE,
+               "apps.plugin recorder: running in a user or pid namespace, where the kernel sends no process events; "
+               "exit statuses are not recorded and processes shorter than an iteration are not seen");
+        return;
+    }
+
     int fd = socket(PF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_CONNECTOR);
     if(fd != -1) {
         struct sockaddr_nl sa = { .nl_family = AF_NETLINK, .nl_groups = CN_IDX_PROC };
-
-        struct __attribute__((aligned(NLMSG_ALIGNTO))) {
-            struct nlmsghdr nl;
-            struct __attribute__((packed)) {
-                struct cn_msg cn;
-                enum proc_cn_mcast_op op;
-            } body;
-        } msg = {
-            .nl = { .nlmsg_len = sizeof(msg), .nlmsg_type = NLMSG_DONE },
-            .body = {
-                .cn = { .id = { .idx = CN_IDX_PROC, .val = CN_VAL_PROC }, .len = sizeof(enum proc_cn_mcast_op) },
-                .op = PROC_CN_MCAST_LISTEN,
-            },
-        };
+        struct rec_cn_mcast msg = cn_mcast(PROC_CN_MCAST_LISTEN);
 
         if(bind(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0 || send(fd, &msg, sizeof(msg), 0) != (ssize_t)sizeof(msg)) {
             nd_log(NDLS_COLLECTORS, NDLP_NOTICE,
@@ -110,18 +153,19 @@ void apps_rec_procs_subscribe(void) {
         }
     }
 
-    // whether it worked or not, apps.plugin does not need the capability again
-    drop_net_admin();
-
     if(fd == -1)
         return;
 
-    // exits arrive in bursts; the larger buffer needs CAP_NET_ADMIN, which is gone: the plain one is capped by
-    // net.core.rmem_max. The thread checks for stop once a second.
+    // events arrive in bursts; the larger buffer needs CAP_NET_ADMIN (still held), the plain one is capped by
+    // net.core.rmem_max. The thread checks for stop once a second: netlink sockets cannot be shut down to wake it.
     int rcvbuf = 4 * 1024 * 1024;
-    (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    if(setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &rcvbuf, sizeof(rcvbuf)) != 0)
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
     struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+        close(fd);
+        return;
+    }
 
     procs.fd = fd;
     procs.subscribed = true;
@@ -149,6 +193,16 @@ static bool identity_read(int32_t pid, REC_IDENTITY_SLOT *s) {
         return false;
 
     REC_IDENTITY_SLOT id = { .pid = pid, .uid = (uint32_t)st.st_uid };
+
+    // /proc/PID of a process that is not dumpable (setuid programs) belongs to root: its effective uid is in status
+    if(st.st_uid == 0) {
+        char status[4096];
+        snprintfz(path, sizeof(path), "%s/proc/%d/status", netdata_configured_host_prefix, pid);
+        const char *u = (read_txt_file(path, status, sizeof(status)) == 0) ? strstr(status, "\nUid:") : NULL;
+        unsigned long real, effective;
+        if(u && sscanf(u + 5, "%lu %lu", &real, &effective) == 2)
+            id.uid = (uint32_t)effective;
+    }
     size_t comm_len = MIN((size_t)(close_paren - open_paren - 1), sizeof(id.comm) - 1);
     memcpy(id.comm, open_paren + 1, comm_len);
     id.comm[comm_len] = '\0';
@@ -249,6 +303,9 @@ static void procs_thread(void *arg __maybe_unused) {
                 spinlock_lock(&procs.spinlock);
                 procs.lost++;
                 spinlock_unlock(&procs.spinlock);
+
+                // exits and forks were lost: an identity may now belong to a pid used again
+                memset(procs.identities, 0, APPS_REC_IDENTITIES * sizeof(*procs.identities));
             }
             else if(errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
                 sleep_usec(USEC_PER_SEC);
@@ -295,14 +352,18 @@ void apps_rec_procs_start(void) {
 
 void apps_rec_procs_stop(void) {
     if(procs.running) {
+        // the thread sees stop within its receive timeout
         __atomic_store_n(&procs.stop, true, __ATOMIC_RELAXED);
-        shutdown(procs.fd, SHUT_RDWR);
         nd_thread_join(procs.thread);
         freez(procs.identities);
         freez(procs.queue);
     }
-    if(procs.fd != -1)
+    if(procs.fd != -1) {
+        // the kernel counts listeners and keeps building events while it has any
+        struct rec_cn_mcast msg = cn_mcast(PROC_CN_MCAST_IGNORE);
+        (void)send(procs.fd, &msg, sizeof(msg), 0);
         close(procs.fd);
+    }
 
     memset(&procs, 0, sizeof(procs));
     procs.fd = -1;

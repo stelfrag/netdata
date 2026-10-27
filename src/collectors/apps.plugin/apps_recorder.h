@@ -45,8 +45,9 @@ bool apps_recorder_parse_time(const char *value, time_t now_s, time_t *out);
 // the time span the recorder can answer for (0 when it has nothing)
 void apps_recorder_span(usec_t *first_ut, usec_t *last_ut);
 
-// subscribes to the kernel's process events and drops CAP_NET_ADMIN; call before apps.plugin starts any thread
-void apps_recorder_subscribe_proc_events(void);
+// opens the recorder's netlink sockets (TCP closes, process events) and then drops CAP_NET_ADMIN, which they may need;
+// call before apps.plugin starts any thread (capabilities are per thread)
+void apps_recorder_open_sockets(void);
 
 void apps_recorder_function_save(const char *transaction, char *function,
                                  usec_t *stop_monotonic_ut, bool *cancelled,

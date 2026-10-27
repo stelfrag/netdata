@@ -217,8 +217,8 @@ static uint64_t netns_of(const char *path) {
     return s ? str2uint64_t(s + 1, NULL) : 0;
 }
 
-bool apps_rec_conns_start(void) {
-    if(conns.running)
+bool apps_rec_conns_open(void) {
+    if(conns.listener.fd > 0)
         return true;
 
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
@@ -242,16 +242,28 @@ bool apps_rec_conns_start(void) {
         return false;
     }
 
-    // closes arrive in bursts; the larger buffer needs CAP_NET_ADMIN, the plain one is capped by net.core.rmem_max
+    // closes arrive in bursts; the larger buffer needs CAP_NET_ADMIN (held only until apps.plugin drops it after
+    // opening its sockets), the plain one is capped by net.core.rmem_max
     int rcvbuf = 4 * 1024 * 1024;
     if(setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &rcvbuf, sizeof(rcvbuf)) != 0)
         (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
-    // the thread checks for stop once a second
+    // the thread checks for stop once a second: netlink sockets cannot be shut down to wake it
     struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+        close(fd);
+        return false;
+    }
 
     conns.listener.fd = fd;
+    return true;
+}
+
+bool apps_rec_conns_start(void) {
+    if(conns.running || conns.listener.fd <= 0)
+        return conns.running;
+
+    int fd = conns.listener.fd;
     conns.listener.queue = mallocz(APPS_REC_CLOSES_QUEUED * sizeof(*conns.listener.queue));
     conns.drained = mallocz(APPS_REC_CLOSES_QUEUED * sizeof(*conns.drained));
     spinlock_init(&conns.listener.spinlock);
@@ -259,6 +271,7 @@ bool apps_rec_conns_start(void) {
     conns.listener.thread = nd_thread_create("APPS_CONNS", NETDATA_THREAD_OPTION_DONT_LOG, listener_thread, NULL);
     if(!conns.listener.thread) {
         close(fd);
+        conns.listener.fd = 0;
         freez(conns.listener.queue);
         freez(conns.drained);
         conns.listener.queue = conns.drained = NULL;
@@ -296,11 +309,15 @@ static void dump_free(REC_DUMP *d) {
 }
 
 void apps_rec_conns_stop(void) {
-    if(!conns.running)
+    if(!conns.running) {
+        if(conns.listener.fd > 0)
+            close(conns.listener.fd);
+        conns.listener.fd = 0;
         return;
+    }
 
+    // the thread sees stop within its receive timeout
     __atomic_store_n(&conns.listener.stop, true, __ATOMIC_RELAXED);
-    shutdown(conns.listener.fd, SHUT_RDWR);     // wakes recv() even without the receive timeout
     nd_thread_join(conns.listener.thread);
     close(conns.listener.fd);
     freez(conns.listener.queue);
