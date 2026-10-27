@@ -13,6 +13,7 @@
 #define AE_HOST_CHANGE_MSGID        "adfd0357c3d6490fb5c7cd9337492f11"
 #define AE_PROCESS_ROWS_MAX         50
 #define AE_CONNECTION_ROWS_MAX      1000
+#define AE_FILE_ROWS_MAX            20
 #define AE_HOST_CHANGES_MAX         100
 #define AE_AT_MAX_AGE_S             60      // processes_at answers with the newest sample before T: older is not evidence
 #define AE_LIST_WINDOW_S            86400   // the transitions table without a transition
@@ -283,8 +284,13 @@ static int64_t ae_json_int(struct json_object *obj, const char *key, int64_t def
     return (obj && json_object_object_get_ex(obj, key, &v)) ? json_object_get_int64(v) : def;
 }
 
-// min_sample_ut: when not 0, a sample older than this is not evidence for the moment asked
-static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, const char *sort_key, usec_t min_sample_ut, const char *source) {
+// min_sample_ut: when not 0, a sample older than this is not evidence for the moment asked;
+// files, when not NULL, receives the answer's `files` object (put it); returns the section's status
+static const char *ae_section_processes(BUFFER *wb, const char *key, const char *cmd, const char *sort_key,
+                                        usec_t min_sample_ut, const char *source, struct json_object **files) {
+    if(files)
+        *files = NULL;
+
     struct json_object *jobj = NULL, *error_body = NULL, *save = NULL;
     bool available;
     int code = ae_call(cmd, NULL, 20, source, &jobj, &available, &error_body);
@@ -317,8 +323,9 @@ static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, c
         }
     }
 
+    const char *status = ae_status_from_code(code, available, jobj != NULL);
     buffer_json_member_add_object(wb, key);
-    buffer_json_member_add_string(wb, "status", ae_status_from_code(code, available, jobj != NULL));
+    buffer_json_member_add_string(wb, "status", status);
     buffer_json_member_add_string(wb, "function", cmd);
     if(save) {
         ae_json_value(wb, "save", save);
@@ -368,6 +375,10 @@ static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, c
             if(json_object_object_get_ex(columns, "Started", &col))
                 buffer_json_member_add_boolean(wb, "counts_partial", (uint64_t)total > json_object_array_length(data));
         }
+
+        struct json_object *f;
+        if(files && json_object_object_get_ex(jobj, "files", &f) && json_object_is_type(f, json_type_object))
+            *files = json_object_get(f);
     }
     buffer_json_object_close(wb);
 
@@ -377,6 +388,42 @@ static void ae_section_processes(BUFFER *wb, const char *key, const char *cmd, c
         json_object_put(error_body);
     if(save)
         json_object_put(save);
+
+    return status;
+}
+
+// the regular files the busiest processes by I/O held open for writing in the window, from the window answer;
+// window_status is the status of that answer
+static void ae_section_files(BUFFER *wb, struct json_object *files, const char *window_status) {
+    struct json_object *recorded = NULL, *list = NULL;
+    bool looked = files && json_object_object_get_ex(files, "recorded", &recorded) && json_object_get_boolean(recorded);
+
+    buffer_json_member_add_object(wb, "files");
+    buffer_json_member_add_string(wb, "source", "processes_window");
+    if(strcmp(window_status, "ok") != 0)
+        buffer_json_member_add_string(wb, "status", window_status);
+    else if(!looked) {
+        // an older apps.plugin, file charts off (with-files), or without-recorder-files
+        buffer_json_member_add_string(wb, "status", "unavailable");
+        buffer_json_member_add_string(wb, "message",
+            "apps.plugin did not record open files: it needs file charts (with-files) and the recorder's file option");
+    }
+    else {
+        buffer_json_member_add_string(wb, "status", "ok");
+        size_t n = 0;
+        buffer_json_member_add_array(wb, "list");
+        if(json_object_object_get_ex(files, "list", &list) && json_object_is_type(list, json_type_array)) {
+            n = json_object_array_length(list);
+            for(size_t i = 0; i < n && i < AE_FILE_ROWS_MAX; i++)
+                ae_json_value(wb, NULL, json_object_array_get_idx(list, i));
+        }
+        buffer_json_array_close(wb);
+
+        int64_t total = ae_json_int(files, "total", (int64_t)n);
+        buffer_json_member_add_int64(wb, "total", total);
+        buffer_json_member_add_boolean(wb, "truncated", (uint64_t)total > MIN(n, (size_t)AE_FILE_ROWS_MAX));
+    }
+    buffer_json_object_close(wb);
 }
 
 static void ae_section_connections(BUFFER *wb, time_t when) {
@@ -927,10 +974,14 @@ int function_alert_evidence(BUFFER *wb, const char *function, BUFFER *payload __
 
         char cmd[128];
         snprintfz(cmd, sizeof(cmd), "processes at:%lld", (long long)T);
-        ae_section_processes(wb, "processes_at", cmd, "CPU", (usec_t)(T - AE_AT_MAX_AGE_S) * USEC_PER_SEC, call_source);
+        ae_section_processes(wb, "processes_at", cmd, "CPU", (usec_t)(T - AE_AT_MAX_AGE_S) * USEC_PER_SEC, call_source, NULL);
 
         snprintfz(cmd, sizeof(cmd), "processes after:%lld before:%lld", (long long)p_after, (long long)p_before);
-        ae_section_processes(wb, "processes_window", cmd, "PeakCPU", 0, call_source);
+        struct json_object *files;
+        const char *window_status = ae_section_processes(wb, "processes_window", cmd, "PeakCPU", 0, call_source, &files);
+        ae_section_files(wb, files, window_status);
+        if(files)
+            json_object_put(files);
 
         ae_section_connections(wb, T);
 

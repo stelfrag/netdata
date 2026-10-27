@@ -8,7 +8,7 @@
 //
 // Times are unix epochs, or relative to now when zero or negative. The recorder keeps only the processes that hold
 // most of the CPU, the largest by memory and by I/O, and every start and exit, so each answer reports the share of
-// process CPU its samples covered.
+// process CPU its samples covered. Both answers add `files`: the regular files the I/O rows held open for writing.
 
 #include "apps_recorder.h"
 
@@ -18,6 +18,7 @@
 #define APPS_REC_QUERY_AT_LOOKBACK_S    120
 #define APPS_REC_QUERY_ROWS_MAX         1000
 #define APPS_REC_QUERY_GAPS_LISTED      16
+#define APPS_REC_QUERY_FILES_MAX        100
 
 typedef struct {
     usec_t sample_ut;
@@ -279,9 +280,17 @@ typedef struct {
 } REC_AT_ROW;
 
 typedef struct {
+    APPS_REC_FILE file;
+    STRING *path, *mount;
+} REC_AT_FILE;
+
+typedef struct {
     REC_AT_ROW *rows;
     size_t used;
     size_t size;
+    REC_AT_FILE *files;
+    size_t files_used;
+    size_t files_size;
     REC_COVERAGE coverage;
     APPS_REC_FRAME_HDR hdr;
 } REC_AT;
@@ -294,6 +303,12 @@ static void at_rows_free(REC_AT *a) {
         string_freez(a->rows[i].cmdline);
     }
     a->used = 0;
+
+    for(size_t i = 0; i < a->files_used; i++) {
+        string_freez(a->files[i].path);
+        string_freez(a->files[i].mount);
+    }
+    a->files_used = 0;
 }
 
 // keeps a copy of the newest frame walked; frames arrive oldest first
@@ -317,8 +332,43 @@ static bool at_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *strin
         };
     }
 
+    if(f->hdr->files > a->files_size) {
+        a->files_size = f->hdr->files;
+        a->files = reallocz(a->files, a->files_size * sizeof(*a->files));
+    }
+
+    for(uint16_t i = 0; i < f->hdr->files; i++) {
+        APPS_REC_FILE file = f->files[i];
+        a->files[a->files_used++] = (REC_AT_FILE){
+            .file = file,
+            .path = dup_string(strings, file.path),
+            .mount = dup_string(strings, file.mount),
+        };
+    }
+
     a->hdr = *f->hdr;
     return true;
+}
+
+static void emit_at_files(BUFFER *wb, const REC_AT *a) {
+    buffer_json_member_add_object(wb, "files");
+    buffer_json_member_add_boolean(wb, "recorded", a->hdr.flags & APPS_REC_FRAME_FILES);
+    buffer_json_member_add_array(wb, "list");
+    for(size_t i = 0; i < a->files_used; i++) {
+        const REC_AT_FILE *f = &a->files[i];
+        const REC_AT_ROW *r = &a->rows[f->file.row];   // the reader checked the row index
+
+        buffer_json_add_array_item_object(wb);
+        buffer_json_member_add_uint64(wb, "pid", (uint64_t)r->row.pid);
+        buffer_json_member_add_string(wb, "process", r->comm ? string2str(r->comm) : "-");
+        buffer_json_member_add_string(wb, "path", f->path ? string2str(f->path) : "-");
+        buffer_json_member_add_string_or_omit(wb, "mount", f->mount ? string2str(f->mount) : NULL);
+        buffer_json_member_add_uint64(wb, "bytes", f->file.size);
+        buffer_json_member_add_boolean(wb, "deleted", f->file.flags & APPS_REC_FILE_DELETED);
+        buffer_json_object_close(wb);
+    }
+    buffer_json_array_close(wb);
+    buffer_json_object_close(wb);
 }
 
 static const REC_COLUMN at_columns[] = {
@@ -353,6 +403,7 @@ static void query_at(const char *transaction, usec_t at_ut, bool show_cmdline) {
     if(!a.hdr.time_ut) {
         not_found(transaction, "The process flight recorder has no sample at or before this time.", at_ut, at_ut);
         freez(a.rows);
+        freez(a.files);
         return;
     }
 
@@ -389,11 +440,13 @@ static void query_at(const char *transaction, usec_t at_ut, bool show_cmdline) {
     }
     buffer_json_array_close(wb);
 
+    emit_at_files(wb, &a);
     emit_columns(wb, at_columns, _countof(at_columns), show_cmdline);
     response_send(transaction, wb, "CPU");
 
     at_rows_free(&a);
     freez(a.rows);
+    freez(a.files);
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -417,6 +470,18 @@ typedef struct {
     bool started, exited;
 } REC_AGG;
 
+// a file a process held open for writing during the range
+typedef struct {
+    int32_t pid;
+    uint64_t starttime;
+    uint64_t boot;
+    STRING *path;               // NULL: a free slot
+    STRING *mount;
+    uint64_t bytes_first, bytes_last;
+    usec_t first_ut, last_ut;
+    bool deleted;               // in the last sample
+} REC_RANGE_FILE;
+
 typedef struct {
     REC_AGG *slots;
     size_t size;                // power of 2
@@ -424,6 +489,11 @@ typedef struct {
     REC_COVERAGE coverage;
     REC_GAPS gaps;
     size_t exits_unknown;       // exits of processes the range has no identity for
+
+    REC_RANGE_FILE *files;
+    size_t files_size;          // power of 2
+    size_t files_used;
+    bool files_recorded;        // a frame of the range looked at files
 } REC_RANGE;
 
 static inline size_t agg_slot(int32_t pid, uint64_t starttime, uint64_t boot, size_t size) {
@@ -481,6 +551,125 @@ static void agg_identity(REC_AGG *a, const APPS_REC_STRINGS *strings, int32_t pp
     if(!a->cmdline) a->cmdline = dup_string(strings, cmdline);
 }
 
+static inline size_t range_file_slot(int32_t pid, uint64_t starttime, uint64_t boot, STRING *path, size_t size) {
+    uint64_t h = ((uint64_t)(uint32_t)pid * 0x9e3779b97f4a7c15ULL) ^ (starttime * 0xc2b2ae3d27d4eb4fULL) ^ boot ^
+                 ((uint64_t)(uintptr_t)path * 0xff51afd7ed558ccdULL);
+    h ^= h >> 31;
+    return (size_t)h & (size - 1);
+}
+
+static REC_RANGE_FILE *range_file_find(REC_RANGE *r, int32_t pid, uint64_t starttime, uint64_t boot, STRING *path) {
+    if((r->files_used + 1) * 2 > r->files_size) {
+        REC_RANGE_FILE *old = r->files;
+        size_t old_size = r->files_size;
+        r->files_size = old_size ? old_size * 2 : 256;
+        r->files = callocz(r->files_size, sizeof(*r->files));
+        for(size_t i = 0; i < old_size; i++) {
+            if(!old[i].path) continue;
+            size_t h = range_file_slot(old[i].pid, old[i].starttime, old[i].boot, old[i].path, r->files_size);
+            while(r->files[h].path) h = (h + 1) & (r->files_size - 1);
+            r->files[h] = old[i];
+        }
+        freez(old);
+    }
+
+    size_t h = range_file_slot(pid, starttime, boot, path, r->files_size);
+    while(r->files[h].path) {
+        REC_RANGE_FILE *x = &r->files[h];
+        if(x->path == path && x->pid == pid && x->starttime == starttime && x->boot == boot)
+            return x;
+        h = (h + 1) & (r->files_size - 1);
+    }
+
+    r->files[h] = (REC_RANGE_FILE){ .pid = pid, .starttime = starttime, .boot = boot, .path = string_dup(path) };
+    r->files_used++;
+    return &r->files[h];
+}
+
+static void range_files(REC_RANGE *r, const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *strings, uint64_t boot) {
+    if(f->hdr->flags & APPS_REC_FRAME_FILES)
+        r->files_recorded = true;
+
+    usec_t t = f->hdr->time_ut;
+    for(uint16_t i = 0; i < f->hdr->files; i++) {
+        APPS_REC_FILE file = f->files[i];
+        APPS_REC_ROW row = f->rows[file.row];   // the reader checked the row index
+
+        STRING *path = dup_string(strings, file.path);
+        if(!path)
+            continue;
+
+        REC_RANGE_FILE *x = range_file_find(r, row.pid, row.starttime, boot, path);
+        string_freez(path);
+
+        if(!x->first_ut) {
+            x->first_ut = t;
+            x->bytes_first = file.size;
+        }
+        x->last_ut = t;
+        x->bytes_last = file.size;
+        x->deleted = file.flags & APPS_REC_FILE_DELETED;
+        if(!x->mount)
+            x->mount = dup_string(strings, file.mount);
+    }
+}
+
+static inline uint64_t range_file_growth(const REC_RANGE_FILE *x) {
+    return x->bytes_last > x->bytes_first ? x->bytes_last - x->bytes_first : 0;
+}
+
+static int cmp_range_file_desc(const void *a, const void *b) {
+    const REC_RANGE_FILE *x = *(REC_RANGE_FILE * const *)a, *y = *(REC_RANGE_FILE * const *)b;
+    uint64_t gx = range_file_growth(x), gy = range_file_growth(y);
+    if(gx != gy) return (gx < gy) - (gx > gy);
+    return (x->bytes_last < y->bytes_last) - (x->bytes_last > y->bytes_last);
+}
+
+// the files of the range, the most grown first, then the largest
+static void emit_range_files(BUFFER *wb, REC_RANGE *r) {
+    REC_RANGE_FILE **sorted = mallocz((r->files_used + 1) * sizeof(*sorted));
+    size_t n = 0;
+    for(size_t i = 0; i < r->files_size; i++)
+        if(r->files[i].path) sorted[n++] = &r->files[i];
+    qsort(sorted, n, sizeof(*sorted), cmp_range_file_desc);
+
+    buffer_json_member_add_object(wb, "files");
+    buffer_json_member_add_boolean(wb, "recorded", r->files_recorded);
+    buffer_json_member_add_uint64(wb, "total", n);
+    buffer_json_member_add_array(wb, "list");
+    for(size_t i = 0; i < n && i < APPS_REC_QUERY_FILES_MAX; i++) {
+        const REC_RANGE_FILE *x = sorted[i];
+        const REC_AGG *a = agg_find(r, x->pid, x->starttime, x->boot, false);
+        char key[80];
+        snprintfz(key, sizeof(key), "%d:%" PRIu64 ":%016" PRIx64, x->pid, x->starttime, x->boot);
+
+        buffer_json_add_array_item_object(wb);
+        buffer_json_member_add_string(wb, "key", key);
+        buffer_json_member_add_uint64(wb, "pid", (uint64_t)x->pid);
+        buffer_json_member_add_string(wb, "process", (a && a->comm) ? string2str(a->comm) : "-");
+        buffer_json_member_add_string(wb, "path", string2str(x->path));
+        buffer_json_member_add_string_or_omit(wb, "mount", x->mount ? string2str(x->mount) : NULL);
+        buffer_json_member_add_uint64(wb, "bytes_first", x->bytes_first);
+        buffer_json_member_add_uint64(wb, "bytes_last", x->bytes_last);
+        buffer_json_member_add_uint64(wb, "first_ut", x->first_ut);
+        buffer_json_member_add_uint64(wb, "last_ut", x->last_ut);
+        buffer_json_member_add_boolean(wb, "deleted", x->deleted);
+        buffer_json_object_close(wb);
+    }
+    buffer_json_array_close(wb);
+    buffer_json_object_close(wb);
+
+    freez(sorted);
+}
+
+static void range_files_free(REC_RANGE *r) {
+    for(size_t i = 0; i < r->files_size; i++) {
+        string_freez(r->files[i].path);
+        string_freez(r->files[i].mount);
+    }
+    freez(r->files);
+}
+
 static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *strings, void *data) {
     REC_RANGE *r = data;
     usec_t t = f->hdr->time_ut;
@@ -524,6 +713,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         a->last_ut = MAX(a->last_ut, t);
     }
 
+    range_files(r, f, strings, boot);
     return true;
 }
 
@@ -564,6 +754,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     if(!r.coverage.frames) {
         not_found(transaction, "The process flight recorder has no samples in this time range.", after_ut, before_ut);
         freez(r.slots);
+        range_files_free(&r);
         return;
     }
 
@@ -608,6 +799,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     }
     buffer_json_array_close(wb);
 
+    emit_range_files(wb, &r);
     emit_columns(wb, range_columns, _countof(range_columns), show_cmdline);
     response_send(transaction, wb, "AvgCPU");
 
@@ -620,6 +812,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     }
     freez(sorted);
     freez(r.slots);
+    range_files_free(&r);
 }
 
 // --------------------------------------------------------------------------------------------------------------------

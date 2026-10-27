@@ -10,7 +10,7 @@
 // Chunks are host-local caches: integers are stored in native byte order and the version guards the layout.
 
 #define APPS_REC_MAGIC              0x5250444eU // "NDPR"
-#define APPS_REC_VERSION            1
+#define APPS_REC_VERSION            2
 #define APPS_REC_FRAMES_PER_CHUNK   60
 #define APPS_REC_STRING_NONE        UINT16_MAX
 #define APPS_REC_STRINGS_MAX        (UINT16_MAX - 1)
@@ -23,6 +23,12 @@
 #define APPS_REC_WHY_CPU            0x01
 #define APPS_REC_WHY_MEM            0x02
 #define APPS_REC_WHY_IO             0x04
+
+// APPS_REC_FRAME_HDR.flags
+#define APPS_REC_FRAME_FILES        0x0001  // the open files of the I/O rows were looked at
+
+// APPS_REC_FILE.flags
+#define APPS_REC_FILE_DELETED       0x01    // no name left on the filesystem (st_nlink == 0)
 
 typedef struct __attribute__((packed)) {
     int32_t pid;
@@ -61,6 +67,15 @@ typedef struct __attribute__((packed)) {
     uint64_t starttime;
 } APPS_REC_EXIT;
 
+// a regular file a row holds open for writing
+typedef struct __attribute__((packed)) {
+    uint16_t row;               // index of the row in its frame
+    uint16_t path;              // string ids
+    uint16_t mount;             // the mount point of its filesystem, APPS_REC_STRING_NONE when unknown
+    uint8_t flags;              // APPS_REC_FILE_*
+    uint64_t size;              // bytes
+} APPS_REC_FILE;
+
 typedef struct __attribute__((packed)) {
     uint64_t time_ut;           // realtime of the sample
     uint32_t pids;              // running processes
@@ -72,6 +87,8 @@ typedef struct __attribute__((packed)) {
     uint16_t starts;
     uint16_t exits;
     uint16_t rows;
+    uint16_t files;
+    uint16_t flags;             // APPS_REC_FRAME_*
 } APPS_REC_FRAME_HDR;
 
 typedef struct __attribute__((packed)) {
@@ -93,6 +110,7 @@ typedef struct __attribute__((packed)) {
 //   starts  x APPS_REC_START
 //   exits   x APPS_REC_EXIT
 //   rows    x APPS_REC_ROW
+//   files   x APPS_REC_FILE
 // String ids are assigned in order of appearance within the chunk, starting at 0.
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -127,7 +145,8 @@ void apps_rec_builder_add_frame(
     APPS_REC_BUILDER *b, const APPS_REC_FRAME_HDR *totals,
     const APPS_REC_START *starts, uint16_t nstarts,
     const APPS_REC_EXIT *exits, uint16_t nexits,
-    const APPS_REC_ROW *rows, uint16_t nrows);
+    const APPS_REC_ROW *rows, uint16_t nrows,
+    const APPS_REC_FILE *files, uint16_t nfiles);
 
 // seals the chunk being built and resets the builder; NULL when it has no frames.
 // The returned block is a header followed by the stored payload; free it with freez().
@@ -142,6 +161,7 @@ typedef struct {
     const APPS_REC_START *starts;
     const APPS_REC_EXIT *exits;
     const APPS_REC_ROW *rows;
+    const APPS_REC_FILE *files;
 } APPS_REC_FRAME_VIEW;
 
 typedef struct {

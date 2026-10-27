@@ -18,6 +18,7 @@ answers, for one alert transition, with everything the Agent kept for that momen
 |----------------------|-------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
 | `processes_at`       | the processes at the moment of the alert, busiest first                                         | the [recorded past](processes.md#recorded-past-linux) of `processes`         |
 | `processes_window`   | the processes from 10 minutes before to 2 minutes after, with how many started and exited       | the same                                                                     |
+| `files`              | the files the busiest processes by I/O were writing in that window, with mount point and size   | the window's answer of `processes` ([files](processes.md#recorded-past-linux)) |
 | `connections`        | the open connections captured when the alert fired                                              | `network-connections`, captured by the Agent at the time                     |
 | `host_changes`       | host changes in the 24 hours before the alert (reboot, kernel, OS, Netdata version, CPUs, RAM…) | [host change events](/src/libnetdata/log/README.md#host-change-events) in the systemd journal |
 | `journal`            | the time range to read in the logs                                                              | a pointer for the `systemd-journal` Function                                 |
@@ -67,6 +68,7 @@ The same views answer `alert-evidence` (or `alert-evidence alert:all`) and `aler
   "evidence": {
     "processes_at":       { "status": "ok", "running": 529, "recorded_processes": 53, "recorded": { "...": "..." }, "rows": [ { "Cmd": "...", "CPU": 99.9, "...": "..." } ] },
     "processes_window":   { "status": "ok", "running": { "min": 520, "avg": 528.4, "max": 541 }, "recorded_processes": 881, "rows": [ "..." ], "started": 633, "exited": 621 },
+    "files":              { "status": "ok", "source": "processes_window", "list": [ { "process": "dd", "path": "/mnt/small/fill.bin", "mount": "/mnt/small", "bytes_first": 0, "bytes_last": 209715200, "deleted": false, "...": "..." } ], "total": 3, "truncated": false },
     "connections":        { "status": "ok", "captured": 1793020005, "rows": [ "..." ], "total": 120 },
     "host_changes":       { "status": "ok", "includes_startup": false, "events": [ { "ND_HOST_CHANGE": "kernel", "...": "..." } ] },
     "journal":            { "status": "pointer", "function": "systemd-journal", "after": 1793019400, "before": 1793020120 },
@@ -108,6 +110,12 @@ the ones the recorder kept in detail: the busiest by CPU, memory and I/O, and ev
 connection rows at most 1000; `truncated` says there were more, and the connections' `total` how many. `started` and `exited` are counted over the busiest 1000 processes of the window; `counts_partial` is true when
 there were more. `processes_at` is `ok` only when the recorder has a sample from the minute before the alert. Command
 lines are never included.
+
+`files` lists at most 20 files, the ones that grew most in the window first (`total` and `truncated` say how many
+there were); each has the process (`key`, `pid`, `process`), `path`, `mount`, the size when first and last recorded
+(`bytes_first`, `bytes_last`, with `first_ut` and `last_ut`) and `deleted` (still written to after it was deleted, so
+its space is not freed). Its status follows `processes_window`; it is `unavailable` when `apps.plugin` did not look at
+files (file charts off, or `without-recorder-files`).
 
 `host_changes` reads the systemd journal. It is `unavailable` when the Agent logs to files instead; the changes are
 then in its daemon log. The changes the Agent finds at startup are logged once it is running, which can be after the

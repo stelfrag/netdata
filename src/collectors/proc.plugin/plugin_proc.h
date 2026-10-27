@@ -80,7 +80,6 @@ void cgroup_rename_task_add(
 
 void cgroup_rename_task_device_del(const char *host_device);
 
-#include "proc_self_mountinfo.h"
 #include "proc_pressure.h"
 #include "zfs_common.h"
 

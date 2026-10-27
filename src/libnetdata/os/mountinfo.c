@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "plugin_proc.h"
+#include "libnetdata/libnetdata.h"
+
+#if defined(OS_LINUX)
 
 // ----------------------------------------------------------------------------
 // taken from gnulib/mountlist.c
@@ -61,6 +63,27 @@ struct mountinfo *mountinfo_find(struct mountinfo *root, unsigned long major, un
             return mi;
 
     return NULL;
+}
+
+// find the mount that shows the whole filesystem of a device: the one with the shortest root (bind mounts of
+// subdirectories have longer roots), then the shortest mount point
+struct mountinfo *mountinfo_find_by_device(struct mountinfo *root, unsigned long major, unsigned long minor) {
+    struct mountinfo *best = NULL;
+    size_t best_root = 0, best_mp = 0;
+
+    for(struct mountinfo *mi = root; mi ; mi = mi->next) {
+        if(mi->major != major || mi->minor != minor)
+            continue;
+
+        size_t r = strlen(mi->root), m = strlen(mi->mount_point);
+        if(!best || r < best_root || (r == best_root && m < best_mp)) {
+            best = mi;
+            best_root = r;
+            best_mp = m;
+        }
+    }
+
+    return best;
 }
 
 // find the mount info with the given filesystem and mount_source
@@ -240,7 +263,7 @@ struct mountinfo *mountinfo_read(int do_statvfs) {
     // create a dictionary to track uniqueness
     DICTIONARY *dict = dictionary_create_advanced(
             DICT_OPTION_SINGLE_THREADED | DICT_OPTION_DONT_OVERWRITE_VALUE | DICT_OPTION_NAME_LINK_DONT_CLONE,
-            &dictionary_stats_category_collectors, 0);
+            &dictionary_stats_category_other, 0);
 
     unsigned long l, lines = procfile_lines(ff);
     for(l = 0; l < lines ;l++) {
@@ -487,3 +510,5 @@ struct mountinfo *mountinfo_read(int do_statvfs) {
     procfile_close(ff);
     return root;
 }
+
+#endif // OS_LINUX

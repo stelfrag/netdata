@@ -401,6 +401,7 @@ void clear_pid_fd(struct pid_fd *pfd) {
 #if defined(OS_LINUX)
     pfd->link_hash = 0;
     pfd->inode = 0;
+    pfd->rec = PID_FD_REC_UNKNOWN;
     pfd->cache_iterations_counter = 0;
     pfd->cache_iterations_reset = 0;
 #endif
@@ -440,6 +441,18 @@ void init_pid_fds(struct pid_stat *p, size_t first, size_t size) {
         pfd++;
     }
 }
+
+#if defined(OS_LINUX)
+// the name of an open fd of a process when it was opened by path (a file, a device, a directory), NULL otherwise;
+// valid until the next collection
+const char *pid_fd_file_name(const struct pid_stat *p, size_t fdid) {
+    if(fdid >= p->fds_size || p->fds[fdid].fd <= 0 || (uint32_t)p->fds[fdid].fd >= all_files_size)
+        return NULL;
+
+    const struct file_descriptor *f = &all_files[p->fds[fdid].fd];
+    return (f->count && f->type == FILETYPE_FILE) ? f->name : NULL;
+}
+#endif
 
 int read_pid_file_descriptors(struct pid_stat *p, void *ptr) {
     bool ret = OS_FUNCTION(apps_os_read_pid_fds)(p, ptr);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#ifndef NETDATA_PROC_SELF_MOUNTINFO_H
-#define NETDATA_PROC_SELF_MOUNTINFO_H 1
+#ifndef NETDATA_OS_MOUNTINFO_H
+#define NETDATA_OS_MOUNTINFO_H 1
 
 #define MOUNTINFO_IS_DUMMY      0x00000001
 #define MOUNTINFO_IS_REMOTE     0x00000002
@@ -53,10 +53,11 @@ struct mountinfo {
 };
 
 struct mountinfo *mountinfo_find(struct mountinfo *root, unsigned long major, unsigned long minor, char *device);
+struct mountinfo *mountinfo_find_by_device(struct mountinfo *root, unsigned long major, unsigned long minor);
 struct mountinfo *mountinfo_find_by_filesystem_mount_source(struct mountinfo *root, const char *filesystem, const char *mount_source);
 struct mountinfo *mountinfo_find_by_filesystem_super_option(struct mountinfo *root, const char *filesystem, const char *super_options);
 
 void mountinfo_free_all(struct mountinfo *mi);
 struct mountinfo *mountinfo_read(int do_statvfs);
 
-#endif /* NETDATA_PROC_SELF_MOUNTINFO_H */
+#endif /* NETDATA_OS_MOUNTINFO_H */

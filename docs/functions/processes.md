@@ -256,6 +256,20 @@ time the process was seen to the end of the range, and `unknown` when a gap foll
 when nothing was being kept. Rows are sorted by `AvgCPU`; at most 1000 are returned, and `processes_total` /
 `processes_shown` say how many there were.
 
+Both answers also have a `files` object: the regular files that the processes kept for I/O held open for writing,
+up to 8 per process (the ones that grew most since the previous sample, then the largest).
+
+| Field        | Meaning                                                                                                  |
+|--------------|----------------------------------------------------------------------------------------------------------|
+| `recorded`   | Whether files were looked at. `false` when file charts are off (`with-files`, or turned off automatically above 100,000 open files on the system) or the recorder runs with `without-recorder-files` |
+| `list`       | `at:`: one entry per file with `pid`, `process`, `path`, `mount`, `bytes` and `deleted`                |
+|              | `after:`/`before:`: one entry per process and file with `key` (as the `Key` column), `pid`, `process`, `path`, `mount`, `bytes_first` and `bytes_last` (the size when first and last recorded in the range), `first_ut`, `last_ut` and `deleted`; the files that grew most come first, at most 100 |
+| `total`      | `after:`/`before:` only: the number of files before the limit                                            |
+
+`mount` is the mount point of the file's filesystem as the host sees it, absent when no mount shows it; `path` is the
+name as the process sees it (inside a container, the container's path). `deleted` means the file has no name left on
+the filesystem while the process still writes to it: its space is freed only when the process closes it.
+
 `CmdLine` appears only when command lines are recorded (`with-recorder-cmdline`) and the caller may see them. The
 response keeps `has_history: false`: these answers are a separate view, not a time series.
 

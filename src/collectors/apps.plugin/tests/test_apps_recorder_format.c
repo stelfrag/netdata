@@ -12,9 +12,12 @@ typedef struct {
     APPS_REC_START starts[2];
     APPS_REC_EXIT exits[2];
     APPS_REC_ROW rows[3];
+    APPS_REC_FILE files[2];
     const char *start_comm[2];
     const char *row_comm[3];
     const char *row_exe[3];
+    const char *file_path[2];
+    const char *file_mount[2];
 } EXPECTED_FRAME;
 
 typedef struct {
@@ -48,7 +51,8 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         f->hdr->procs_rss_kib != e->hdr.procs_rss_kib)
         return fail(w, "totals differ", i);
 
-    if(f->hdr->starts != e->hdr.starts || f->hdr->exits != e->hdr.exits || f->hdr->rows != e->hdr.rows)
+    if(f->hdr->starts != e->hdr.starts || f->hdr->exits != e->hdr.exits || f->hdr->rows != e->hdr.rows ||
+        f->hdr->files != e->hdr.files || f->hdr->flags != e->hdr.flags)
         return fail(w, "counts differ", i);
 
     for(uint16_t k = 0; k < f->hdr->starts; k++) {
@@ -82,6 +86,16 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
             return fail(w, "row group should be unset", i);
     }
 
+    for(uint16_t k = 0; k < f->hdr->files; k++) {
+        APPS_REC_FILE got = f->files[k];
+        const APPS_REC_FILE *x = &e->files[k];
+        if(got.row != x->row || got.flags != x->flags || got.size != x->size)
+            return fail(w, "file differs", i);
+        if(!same_str(apps_rec_string(strings, got.path), e->file_path[k]) ||
+            !same_str(apps_rec_string(strings, got.mount), e->file_mount[k]))
+            return fail(w, "file strings differ", i);
+    }
+
     w->frames++;
     return w->frames != w->stop_after;
 }
@@ -90,6 +104,8 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
     STRING *bash = string_strdupz("bash");
     STRING *cc1 = string_strdupz("cc1");
     STRING *bin_bash = string_strdupz("/usr/bin/bash");
+    STRING *fill = string_strdupz("/mnt/small/fill.bin");
+    STRING *mnt = string_strdupz("/mnt/small");
 
     for(size_t i = 0; i < FRAMES; i++) {
         EXPECTED_FRAME *f = &e[i];
@@ -103,6 +119,10 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
         f->hdr.starts = (i == 0) ? 2 : 0;
         f->hdr.exits = (i == 2) ? 2 : 0;
         f->hdr.rows = 3;
+
+        // frame 2 has files: a deleted one with its mount, and one on an unknown mount
+        f->hdr.files = (i == 1) ? 2 : 0;
+        f->hdr.flags = (i == 1) ? APPS_REC_FRAME_FILES : 0;
 
         for(uint16_t k = 0; k < f->hdr.starts; k++) {
             STRING *comm = k ? cc1 : bash;
@@ -131,14 +151,26 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
             f->row_exe[k] = exe ? "/usr/bin/bash" : NULL;
         }
 
+        for(uint16_t k = 0; k < f->hdr.files; k++) {
+            f->files[k] = (APPS_REC_FILE){
+                .row = k ? 2 : 0, .path = apps_rec_builder_string(b, k ? bin_bash : fill),
+                .mount = apps_rec_builder_string(b, k ? NULL : mnt),
+                .flags = k ? 0 : APPS_REC_FILE_DELETED, .size = k ? 1234 : (5ULL << 32),
+            };
+            f->file_path[k] = k ? "/usr/bin/bash" : "/mnt/small/fill.bin";
+            f->file_mount[k] = k ? NULL : "/mnt/small";
+        }
+
         // expected strings are literals: the STRING copies are released when the chunk is sealed
         apps_rec_builder_add_frame(b, &f->hdr, f->starts, f->hdr.starts, f->exits, f->hdr.exits,
-                                   f->rows, f->hdr.rows);
+                                   f->rows, f->hdr.rows, f->files, f->hdr.files);
     }
 
-    // the builder holds its own references
+    // the builder holds its own references (bash, cc1, /usr/bin/bash, the file and its mount)
     string_freez(bash);
     string_freez(cc1);
+    string_freez(fill);
+    string_freez(mnt);
     string_freez(bin_bash);
 }
 
@@ -148,8 +180,8 @@ static bool test_round_trip(void) {
     EXPECTED_FRAME e[FRAMES];
     make_frames(&b, e);
 
-    if(b.strings != 3) {
-        fprintf(stderr, "round trip: expected 3 interned strings, got %zu\n", b.strings);
+    if(b.strings != 5) {
+        fprintf(stderr, "round trip: expected 5 interned strings, got %zu\n", b.strings);
         return false;
     }
 
@@ -324,6 +356,19 @@ static bool test_bounds(void) {
     } string_no_nul = { .h = { .time_ut = 1, .strings = 1 }, .len = 3, .s = { 'a', 'b', 'c' } };
     ok &= expect_rejected("string without NUL", &string_no_nul, sizeof(string_no_nul), 1);
 
+    struct __attribute__((packed)) {
+        APPS_REC_FRAME_HDR h;
+        APPS_REC_ROW row;
+        APPS_REC_FILE file;
+    } file_past_rows = { .h = { .time_ut = 1, .rows = 1, .files = 1 }, .file = { .row = 1 } };
+    ok &= expect_rejected("file of a row past the rows", &file_past_rows, sizeof(file_past_rows), 1);
+
+    struct __attribute__((packed)) {
+        APPS_REC_FRAME_HDR h;
+        APPS_REC_ROW row;
+    } files_past_end = { .h = { .time_ut = 1, .rows = 1, .files = 1 } };
+    ok &= expect_rejected("files past end", &files_past_end, sizeof(files_past_end), 1);
+
     APPS_REC_FRAME_HDR one = { .time_ut = 1 };
     ok &= expect_rejected("frame count mismatch", &one, sizeof(one), 2);
 
@@ -335,7 +380,7 @@ static bool test_bounds(void) {
         APPS_REC_BUILDER b;
         apps_rec_builder_init(&b, boot_id);
         APPS_REC_FRAME_HDR h = { .time_ut = 1 };
-        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0);
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
         size_t size;
         APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, &size);
         apps_rec_builder_destroy(&b);
@@ -389,7 +434,7 @@ static bool test_limits(void) {
             break;
         }
         h.time_ut = i + 1;
-        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0);
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
     }
     if(!apps_rec_builder_full(&b, 0)) {
         fprintf(stderr, "limits: not full after %d frames\n", APPS_REC_FRAMES_PER_CHUNK);
@@ -418,7 +463,7 @@ static APPS_REC_CHUNK_HDR *test_chunk(uint64_t first_ut, size_t frames, size_t *
     apps_rec_builder_init(&b, boot_id);
     for(size_t i = 0; i < frames; i++) {
         APPS_REC_FRAME_HDR h = { .time_ut = first_ut + i * USEC_PER_SEC, .pids = (uint32_t)i };
-        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0);
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
     }
     APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, size);
     apps_rec_builder_destroy(&b);
@@ -479,12 +524,22 @@ static bool test_store(void) {
     freez(back);
     apps_rec_store_close(&st);
 
-    // leftovers: an interrupted write, a truncated chunk, and an unrelated file
+    // leftovers: an interrupted write, a truncated chunk, a chunk of another record format, and an unrelated file
     write_file(dir, "00000000000000000001.ndpr.tmp", c[0], sizes[0]);
     char name[64];
     snprintfz(name, sizeof(name), "%020" PRIu64 ".ndpr", c[0]->first_ut);
     write_file(dir, name, c[0], sizes[0] - 1);
     write_file(dir, "notes.txt", "x", 1);
+
+    char old_name[64];
+    APPS_REC_CHUNK_HDR *old = mallocz(sizes[0]);
+    memcpy(old, c[0], sizes[0]);
+    old->version = APPS_REC_VERSION - 1;
+    old->first_ut = old->last_ut = 500000000ULL;
+    recrc(old);
+    snprintfz(old_name, sizeof(old_name), "%020" PRIu64 ".ndpr", old->first_ut);
+    write_file(dir, old_name, old, sizes[0]);
+    freez(old);
 
     if(!apps_rec_store_open(&st, dir, cap) || st.used != 3 || apps_rec_store_has(&st, c[0]->first_ut)) {
         fprintf(stderr, "store: reopen indexed %zu chunks\n", st.used);
@@ -500,6 +555,11 @@ static bool test_store(void) {
     snprintfz(path, sizeof(path), "%s/%s", dir, name);
     if(access(path, F_OK) == 0) {
         fprintf(stderr, "store: truncated chunk was not removed\n");
+        ok = false;
+    }
+    snprintfz(path, sizeof(path), "%s/%s", dir, old_name);
+    if(access(path, F_OK) == 0 || apps_rec_store_has(&st, 500000000ULL)) {
+        fprintf(stderr, "store: a chunk of another record format was kept\n");
         ok = false;
     }
 

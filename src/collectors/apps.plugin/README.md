@@ -356,6 +356,14 @@ busy after it has exited. It is on by default on Linux.
 For each recorded process it keeps the PID, parent PID, user ID, name, executable, category, CPU, memory, swap,
 I/O, threads and state. It does not keep command lines unless you enable `with-recorder-cmdline`.
 
+For the 10 largest by I/O it also keeps the regular files they hold open for writing, up to 8 per process (the ones
+that grew most since the previous iteration, then the largest), with the mount point of each file's filesystem, its
+size, and whether it was deleted while still open. It takes these from the open files `apps.plugin` already reads
+for its file charts, so they are recorded only while file charts are on (`with-files`; turned off automatically
+above 100,000 open files on the system). It looks at up to 64 writable files per process, and reads their size
+without waiting on the filesystem (`statx` without sync, Linux 4.11 or later), so a slow or unreachable network
+filesystem never blocks it.
+
 **Memory and CPU**: the last 30 minutes (at `update every = 1`) stay in memory, compressed: typically 0.4 to
 0.7 MiB. Recording costs well under 0.1% of one CPU core.
 
@@ -370,7 +378,8 @@ When the Agent stops or restarts, `apps.plugin` also saves what it holds in memo
 1 MiB), so a restart does not erase the recent past.
 
 Saved windows go to `/var/cache/netdata/apps-recorder/` (the Agent's cache directory) and overlapping windows share
-their data. When the store reaches its size limit, the oldest data is deleted. A saved incident is typically 0.1 to
+their data. When the store reaches its size limit, the oldest data is deleted. Data saved by a version of
+`apps.plugin` with another record format is deleted when it starts. A saved incident is typically 0.1 to
 0.5 MiB. Nothing is written to disk unless one of the above happens, and the Agent never saves when its database
 mode is `ram`, `alloc` or `none`, or when it runs with the `iot` profile.
 
@@ -395,6 +404,7 @@ changes the Agent kept.
 | `without-recorder`      | -       | Disables the flight recorder, its memory and its disk store.                        |
 | `recorder-disk-mb N`    | `32`    | The size limit of the disk store, in MiB. `0` disables saving to disk.              |
 | `with-recorder-cmdline` | -       | Also records full command lines. They may contain passwords or tokens.              |
+| `without-recorder-files` | -      | Does not record the files the busiest processes by I/O hold open for writing.       |
 
 ```text
 [plugin:apps]

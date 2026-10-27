@@ -73,7 +73,8 @@ static bool name_has_suffix(const char *name, const char *suffix) {
 }
 
 // indexes one file by its header; false when it is not a chunk this version can read
-static bool store_index_file(APPS_REC_STORE *st, const char *path) {
+static bool store_index_file(APPS_REC_STORE *st, const char *path, bool *other_format) {
+    *other_format = false;
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if(fd == -1)
         return false;
@@ -81,7 +82,9 @@ static bool store_index_file(APPS_REC_STORE *st, const char *path) {
     APPS_REC_CHUNK_HDR hdr;
     struct stat stbuf;
     bool ok = fstat(fd, &stbuf) == 0 && read(fd, &hdr, sizeof(hdr)) == (ssize_t)sizeof(hdr) &&
-              hdr.magic == APPS_REC_MAGIC && hdr.version == APPS_REC_VERSION &&
+              hdr.magic == APPS_REC_MAGIC;
+    *other_format = ok && hdr.version != APPS_REC_VERSION;
+    ok = ok && hdr.version == APPS_REC_VERSION &&
               (uint64_t)stbuf.st_size == sizeof(hdr) + (uint64_t)hdr.stored_len && hdr.first_ut <= hdr.last_ut;
     close(fd);
 
@@ -118,6 +121,7 @@ bool apps_rec_store_open(APPS_REC_STORE *st, const char *dir, uint64_t cap_bytes
         return false;
     }
 
+    size_t other_formats = 0;
     struct dirent *de;
     while((de = readdir(d))) {
         if(de->d_name[0] == '.')
@@ -126,14 +130,22 @@ bool apps_rec_store_open(APPS_REC_STORE *st, const char *dir, uint64_t cap_bytes
         char path[FILENAME_MAX + 1];
         snprintfz(path, sizeof(path), "%s/%s", st->dir, de->d_name);
 
-        // leftovers of interrupted writes, and chunks this version cannot read
+        // leftovers of interrupted writes, and chunks this version cannot read: the store is a cache
+        bool other_format = false;
         if(name_has_suffix(de->d_name, APPS_REC_STORE_TMP_SUFFIX) ||
-            (name_has_suffix(de->d_name, APPS_REC_STORE_SUFFIX) && !store_index_file(st, path))) {
+            (name_has_suffix(de->d_name, APPS_REC_STORE_SUFFIX) && !store_index_file(st, path, &other_format))) {
+            if(other_format)
+                other_formats++;
             if(unlink(path) != 0)
                 nd_log(NDLS_COLLECTORS, NDLP_ERR, "apps.plugin recorder: cannot delete '%s'", path);
         }
     }
     closedir(d);
+
+    if(other_formats)
+        nd_log(NDLS_COLLECTORS, NDLP_NOTICE,
+               "apps.plugin recorder: deleted %zu saved chunks of another record format from '%s'",
+               other_formats, st->dir);
 
     store_evict(st);
     return true;

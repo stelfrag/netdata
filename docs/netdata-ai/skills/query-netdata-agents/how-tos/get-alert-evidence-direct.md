@@ -47,6 +47,7 @@ connections were open, and did the host change before it?
    jq '.evidence | map_values(.status)' "$F"
    jq '.evidence.processes_at.rows[:5] | map({Cmd, PID, CPU, RSS, RecordedFor})' "$F"
    jq '.evidence.processes_window | {running, recorded_processes, started, exited, top: (.rows[:5] | map({Cmd, PeakCPU, Started, Exited}))}' "$F"
+   jq '.evidence.files | {status, total, list: (.list // [] | map({process, path, mount, bytes_first, bytes_last, deleted}))}' "$F"
    jq '.evidence.host_changes.events' "$F"
    ```
 
@@ -55,6 +56,9 @@ connections were open, and did the host change before it?
 - `processes_at`: the table at the alert (`recorded.sample_ut` is the sample used), busiest first.
 - `processes_window`: 10 minutes before to 2 minutes after; `Started` / `Exited` mark processes that began or ended
   inside it, and `started` / `exited` count them.
+- `files`: the files the busiest processes by I/O were writing in the window, with the mount point and the size
+  when first and last recorded; the most grown first. `deleted: true` is a file still written after it was deleted
+  (its space is not freed until the process closes it).
 - `connections`: the sockets open when the alert fired (`captured` is the snapshot time).
 - `host_changes`: reboots, kernel/OS/Netdata version changes, CPU/RAM/disk/default-interface changes in the 24 hours
   before.
@@ -65,6 +69,8 @@ connections were open, and did the host change before it?
 
 - Use GET: the Agent closes a POST that has no body and no `Content-Length` without answering.
 - `host_changes` is `unavailable` when the Agent logs to files instead of the systemd journal.
+- `files` is `unavailable` when `apps.plugin` runs without file charts (`with-files` off, or turned off above 100,000
+  open files) or with `without-recorder-files`.
 - Check each section's `status` before its data: `not_saved` (nothing recorded near the alert), `not_captured` or
   `expired` (connections), `unavailable` (the source does not run on this node), `disabled`, `other_node`.
 - Ask the Agent that evaluated the alert. A parent's own transitions for a child answer `other_node`: query the child.

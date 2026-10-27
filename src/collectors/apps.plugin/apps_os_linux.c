@@ -395,6 +395,9 @@ bool apps_os_read_pid_fds_linux(struct pid_stat *p, void *ptr __maybe_unused) {
         else {
             // else make it positive again, we need it
             p->fds[fdid].fd = -p->fds[fdid].fd;
+
+            // the fd number may have been reused for the same path, opened another way: the recorder checks again
+            p->fds[fdid].rec = PID_FD_REC_UNKNOWN;
         }
 
         // caching control

@@ -397,6 +397,8 @@ set(LIBNETDATA_FILES
         os/process_memory.h
         os/dir_size.c
         os/dir_size.h
+        os/mountinfo.c
+        os/mountinfo.h
         signals/signal-code.c
         signals/signal-code.h
 )

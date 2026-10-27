@@ -819,8 +819,6 @@ set(PROC_PLUGIN_FILES
         src/collectors/proc.plugin/proc_net_softnet_stat.c
         src/collectors/proc.plugin/proc_net_stat_conntrack.c
         src/collectors/proc.plugin/proc_net_stat_synproxy.c
-        src/collectors/proc.plugin/proc_self_mountinfo.c
-        src/collectors/proc.plugin/proc_self_mountinfo.h
         src/collectors/proc.plugin/zfs_common.c
         src/collectors/proc.plugin/zfs_common.h
         src/collectors/proc.plugin/proc_spl_kstat_zfs.c

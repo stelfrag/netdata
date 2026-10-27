@@ -122,19 +122,22 @@ void apps_rec_builder_add_frame(
     APPS_REC_BUILDER *b, const APPS_REC_FRAME_HDR *totals,
     const APPS_REC_START *starts, uint16_t nstarts,
     const APPS_REC_EXIT *exits, uint16_t nexits,
-    const APPS_REC_ROW *rows, uint16_t nrows) {
+    const APPS_REC_ROW *rows, uint16_t nrows,
+    const APPS_REC_FILE *files, uint16_t nfiles) {
 
     APPS_REC_FRAME_HDR h = *totals;
     h.strings = b->pending_count;
     h.starts = nstarts;
     h.exits = nexits;
     h.rows = nrows;
+    h.files = nfiles;
 
     buffer_memcat(b->payload, &h, sizeof(h));
     buffer_memcat(b->payload, buffer_tostring(b->pending_strings), buffer_strlen(b->pending_strings));
     if(nstarts) buffer_memcat(b->payload, starts, nstarts * sizeof(*starts));
     if(nexits) buffer_memcat(b->payload, exits, nexits * sizeof(*exits));
     if(nrows) buffer_memcat(b->payload, rows, nrows * sizeof(*rows));
+    if(nfiles) buffer_memcat(b->payload, files, nfiles * sizeof(*files));
 
     buffer_flush(b->pending_strings);
     b->pending_count = 0;
@@ -247,7 +250,8 @@ static bool payload_foreach_frame(const uint8_t *p, size_t len, size_t expected_
 
         size_t body = (size_t)hdr->starts * sizeof(APPS_REC_START) +
                       (size_t)hdr->exits * sizeof(APPS_REC_EXIT) +
-                      (size_t)hdr->rows * sizeof(APPS_REC_ROW);
+                      (size_t)hdr->rows * sizeof(APPS_REC_ROW) +
+                      (size_t)hdr->files * sizeof(APPS_REC_FILE);
         if((size_t)(end - p) < body) { ok = false; break; }
 
         APPS_REC_FRAME_VIEW f = { .boot_id = boot_id, .hdr = hdr };
@@ -257,6 +261,16 @@ static bool payload_foreach_frame(const uint8_t *p, size_t len, size_t expected_
         p += (size_t)hdr->exits * sizeof(APPS_REC_EXIT);
         f.rows = (const APPS_REC_ROW *)p;
         p += (size_t)hdr->rows * sizeof(APPS_REC_ROW);
+        f.files = (const APPS_REC_FILE *)p;
+        p += (size_t)hdr->files * sizeof(APPS_REC_FILE);
+
+        // readers index the rows by these
+        for(uint16_t i = 0; i < hdr->files && ok; i++) {
+            APPS_REC_FILE file;
+            memcpy(&file, &f.files[i], sizeof(file));
+            ok = file.row < hdr->rows;
+        }
+        if(!ok) break;
         frames++;
 
         if(!cb(&f, &strings, data))

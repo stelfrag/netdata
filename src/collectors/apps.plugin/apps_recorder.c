@@ -28,9 +28,17 @@
 #define APPS_REC_PENDING_MAX        16
 #define APPS_REC_HELD_MAX           APPS_REC_RING_CHUNKS
 #define APPS_REC_LOST_MAX           16
+#define APPS_REC_FILES_PER_ROW      8
+#define APPS_REC_FILES_MAX          (APPS_REC_IO_ROWS * APPS_REC_FILES_PER_ROW)
+#define APPS_REC_FILES_LOOKED_MAX   64      // writable files looked at per process and frame
+#define APPS_REC_FDINFO_READS_MAX   512     // fdinfo reads per frame; the rest wait for the next frames
+#define APPS_REC_MOUNTS_REFRESH_S   60
+#define APPS_REC_MOUNTS_MISS_S      10      // an unknown device reloads the mounts, at most this often
+#define APPS_REC_MOUNTS_CACHED      64
 
 bool apps_recorder_enabled = true;
 bool apps_recorder_record_cmdline = false;
+bool apps_recorder_record_files = true;
 int apps_recorder_disk_mb = APPS_RECORDER_DISK_MB_DEFAULT;
 
 typedef struct {
@@ -57,6 +65,19 @@ typedef struct {
     usec_t to_ut;
     APPS_REC_STORE_RESULT reason;
 } REC_LOST;
+
+// the size of a file a process had open for writing, to rank its files by growth in the next frame
+typedef struct {
+    int32_t pid;
+    uint32_t fd;
+    uint64_t ino;
+    uint64_t size;
+} REC_FILE_SIZE;
+
+typedef struct {
+    unsigned long major, minor;
+    STRING *mount_point;        // NULL when no mount shows the device (until the next refresh)
+} REC_MOUNT;
 
 static struct {
     bool initialized;
@@ -94,6 +115,20 @@ static struct {
     APPS_REC_EXIT *exits;
     size_t exits_size;
     APPS_REC_ROW rows[APPS_REC_ROWS_MAX];
+    APPS_REC_FILE files[APPS_REC_FILES_MAX];
+
+    // the writable files looked at in the previous and in this frame, sorted by pid and fd
+    REC_FILE_SIZE *sizes_prev, *sizes_cur;
+    size_t sizes_prev_used, sizes_prev_size, sizes_cur_used, sizes_cur_size;
+    size_t fdinfo_reads;        // this frame
+
+    struct {
+        bool loaded;
+        struct mountinfo *root;
+        time_t loaded_s;
+        REC_MOUNT cached[APPS_REC_MOUNTS_CACHED];
+        size_t cached_used;
+    } mounts;
 
     // the last frame, for the self-monitoring charts
     struct {
@@ -358,18 +393,20 @@ static REC_IDENTITY pid_identity(struct pid_stat *p) {
     };
 }
 
-static void add_row(uint16_t *nrows, struct pid_stat *p, uint8_t why) {
+// returns the index of the process's row, -1 when the frame is full
+static int add_row(uint16_t *nrows, struct pid_stat *p, uint8_t why) {
     for(uint16_t i = 0; i < *nrows; i++) {
         if(rec.rows[i].pid == p->pid && rec.rows[i].starttime == p->starttime) {
             rec.rows[i].why |= why;
-            return;
+            return i;
         }
     }
 
     if(*nrows >= APPS_REC_ROWS_MAX)
-        return;
+        return -1;
 
-    APPS_REC_ROW *r = &rec.rows[(*nrows)++];
+    int index = (*nrows)++;
+    APPS_REC_ROW *r = &rec.rows[index];
     REC_IDENTITY id = pid_identity(p);
     r->pid = p->pid;
     r->ppid = id.ppid;
@@ -389,6 +426,7 @@ static void add_row(uint16_t *nrows, struct pid_stat *p, uint8_t why) {
     r->threads = (uint16_t)MIN(p->values[PDF_THREADS], UINT16_MAX);
     r->state = (uint8_t)p->state;
     r->why = why;
+    return index;
 }
 
 // the k processes with the largest non-zero values, largest first, without sorting the whole array
@@ -418,6 +456,243 @@ static size_t top_k(struct pid_stat **pids, size_t n, kernel_uint_t (*value)(str
 
 static kernel_uint_t pid_rss(struct pid_stat *p) {
     return p->values[PDF_VMRSS];
+}
+
+// --------------------------------------------------------------------------------------------------------------------
+// the files the I/O rows hold open for writing, from apps.plugin's fd table
+
+static void mounts_free(void) {
+    for(size_t i = 0; i < rec.mounts.cached_used; i++)
+        string_freez(rec.mounts.cached[i].mount_point);
+    rec.mounts.cached_used = 0;
+    mountinfo_free_all(rec.mounts.root);
+    rec.mounts.root = NULL;
+}
+
+static void mounts_load(time_t now_s) {
+    mounts_free();
+    rec.mounts.root = mountinfo_read(0);
+    rec.mounts.loaded_s = now_s;
+    rec.mounts.loaded = true;
+}
+
+// the mount point that shows the filesystem of a device, as a new reference; NULL when no mount shows it
+static STRING *mount_point(dev_t dev) {
+    unsigned long ma = major(dev), mi = minor(dev);
+    time_t now_s = now_monotonic_sec();
+
+    if(!rec.mounts.loaded || now_s - rec.mounts.loaded_s >= APPS_REC_MOUNTS_REFRESH_S)
+        mounts_load(now_s);
+
+    for(size_t i = 0; i < rec.mounts.cached_used; i++)
+        if(rec.mounts.cached[i].major == ma && rec.mounts.cached[i].minor == mi)
+            return string_dup(rec.mounts.cached[i].mount_point);
+
+    struct mountinfo *m = mountinfo_find_by_device(rec.mounts.root, ma, mi);
+    if(!m && now_s - rec.mounts.loaded_s >= APPS_REC_MOUNTS_MISS_S) {
+        // mounted since the last load
+        mounts_load(now_s);
+        m = mountinfo_find_by_device(rec.mounts.root, ma, mi);
+    }
+
+    // a device no fresh table shows (memory filesystems, unmounted btrfs subvolumes) waits for the next refresh
+    if(!m && now_s - rec.mounts.loaded_s >= APPS_REC_MOUNTS_MISS_S)
+        return NULL;
+
+    STRING *s = m ? string_strdupz(m->mount_point) : NULL;
+    if(rec.mounts.cached_used < APPS_REC_MOUNTS_CACHED)
+        rec.mounts.cached[rec.mounts.cached_used++] = (REC_MOUNT){ .major = ma, .minor = mi, .mount_point = string_dup(s) };
+    return s;
+}
+
+// the access mode of an fd, from the flags in /proc/PID/fdinfo/FD
+static PID_FD_REC fd_access(struct pid_stat *p, size_t fdid) {
+    char filename[FILENAME_MAX + 1], buf[256];
+    snprintfz(filename, sizeof(filename), "%s/proc/%d/fdinfo/%zu", netdata_configured_host_prefix, p->pid, fdid);
+
+    // on failure the fd is skipped until apps.plugin reads its link again
+    int fd = open(filename, O_RDONLY | O_CLOEXEC);
+    if(fd == -1)
+        return PID_FD_REC_SKIP;
+
+    ssize_t len = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if(len <= 0)
+        return PID_FD_REC_SKIP;
+    buf[len] = '\0';
+
+    const char *flags = strstr(buf, "flags:");
+    if(!flags)
+        return PID_FD_REC_SKIP;
+
+    unsigned long v = strtoul(flags + 6, NULL, 8);
+    return ((v & O_ACCMODE) == O_RDONLY) ? PID_FD_REC_SKIP : PID_FD_REC_WRITABLE;
+}
+
+// stat() through a filesystem without its timestamps and without revalidating: on NFS and CIFS a full stat() of a
+// file being written flushes its dirty pages, and on a hung server or FUSE daemon it blocks. statx() is called
+// directly, so libcs without a wrapper work too; the layout is the kernel's (uapi linux/stat.h).
+typedef struct {
+    uint32_t mask, blksize;
+    uint64_t attributes;
+    uint32_t nlink, uid, gid;
+    uint16_t mode, spare0;
+    uint64_t ino, size, blocks, attributes_mask;
+    struct { int64_t sec; uint32_t nsec; int32_t reserved; } atime, btime, ctime, mtime;
+    uint32_t rdev_major, rdev_minor, dev_major, dev_minor;
+    uint64_t spare[14];
+} REC_STATX;
+
+#define REC_STATX_DONT_SYNC     0x4000      // AT_STATX_DONT_SYNC
+#define REC_STATX_WANTED        (0x0001 | 0x0002 | 0x0004 | 0x0100 | 0x0200) // TYPE MODE NLINK INO SIZE
+
+static int stat_nosync(const char *path, struct stat *st) {
+#if defined(SYS_statx)
+    REC_STATX x;
+    if(syscall(SYS_statx, AT_FDCWD, path, REC_STATX_DONT_SYNC, REC_STATX_WANTED, &x) != 0)
+        return -1;
+    if((x.mask & REC_STATX_WANTED) != REC_STATX_WANTED) {
+        errno = EOPNOTSUPP;
+        return -1;
+    }
+
+    memset(st, 0, sizeof(*st));
+    st->st_mode = x.mode;
+    st->st_nlink = x.nlink;
+    st->st_ino = x.ino;
+    st->st_size = (off_t)x.size;
+    st->st_dev = makedev(x.dev_major, x.dev_minor);
+    return 0;
+#else
+    (void)path; (void)st;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+static int cmp_file_size(const void *a, const void *b) {
+    const REC_FILE_SIZE *x = a, *y = b;
+    if(x->pid != y->pid) return (x->pid > y->pid) - (x->pid < y->pid);
+    return (x->fd > y->fd) - (x->fd < y->fd);
+}
+
+// the same fd of the same process in the previous frame
+static const REC_FILE_SIZE *file_prev(int32_t pid, uint32_t fd) {
+    REC_FILE_SIZE key = { .pid = pid, .fd = fd };
+    return rec.sizes_prev_used ?
+        bsearch(&key, rec.sizes_prev, rec.sizes_prev_used, sizeof(*rec.sizes_prev), cmp_file_size) : NULL;
+}
+
+typedef struct {
+    size_t fdid;
+    uint64_t size;
+    uint64_t growth;
+    dev_t dev;
+    ino_t ino;
+    bool deleted;
+} REC_FILE_CANDIDATE;
+
+static int cmp_candidate_desc(const void *a, const void *b) {
+    const REC_FILE_CANDIDATE *x = a, *y = b;
+    if(x->growth != y->growth) return (x->growth < y->growth) - (x->growth > y->growth);
+    return (x->size < y->size) - (x->size > y->size);
+}
+
+// adds the regular files the process of a row holds open for writing: the APPS_REC_FILES_PER_ROW that grew most since
+// the previous frame, then the largest. The access mode is read once per fd (again when apps.plugin reads the fd's
+// link again); a writable file is stat()ed every frame, at most APPS_REC_FILES_LOOKED_MAX per process.
+static uint16_t row_files(struct pid_stat *p, uint16_t row, uint16_t nfiles) {
+    REC_FILE_CANDIDATE c[APPS_REC_FILES_LOOKED_MAX];
+    size_t n = 0, looked = 0;
+
+    for(size_t fdid = 0; fdid < p->fds_size && looked < APPS_REC_FILES_LOOKED_MAX; fdid++) {
+        struct pid_fd *pfd = &p->fds[fdid];
+        if(pfd->rec == PID_FD_REC_SKIP)
+            continue;
+
+        // memfd_create() files are memory, not a filesystem
+        const char *name = pid_fd_file_name(p, fdid);
+        if(!name || !pfd->filename || strncmp(name, "/memfd:", 7) == 0)
+            continue;
+
+        if(pfd->rec == PID_FD_REC_UNKNOWN) {
+            if(rec.fdinfo_reads >= APPS_REC_FDINFO_READS_MAX)
+                continue;
+            rec.fdinfo_reads++;
+            pfd->rec = fd_access(p, fdid);
+            if(pfd->rec != PID_FD_REC_WRITABLE)
+                continue;
+        }
+
+        // /proc/PID/fd/FD leads to the open file, also when it has been deleted
+        looked++;
+        struct stat st;
+        if(stat_nosync(pfd->filename, &st) != 0) {
+            if(errno == EACCES || errno == EPERM || errno == ENOSYS || errno == EOPNOTSUPP)
+                pfd->rec = PID_FD_REC_SKIP;
+            continue;
+        }
+        if(!S_ISREG(st.st_mode)) {
+            pfd->rec = PID_FD_REC_SKIP;
+            continue;
+        }
+
+        // another file behind the same fd number since the previous frame: the cached access mode is not its own
+        const REC_FILE_SIZE *prev = file_prev(p->pid, (uint32_t)fdid);
+        if(prev && prev->ino != (uint64_t)st.st_ino) {
+            pfd->rec = PID_FD_REC_UNKNOWN;
+            continue;
+        }
+
+        // one file open on several fds (stdout and stderr to the same log) is listed once
+        bool seen = false;
+        for(size_t i = 0; i < n && !seen; i++)
+            seen = c[i].dev == st.st_dev && c[i].ino == st.st_ino;
+        if(seen)
+            continue;
+
+        uint64_t size = (uint64_t)st.st_size;
+        ensure((void **)&rec.sizes_cur, &rec.sizes_cur_size, rec.sizes_cur_used + 1, sizeof(*rec.sizes_cur));
+        rec.sizes_cur[rec.sizes_cur_used++] = (REC_FILE_SIZE){
+            .pid = p->pid, .fd = (uint32_t)fdid, .ino = (uint64_t)st.st_ino, .size = size };
+
+        c[n++] = (REC_FILE_CANDIDATE){
+            .fdid = fdid,
+            .size = size,
+            .growth = (prev && size > prev->size) ? size - prev->size : 0,
+            .dev = st.st_dev,
+            .ino = st.st_ino,
+            .deleted = st.st_nlink == 0,
+        };
+    }
+
+    qsort(c, n, sizeof(*c), cmp_candidate_desc);
+
+    static const char deleted_suffix[] = " (deleted)";
+    const size_t suffix_len = sizeof(deleted_suffix) - 1;
+    char name[FILENAME_MAX + 1];
+    for(size_t i = 0; i < n && i < APPS_REC_FILES_PER_ROW && nfiles < APPS_REC_FILES_MAX; i++) {
+        // the name now: the fd table may still hold the name of an earlier file on this fd number
+        ssize_t len = readlink(p->fds[c[i].fdid].filename, name, sizeof(name) - 1);
+        if(len <= 0)
+            continue;
+        name[len] = '\0';
+
+        bool suffix = (size_t)len > suffix_len && strcmp(&name[len - suffix_len], deleted_suffix) == 0;
+        STRING *path = string_strndupz(name, suffix ? (size_t)len - suffix_len : (size_t)len);
+        STRING *mount = mount_point(c[i].dev);
+        rec.files[nfiles++] = (APPS_REC_FILE){
+            .row = row,
+            .path = apps_rec_builder_string(&rec.builder, path),
+            .mount = apps_rec_builder_string(&rec.builder, mount),
+            .flags = (c[i].deleted || suffix) ? APPS_REC_FILE_DELETED : 0,
+            .size = c[i].size,
+        };
+        string_freez(path);
+        string_freez(mount);
+    }
+
+    return nfiles;
 }
 
 void apps_recorder_collect(void) {
@@ -467,8 +742,8 @@ void apps_recorder_collect(void) {
     nstarted = MIN(nstarted, (size_t)UINT16_MAX);
     nexits = MIN(nexits, (size_t)UINT16_MAX);
 
-    // a frame interns up to 4 strings per start and per row; seal first when the chunk cannot take them
-    if(apps_rec_builder_full(&rec.builder, (nstarted + APPS_REC_ROWS_MAX) * 4))
+    // a frame interns up to 4 strings per start and per row, 2 per file; seal first when the chunk cannot take them
+    if(apps_rec_builder_full(&rec.builder, (nstarted + APPS_REC_ROWS_MAX) * 4 + APPS_REC_FILES_MAX * 2))
         seal_chunk();
 
     ensure((void **)&rec.starts, &rec.starts_size, nstarted + 1, sizeof(*rec.starts));
@@ -501,11 +776,33 @@ void apps_recorder_collect(void) {
         if(nrows > before) rows_cpu += pid_cpu(top[i]);
     }
 
+    // the files of the I/O rows need the fd table, which file charts keep (with-files)
+    const bool files = apps_recorder_record_files && enable_file_charts;
+    uint16_t nfiles = 0;
+    rec.fdinfo_reads = 0;
+    rec.sizes_cur_used = 0;
+
     ntop = top_k(rec.sorted, n, pid_io, top, APPS_REC_IO_ROWS);
     for(size_t i = 0; i < ntop; i++) {
         uint16_t before = nrows;
-        add_row(&nrows, top[i], APPS_REC_WHY_IO);
+        int row = add_row(&nrows, top[i], APPS_REC_WHY_IO);
         if(nrows > before) rows_cpu += pid_cpu(top[i]);
+        if(files && row >= 0)
+            nfiles = row_files(top[i], (uint16_t)row, nfiles);
+    }
+
+    // this frame's file sizes become the previous ones
+    {
+        REC_FILE_SIZE *t = rec.sizes_prev;
+        size_t ts = rec.sizes_prev_size;
+        rec.sizes_prev = rec.sizes_cur;
+        rec.sizes_prev_size = rec.sizes_cur_size;
+        rec.sizes_prev_used = rec.sizes_cur_used;
+        rec.sizes_cur = t;
+        rec.sizes_cur_size = ts;
+        rec.sizes_cur_used = 0;
+        if(rec.sizes_prev_used)
+            qsort(rec.sizes_prev, rec.sizes_prev_used, sizeof(*rec.sizes_prev), cmp_file_size);
     }
 
     APPS_REC_FRAME_HDR totals = {
@@ -515,6 +812,7 @@ void apps_recorder_collect(void) {
         .procs_cpu = cpu_permyriad(procs_cpu),
         .rows_cpu = cpu_permyriad(rows_cpu),
         .procs_rss_kib = procs_rss / 1024,
+        .flags = files ? APPS_REC_FRAME_FILES : 0,
     };
     rec.last.rows = nrows;
     rec.last.starts = (uint16_t)nstarted;
@@ -524,7 +822,8 @@ void apps_recorder_collect(void) {
     apps_rec_builder_add_frame(&rec.builder, &totals,
                                rec.starts, (uint16_t)nstarted,
                                rec.exits, (uint16_t)nexits,
-                               rec.rows, nrows);
+                               rec.rows, nrows,
+                               rec.files, nfiles);
 
     if(apps_rec_builder_full(&rec.builder, 0))
         seal_chunk();
@@ -977,6 +1276,9 @@ void apps_recorder_cleanup(void) {
     freez(rec.sorted);
     freez(rec.starts);
     freez(rec.exits);
+    freez(rec.sizes_prev);
+    freez(rec.sizes_cur);
+    mounts_free();
     memset(&rec, 0, sizeof(rec));
 }
 

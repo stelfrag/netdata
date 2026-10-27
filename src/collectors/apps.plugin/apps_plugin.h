@@ -529,6 +529,15 @@ struct pid_limits {
 };
 #endif
 
+#if defined(OS_LINUX)
+// what the flight recorder learned about an fd; it holds for the fd's lifetime
+typedef enum __attribute__((packed)) {
+    PID_FD_REC_UNKNOWN = 0,
+    PID_FD_REC_SKIP,            // read-only, or not a regular file
+    PID_FD_REC_WRITABLE,        // a regular file open for writing
+} PID_FD_REC;
+#endif
+
 struct pid_fd {
     int fd;
 
@@ -536,6 +545,7 @@ struct pid_fd {
     ino_t inode;
     char *filename;
     uint32_t link_hash;
+    PID_FD_REC rec;
     size_t cache_iterations_counter;
     size_t cache_iterations_reset;
 #endif
@@ -752,6 +762,9 @@ void aggregate_pid_fds_on_targets(struct pid_stat *p);
 int read_pid_file_descriptors(struct pid_stat *p, void *ptr);
 void make_all_pid_fds_negative(struct pid_stat *p);
 uint32_t file_descriptor_find_or_add(const char *name, uint32_t hash);
+#if defined(OS_LINUX)
+const char *pid_fd_file_name(const struct pid_stat *p, size_t fdid);
+#endif
 #endif
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -842,6 +855,7 @@ void function_processes(const char *transaction, char *function,
 // the flight recorder (apps_recorder.c)
 extern bool apps_recorder_enabled;
 extern bool apps_recorder_record_cmdline;
+extern bool apps_recorder_record_files;
 void apps_recorder_init(void);
 void apps_recorder_collect(void);
 void apps_recorder_cleanup(void);
