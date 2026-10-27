@@ -482,8 +482,10 @@ static void ae_section_connection_events(BUFFER *wb, struct json_object *answer,
                 ae_json_value(wb, NULL, json_object_array_get_idx(a, i));
         }
         buffer_json_array_close(wb);
+        int64_t processes = ae_json_int(events, "processes", (int64_t)n);
+        buffer_json_member_add_int64(wb, "processes", processes);
         buffer_json_member_add_boolean(wb, "truncated",
-            (uint64_t)ae_json_int(events, "total", 0) > listed || n > AE_CONN_PROCESSES_MAX);
+            (uint64_t)ae_json_int(events, "total", 0) > listed || (uint64_t)processes > MIN(n, (size_t)AE_CONN_PROCESSES_MAX));
     }
     buffer_json_object_close(wb);
 }

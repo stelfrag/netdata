@@ -108,6 +108,7 @@ static struct {
     uint64_t signature;         // of the socket fds at the last dump
     uint64_t own_netns;
     uint16_t netns_other;
+    bool dump_failed;           // the last dump was incomplete: the next one is a baseline
     bool dump_error_logged;
 
     REC_INODES inodes;
@@ -180,6 +181,10 @@ static void listener_thread(void *arg __maybe_unused) {
 
             LOCAL_SOCKET n;
             local_sockets_from_inet_diag_msg(h, IPPROTO_TCP, &n);
+
+            // every TCP socket is reported when freed: listening and never connected ones are not connections
+            if(!n.remote.port)
+                continue;
 
             REC_CLOSE c = {
                 .state = (uint8_t)n.state,
@@ -295,6 +300,7 @@ void apps_rec_conns_stop(void) {
         return;
 
     __atomic_store_n(&conns.listener.stop, true, __ATOMIC_RELAXED);
+    shutdown(conns.listener.fd, SHUT_RDWR);     // wakes recv() even without the receive timeout
     nd_thread_join(conns.listener.thread);
     close(conns.listener.fd);
     freez(conns.listener.queue);
@@ -537,6 +543,7 @@ static void join_processes(REC_DUMP *d, size_t sockets) {
 }
 
 static void dump(REC_DUMP_CB *x, size_t sockets) {
+    const uint16_t first = *x->n;
     REC_DUMP *t = conns.prev;
     conns.prev = conns.cur;
     conns.cur = t;
@@ -560,7 +567,8 @@ static void dump(REC_DUMP_CB *x, size_t sockets) {
     };
     local_sockets_process(&ls);
 
-    if(ls.stats.errors_encountered && !conns.dump_error_logged) {
+    conns.dump_failed = ls.stats.errors_encountered > 0;
+    if(conns.dump_failed && !conns.dump_error_logged) {
         conns.dump_error_logged = true;
         nd_log(NDLS_COLLECTORS, NDLP_NOTICE,
                "apps.plugin recorder: the TCP socket dump failed; new connections may be missing");
@@ -568,6 +576,23 @@ static void dump(REC_DUMP_CB *x, size_t sockets) {
 
     qsort(conns.cur->listen, conns.cur->listen_used, sizeof(*conns.cur->listen), cmp_listen);
     qsort(conns.cur->inodes, conns.cur->inodes_used, sizeof(*conns.cur->inodes), cmp_u64);
+
+    // inbound opens no socket was found for: the process listening on their port (complete only now)
+    for(uint16_t i = first; i < *x->n; i++) {
+        APPS_REC_CONN *c = &x->out[i];
+        if(c->how != APPS_REC_CONN_BY_NONE || !(c->direction & APPS_REC_CONN_INBOUND))
+            continue;
+
+        const REC_LISTEN *l = listen_find(conns.cur, c->local_port);
+        if(!l || l->owner == REC_OWNER_NONE)
+            continue;
+
+        const REC_OWNER *o = &conns.cur->owners[l->owner];
+        c->pid = o->pid;
+        c->starttime = o->starttime;
+        c->comm = apps_rec_builder_string(x->b, o->comm);
+        c->how = APPS_REC_CONN_BY_LISTENER;
+    }
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -575,19 +600,15 @@ static void dump(REC_DUMP_CB *x, size_t sockets) {
 static void close_event(REC_DUMP_CB *x, const REC_CLOSE *c) {
     const REC_OWNER *o = NULL;
     uint8_t how = APPS_REC_CONN_BY_NONE;
+    uint32_t owner;
 
-    // a connection a dump saw
-    REC_DUMP *dumps[] = { conns.cur, conns.prev };
-    for(size_t i = 0; i < _countof(dumps) && how == APPS_REC_CONN_BY_NONE; i++) {
-        uint32_t owner;
-        if(tuples_find(dumps[i], &c->t, &owner)) {
-            how = APPS_REC_CONN_BY_DUMP;
-            if(owner != REC_OWNER_NONE)
-                o = &dumps[i]->owners[owner];
-        }
+    // a connection the newest dump saw
+    if(tuples_find(conns.cur, &c->t, &owner) && owner != REC_OWNER_NONE) {
+        o = &conns.cur->owners[owner];
+        how = APPS_REC_CONN_BY_DUMP;
     }
 
-    // the server side of a connection no dump saw: its local port is a listening port
+    // the server side of a connection: its local port is a listening port
     const REC_LISTEN *l = listen_find(conns.cur, c->t.local_port);
     const REC_DUMP *ld = conns.cur;
     if(!l) {
@@ -597,6 +618,12 @@ static void close_event(REC_DUMP_CB *x, const REC_CLOSE *c) {
     if(!o && l && l->owner != REC_OWNER_NONE) {
         o = &ld->owners[l->owner];
         how = APPS_REC_CONN_BY_LISTENER;
+    }
+
+    // the older dump last: its owner of a reused address and port may be long gone
+    if(!o && tuples_find(conns.prev, &c->t, &owner) && owner != REC_OWNER_NONE) {
+        o = &conns.prev->owners[owner];
+        how = APPS_REC_CONN_BY_DUMP;
     }
 
     uint8_t direction = l ? APPS_REC_CONN_INBOUND : APPS_REC_CONN_OUTBOUND;
@@ -651,7 +678,7 @@ uint16_t apps_rec_conns_collect(APPS_REC_BUILDER *b, APPS_REC_CONN *out, uint16_
 
     time_t now_s = now_monotonic_sec();
     if(!conns.dumped || (signature != conns.signature && now_s - conns.dumped_s >= APPS_REC_CONNS_DUMP_EVERY_S)) {
-        x.baseline = !conns.dumped;
+        x.baseline = !conns.dumped || conns.dump_failed;
         dump(&x, sockets);
         conns.dumped = true;
         conns.dumped_s = now_s;

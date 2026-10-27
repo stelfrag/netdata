@@ -366,8 +366,8 @@ filesystem never blocks it.
 
 It also keeps the TCP connections processes open and close, in the network namespace `apps.plugin` runs in:
 
-- **Closes**: the kernel reports every TCP connection it closes, with its local and remote address and port, its
-  state, and the bytes it sent (acknowledged by the peer) and received over its whole life. This needs no extra
+- **Closes**: the kernel reports every TCP connection it closes, with its local and remote address and port and the
+  bytes it sent (acknowledged by the peer) and received over its whole life. This needs no extra
   privileges.
 - **Opens**: when the sockets of the processes change, at most every 10 seconds, `apps.plugin` reads the TCP socket
   table and records the connections that are new since the last read, with the bytes so far. A connection that opens
@@ -376,9 +376,13 @@ It also keeps the TCP connections processes open and close, in the network names
   connection to a local listening port is given to the process that listens on it. Otherwise the process is
   `unknown`: typically the client side of a connection shorter than 10 seconds.
 - **Not covered**: connections inside other network namespaces (containers with their own network) are not
-  recorded; answers count the processes holding sockets there. UDP sockets appear only in the socket counts.
+  recorded; answers count the processes holding sockets there. UDP and Unix sockets appear only in the socket counts
+  of the processes.
 - **Limits**: up to 256 connection events per iteration; more are counted as lost, as are closes the kernel drops
   when `apps.plugin` cannot read them fast enough.
+- **Cost**: a socket table read walks every TCP socket of the namespace, while `apps.plugin` holds the lock its
+  Functions also need: on hosts with 100,000 or more sockets a read takes tens to hundreds of milliseconds. Socket
+  changes inside containers also trigger reads, although their connections are not in the table.
 
 Like the files, connections need the open files `apps.plugin` reads for its file charts (`with-files`).
 

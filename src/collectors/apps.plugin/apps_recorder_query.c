@@ -802,6 +802,7 @@ static void emit_range_conns(BUFFER *wb, REC_RANGE *r) {
         if(r->conn_procs[i].used) sorted[n++] = &r->conn_procs[i];
     qsort(sorted, n, sizeof(*sorted), cmp_conn_proc_desc);
 
+    buffer_json_member_add_uint64(wb, "processes", n);
     buffer_json_member_add_array(wb, "by_process");
     for(size_t i = 0; i < n && i < APPS_REC_QUERY_CONN_PROCS_MAX; i++) {
         const REC_CONN_PROC *p = sorted[i];

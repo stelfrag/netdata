@@ -70,7 +70,7 @@ The same views answer `alert-evidence` (or `alert-evidence alert:all`) and `aler
     "processes_at":       { "status": "ok", "running": 529, "recorded_processes": 53, "recorded": { "...": "..." }, "rows": [ { "Cmd": "...", "CPU": 99.9, "...": "..." } ] },
     "processes_window":   { "status": "ok", "running": { "min": 520, "avg": 528.4, "max": 541 }, "recorded_processes": 881, "rows": [ "..." ], "started": 633, "exited": 621 },
     "files":              { "status": "ok", "source": "processes_window", "list": [ { "process": "dd", "path": "/mnt/small/fill.bin", "mount": "/mnt/small", "bytes_first": 0, "bytes_last": 209715200, "deleted": false, "...": "..." } ], "total": 3, "truncated": false },
-    "connection_events":  { "status": "ok", "source": "processes_window", "total": 412, "lost": 0, "netns_other": 0, "by_process": [ { "process": "curl", "opens": 0, "closes": 200, "bytes_sent": 16400, "bytes_received": 98000, "...": "..." } ], "list": [ { "time_ut": 1793019990000000, "event": "close", "process": "unknown", "local": "10.0.0.5:41022", "remote": "192.0.2.10:443", "state": "fin-wait1", "...": "..." } ], "truncated": true },
+    "connection_events":  { "status": "ok", "source": "processes_window", "total": 412, "lost": 0, "netns_other": 0, "by_process": [ { "process": "curl", "opens": 0, "closes": 200, "bytes_sent": 16400, "bytes_received": 98000, "...": "..." } ], "list": [ { "time_ut": 1793019990000000, "event": "close", "process": "unknown", "local": "10.0.0.5:41022", "remote": "192.0.2.10:443", "state": "close", "...": "..." } ], "truncated": true },
     "connections":        { "status": "ok", "captured": 1793020005, "rows": [ "..." ], "total": 120 },
     "host_changes":       { "status": "ok", "includes_startup": false, "events": [ { "ND_HOST_CHANGE": "kernel", "...": "..." } ] },
     "journal":            { "status": "pointer", "function": "systemd-journal", "after": 1793019400, "before": 1793020120 },
@@ -121,9 +121,9 @@ files (file charts off, or `without-recorder-files`).
 
 `connection_events` shows the TCP connections opened and closed in the window, in the network namespace of
 `apps.plugin`: `by_process` (the 20 processes with the most events, with their opens, closes and the bytes of their
-closed connections) and `list` (the newest 100 events, oldest first, each with the process, `event`, `found_by`,
-`local`, `remote`, `state`, `direction` and the bytes). `total` counts the events of the window and `lost` those not
-recorded; `truncated` says the lists are partial. When processes held sockets in other network namespaces (containers
+closed connections; `processes` counts them all) and `list` (the newest 100 events, oldest first, each with the
+process, `event`, `found_by`, `local`, `remote`, `state`, `direction` and the bytes). `total` counts the events of the
+window and `lost` those not recorded; `truncated` says the lists are partial. When processes held sockets in other network namespaces (containers
 with their own network), `netns_other` counts them and `coverage` says their connections are not covered. Its status
 follows `processes_window`; it is `unavailable` when `apps.plugin` did not record connections (file charts off,
 `without-recorder-connections`, or a kernel that does not report TCP closes).
