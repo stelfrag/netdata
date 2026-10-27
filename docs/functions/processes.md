@@ -247,10 +247,11 @@ that says how complete it is:
 | `totals`                      | All processes, not only the recorded ones, over the samples used: `processes` (running processes: `min`, `avg`, `max`), `processes_cpu` and `host_cpu` (% of one core: `avg`, `max`; `host_cpu` when known), `processes_rss` (MiB: `avg`, `max`) |
 
 `at:` returns `PID`, `Cmd`, `Exe`, `PPID`, `Category`, `Uid`, `CPU`, `RSS`, `Swap`, `LReads`, `LWrites`, `PReads`,
-`PWrites`, `Threads`, `State` and `RecordedFor` (why the process was kept: `cpu`, `memory`, `io`).
+`PWrites`, `Threads`, `Sockets`, `State` and `RecordedFor` (why the process was kept: `cpu`, `memory`, `io`).
+`Sockets` is 0 while file charts are off (`with-files`).
 
 `after:`/`before:` returns per process `AvgCPU` (over the whole range, counting 0 while the process was not
-recorded), `PeakCPU`, `PeakRSS`, `Samples`, `FirstSeen`, `LastSeen`, `Started` and `Exited` (within the range), plus
+recorded), `PeakCPU`, `PeakRSS`, `PeakSockets`, `Samples`, `FirstSeen`, `LastSeen`, `Started` and `Exited` (within the range), plus
 the identity columns. `Exited` is `yes` when the exit was recorded, `no` when the samples are continuous from the last
 time the process was seen to the end of the range, and `unknown` when a gap follows that: the process may have exited
 when nothing was being kept. Rows are sorted by `AvgCPU`; at most 1000 are returned, and `processes_total` /
@@ -269,6 +270,26 @@ up to 8 per process (the ones that grew most since the previous sample, then the
 `mount` is the mount point of the file's filesystem as the host sees it, absent when no mount shows it; `path` is the
 name as the process sees it (inside a container, the container's path). `deleted` means the file has no name left on
 the filesystem while the process still writes to it: its space is freed only when the process closes it.
+
+`after:`/`before:` answers also have a `connection_events` object: the TCP connections processes opened and closed
+in the range, in the network namespace of `apps.plugin`. Closes are all recorded, with their final byte counts;
+opens are found by reading the socket table when the processes' sockets change, at most every 10 seconds, so a
+connection shorter than that appears only at its close.
+
+| Field         | Meaning                                                                                                 |
+|---------------|---------------------------------------------------------------------------------------------------------|
+| `recorded`    | Whether connections were recorded. `false` when file charts are off (`with-files`), the recorder runs with `without-recorder-connections`, or the kernel does not report TCP closes |
+| `total`       | Connection events in the range                                                                           |
+| `lost`        | Events not recorded: over 256 in one sample, or closes the kernel dropped (at least this many)           |
+| `netns_other` | The most processes holding sockets in other network namespaces (containers with their own network): their connections are not covered |
+| `by_process`  | Per process, the most events first, at most 100: `key`, `pid` and `process` (or `process: unknown` for the connections no process was found for), `opens`, `closes`, `bytes_sent` and `bytes_received` (summed over the closes) |
+| `list`        | The newest 1000 events, oldest first: `time_ut`, the process as in `by_process`, `event` (`open`, `close`), `found_by`, `protocol` (`tcp`), `family` (`ipv4`, `ipv6`), `local` and `remote` (`address:port`), `state`, `direction` (`inbound`, `outbound`), `local_peer` (the other end is on this host), `bytes_sent` (acknowledged by the peer) and `bytes_received`: so far at an open, the total at a close |
+| `truncated`   | More events than listed                                                                                  |
+
+`found_by` says how the process was found: `socket` (its socket was in a socket table read), `listening_port` (the
+connection reached a port the process listens on) or `none` (`process: unknown`, typically the client side of a short
+connection). The kernel counts a connection's SYN and FIN as one byte each, so a connection that sent 1000 bytes
+reports `bytes_sent: 1002`.
 
 `CmdLine` appears only when command lines are recorded (`with-recorder-cmdline`) and the caller may see them. The
 response keeps `has_history: false`: these answers are a separate view, not a time series.

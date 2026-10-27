@@ -54,7 +54,7 @@
 
 // --------------------------------------------------------------------------------------------------------------------
 // Normalize FreeBSD TCPS_* states to Linux-compatible TCP_* values.
-// This keeps the rest of the code (direction detection, TCP_STATE_2str display)
+// This keeps the rest of the code (direction detection, local_sockets_tcp_state_name())
 // unchanged, since Linux and FreeBSD use different numbering for the same states.
 // Only used on FreeBSD 12/13; on 14+ the pcblist format changed and states are
 // not parsed from xinpgen/xtcpcb (those structs are no longer exported).

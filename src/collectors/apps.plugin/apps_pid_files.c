@@ -452,6 +452,18 @@ const char *pid_fd_file_name(const struct pid_stat *p, size_t fdid) {
     const struct file_descriptor *f = &all_files[p->fds[fdid].fd];
     return (f->count && f->type == FILETYPE_FILE) ? f->name : NULL;
 }
+
+// the inode of an open socket of a process, 0 when the fd is not a socket; valid until the next collection
+uint64_t pid_fd_socket_inode(const struct pid_stat *p, size_t fdid) {
+    if(fdid >= p->fds_size || p->fds[fdid].fd <= 0 || (uint32_t)p->fds[fdid].fd >= all_files_size)
+        return 0;
+
+    // socket:[12345]
+    const struct file_descriptor *f = &all_files[p->fds[fdid].fd];
+    if(!f->count || f->type != FILETYPE_SOCKET || strncmp(f->name, "socket:[", 8) != 0)
+        return 0;
+    return str2uint64_t(&f->name[8], NULL);
+}
 #endif
 
 int read_pid_file_descriptors(struct pid_stat *p, void *ptr) {

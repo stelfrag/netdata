@@ -65,11 +65,7 @@ extern SPAWN_SERVER *spawn_srv;
 #define NETWORK_TOPOLOGY_VIEWER_HELP "Shows live network-connections topology with self/process/endpoint actors and ownership/socket links."
 #define NETWORK_VIEWER_RESPONSE_UPDATE_EVERY 5
 
-// Linux-compatible TCP state type used by the local-sockets enum map.
-typedef int TCP_STATE;
-
 ENUM_STR_DEFINE_FUNCTIONS_EXTERN(SOCKET_DIRECTION);
-ENUM_STR_DEFINE_FUNCTIONS_EXTERN(TCP_STATE);
 
 // Response helpers shared with the other Functions served from
 // network-viewer.c (network-connections, dns-queries, network-protocols);

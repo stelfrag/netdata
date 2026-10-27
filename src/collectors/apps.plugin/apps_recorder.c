@@ -15,6 +15,7 @@
 
 #include "apps_recorder.h"
 #include "apps_recorder_store.h"
+#include "apps_recorder_conns.h"
 
 #if defined(OS_LINUX)
 
@@ -39,6 +40,7 @@
 bool apps_recorder_enabled = true;
 bool apps_recorder_record_cmdline = false;
 bool apps_recorder_record_files = true;
+bool apps_recorder_record_connections = true;
 int apps_recorder_disk_mb = APPS_RECORDER_DISK_MB_DEFAULT;
 
 typedef struct {
@@ -116,6 +118,7 @@ static struct {
     size_t exits_size;
     APPS_REC_ROW rows[APPS_REC_ROWS_MAX];
     APPS_REC_FILE files[APPS_REC_FILES_MAX];
+    APPS_REC_CONN conns[APPS_REC_CONNS_MAX];
 
     // the writable files looked at in the previous and in this frame, sorted by pid and fd
     REC_FILE_SIZE *sizes_prev, *sizes_cur;
@@ -424,6 +427,7 @@ static int add_row(uint16_t *nrows, struct pid_stat *p, uint8_t why) {
     r->pread_kibs = kibs(p->values[PDF_PREAD]);
     r->pwrite_kibs = kibs(p->values[PDF_PWRITE]);
     r->threads = (uint16_t)MIN(p->values[PDF_THREADS], UINT16_MAX);
+    r->sockets = enable_file_charts ? (uint16_t)MIN(p->openfds.sockets, UINT16_MAX) : 0;
     r->state = (uint8_t)p->state;
     r->why = why;
     return index;
@@ -742,8 +746,10 @@ void apps_recorder_collect(void) {
     nstarted = MIN(nstarted, (size_t)UINT16_MAX);
     nexits = MIN(nexits, (size_t)UINT16_MAX);
 
-    // a frame interns up to 4 strings per start and per row, 2 per file; seal first when the chunk cannot take them
-    if(apps_rec_builder_full(&rec.builder, (nstarted + APPS_REC_ROWS_MAX) * 4 + APPS_REC_FILES_MAX * 2))
+    // a frame interns up to 4 strings per start and per row, 2 per file, 1 per connection; seal first when the chunk
+    // cannot take them
+    if(apps_rec_builder_full(&rec.builder,
+                             (nstarted + APPS_REC_ROWS_MAX) * 4 + APPS_REC_FILES_MAX * 2 + APPS_REC_CONNS_MAX))
         seal_chunk();
 
     ensure((void **)&rec.starts, &rec.starts_size, nstarted + 1, sizeof(*rec.starts));
@@ -805,6 +811,9 @@ void apps_recorder_collect(void) {
             qsort(rec.sizes_prev, rec.sizes_prev_used, sizeof(*rec.sizes_prev), cmp_file_size);
     }
 
+    APPS_REC_CONNS_FRAME cf;
+    uint16_t nconns = apps_rec_conns_collect(&rec.builder, rec.conns, APPS_REC_CONNS_MAX, &cf);
+
     APPS_REC_FRAME_HDR totals = {
         .time_ut = now_realtime_usec(),
         .pids = (uint32_t)n,
@@ -812,7 +821,11 @@ void apps_recorder_collect(void) {
         .procs_cpu = cpu_permyriad(procs_cpu),
         .rows_cpu = cpu_permyriad(rows_cpu),
         .procs_rss_kib = procs_rss / 1024,
-        .flags = files ? APPS_REC_FRAME_FILES : 0,
+        .conns_lost = cf.lost,
+        .netns_other = cf.netns_other,
+        .flags = (files ? APPS_REC_FRAME_FILES : 0) |
+                 (enable_file_charts ? APPS_REC_FRAME_SOCKETS : 0) |
+                 (cf.recorded ? APPS_REC_FRAME_CONNS : 0),
     };
     rec.last.rows = nrows;
     rec.last.starts = (uint16_t)nstarted;
@@ -823,7 +836,8 @@ void apps_recorder_collect(void) {
                                rec.starts, (uint16_t)nstarted,
                                rec.exits, (uint16_t)nexits,
                                rec.rows, nrows,
-                               rec.files, nfiles);
+                               rec.files, nfiles,
+                               rec.conns, nconns);
 
     if(apps_rec_builder_full(&rec.builder, 0))
         seal_chunk();
@@ -1251,6 +1265,9 @@ void apps_recorder_init(void) {
         rec.store_open = apps_rec_store_open(&rec.store, dir, (uint64_t)apps_recorder_disk_mb * 1024 * 1024);
     }
 
+    if(apps_recorder_record_connections)
+        apps_rec_conns_start();
+
     rec.initialized = true;
 }
 
@@ -1261,6 +1278,8 @@ void apps_recorder_cleanup(void) {
     // a window still being recorded keeps what it has
     if(rec.pending_used && rec.builder.frames)
         seal_chunk();
+
+    apps_rec_conns_stop();
 
     if(rec.store_open)
         apps_rec_store_close(&rec.store);

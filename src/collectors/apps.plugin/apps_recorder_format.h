@@ -10,7 +10,7 @@
 // Chunks are host-local caches: integers are stored in native byte order and the version guards the layout.
 
 #define APPS_REC_MAGIC              0x5250444eU // "NDPR"
-#define APPS_REC_VERSION            2
+#define APPS_REC_VERSION            3
 #define APPS_REC_FRAMES_PER_CHUNK   60
 #define APPS_REC_STRING_NONE        UINT16_MAX
 #define APPS_REC_STRINGS_MAX        (UINT16_MAX - 1)
@@ -26,9 +26,25 @@
 
 // APPS_REC_FRAME_HDR.flags
 #define APPS_REC_FRAME_FILES        0x0001  // the open files of the I/O rows were looked at
+#define APPS_REC_FRAME_SOCKETS      0x0002  // the rows carry their socket counts
+#define APPS_REC_FRAME_CONNS        0x0004  // TCP connections were recorded (the close listener was running)
 
 // APPS_REC_FILE.flags
 #define APPS_REC_FILE_DELETED       0x01    // no name left on the filesystem (st_nlink == 0)
+
+// APPS_REC_CONN.event
+#define APPS_REC_CONN_OPEN          1       // new since the previous socket dump
+#define APPS_REC_CONN_CLOSE         2       // the kernel destroyed it
+
+// APPS_REC_CONN.how: how the process was found
+#define APPS_REC_CONN_BY_NONE       0       // not found: the process is unknown
+#define APPS_REC_CONN_BY_DUMP       1       // its socket was in a dump, joined to a process by inode
+#define APPS_REC_CONN_BY_LISTENER   2       // its local port is a listening port: the listener's process
+
+// APPS_REC_CONN.direction
+#define APPS_REC_CONN_INBOUND       0x01    // to a local listening port
+#define APPS_REC_CONN_OUTBOUND      0x02
+#define APPS_REC_CONN_LOCAL         0x04    // both ends on this host
 
 typedef struct __attribute__((packed)) {
     int32_t pid;
@@ -47,6 +63,7 @@ typedef struct __attribute__((packed)) {
     uint32_t pread_kibs;        // physical I/O, KiB/s
     uint32_t pwrite_kibs;
     uint16_t threads;
+    uint16_t sockets;           // open socket fds, when the frame has APPS_REC_FRAME_SOCKETS
     uint8_t state;              // the /proc/PID/stat state letter, 0 when unknown
     uint8_t why;                // APPS_REC_WHY_*
 } APPS_REC_ROW;
@@ -76,6 +93,25 @@ typedef struct __attribute__((packed)) {
     uint64_t size;              // bytes
 } APPS_REC_FILE;
 
+// a TCP connection that opened or closed
+typedef struct __attribute__((packed)) {
+    int32_t pid;                // 0 when the process is unknown
+    uint64_t starttime;
+    uint16_t comm;              // string id, APPS_REC_STRING_NONE when the process is unknown
+    uint8_t event;              // APPS_REC_CONN_OPEN, APPS_REC_CONN_CLOSE
+    uint8_t how;                // APPS_REC_CONN_BY_*
+    uint8_t family;             // AF_INET, AF_INET6
+    uint8_t state;              // the TCP state (linux/tcp.h numbering) when seen
+    uint8_t direction;          // APPS_REC_CONN_* direction bits
+    uint8_t reserved;
+    uint16_t local_port;
+    uint16_t remote_port;
+    uint8_t local_ip[16];       // IPv4 in the first 4 bytes, network byte order
+    uint8_t remote_ip[16];
+    uint64_t bytes_sent;        // acknowledged by the peer (tcpi_bytes_acked); at a close, the final count
+    uint64_t bytes_received;    // tcpi_bytes_received
+} APPS_REC_CONN;
+
 typedef struct __attribute__((packed)) {
     uint64_t time_ut;           // realtime of the sample
     uint32_t pids;              // running processes
@@ -88,6 +124,9 @@ typedef struct __attribute__((packed)) {
     uint16_t exits;
     uint16_t rows;
     uint16_t files;
+    uint16_t conns;
+    uint16_t conns_lost;        // connection events since the previous frame not recorded (over the cap, kernel overrun)
+    uint16_t netns_other;       // processes with sockets in network namespaces the socket dumps do not see
     uint16_t flags;             // APPS_REC_FRAME_*
 } APPS_REC_FRAME_HDR;
 
@@ -111,6 +150,7 @@ typedef struct __attribute__((packed)) {
 //   exits   x APPS_REC_EXIT
 //   rows    x APPS_REC_ROW
 //   files   x APPS_REC_FILE
+//   conns   x APPS_REC_CONN
 // String ids are assigned in order of appearance within the chunk, starting at 0.
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -146,7 +186,8 @@ void apps_rec_builder_add_frame(
     const APPS_REC_START *starts, uint16_t nstarts,
     const APPS_REC_EXIT *exits, uint16_t nexits,
     const APPS_REC_ROW *rows, uint16_t nrows,
-    const APPS_REC_FILE *files, uint16_t nfiles);
+    const APPS_REC_FILE *files, uint16_t nfiles,
+    const APPS_REC_CONN *conns, uint16_t nconns);
 
 // seals the chunk being built and resets the builder; NULL when it has no frames.
 // The returned block is a header followed by the stored payload; free it with freez().
@@ -162,6 +203,7 @@ typedef struct {
     const APPS_REC_EXIT *exits;
     const APPS_REC_ROW *rows;
     const APPS_REC_FILE *files;
+    const APPS_REC_CONN *conns;
 } APPS_REC_FRAME_VIEW;
 
 typedef struct {

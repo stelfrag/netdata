@@ -52,13 +52,22 @@ if(ENABLE_PLUGIN_APPS)
                 src/collectors/apps.plugin/apps-cgroups-lookup-client.h
                 src/collectors/apps.plugin/apps-lookup-netipc.c
                 src/collectors/apps.plugin/apps-lookup-netipc.h
+                src/collectors/apps.plugin/apps_recorder_conns.c
+                src/collectors/apps.plugin/apps_recorder_conns.h
+                src/libnetdata/local-sockets/local-sockets.h
         )
     endif()
 
     add_executable(apps.plugin ${APPS_PLUGIN_FILES})
 
+    # the recorder dumps TCP sockets through local-sockets.h, with libmnl when found
+    target_compile_options(apps.plugin PRIVATE
+            "$<$<BOOL:${MNL_FOUND}>:${MNL_CFLAGS_OTHER}>")
+    target_include_directories(apps.plugin PRIVATE
+            "$<$<BOOL:${MNL_FOUND}>:${MNL_INCLUDE_DIRS}>")
     target_link_libraries(apps.plugin libnetdata
             "$<$<BOOL:${CAP_FOUND}>:PkgConfig::CAP>"
+            "$<$<BOOL:${MNL_FOUND}>:${MNL_LIBRARIES}>"
             "$<$<BOOL:${OS_WINDOWS}>:Version;ntdll>")
 
     install(TARGETS apps.plugin

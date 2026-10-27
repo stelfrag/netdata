@@ -236,23 +236,6 @@ ENUM_STR_MAP_DEFINE(SOCKET_DIRECTION) = {
     { . id = 0, .name = NULL }
 };
 ENUM_STR_DEFINE_FUNCTIONS(SOCKET_DIRECTION, SOCKET_DIRECTION_LISTEN, "unknown");
-ENUM_STR_MAP_DEFINE(TCP_STATE) = {
-    { .id = TCP_ESTABLISHED, .name = "established" },
-    { .id = TCP_SYN_SENT, .name = "syn-sent" },
-    { .id = TCP_SYN_RECV, .name = "syn-received" },
-    { .id = TCP_FIN_WAIT1, .name = "fin-wait1" },
-    { .id = TCP_FIN_WAIT2, .name = "fin-wait2" },
-    { .id = TCP_TIME_WAIT, .name = "time-wait" },
-    { .id = TCP_CLOSE, .name = "close" },
-    { .id = TCP_CLOSE_WAIT, .name = "close-wait" },
-    { .id = TCP_LAST_ACK, .name = "last-ack" },
-    { .id = TCP_LISTEN, .name = "listen" },
-    { .id = TCP_CLOSING, .name = "closing" },
-
-    // terminator
-    { . id = 0, .name = NULL }
-};
-ENUM_STR_DEFINE_FUNCTIONS(TCP_STATE, 0, "unknown");
 static inline const char *network_viewer_machine_guid(void) {
     const char *guid = getenv("NETDATA_REGISTRY_UNIQUE_ID");
     return (guid && *guid) ? guid : NULL;
@@ -1413,7 +1396,7 @@ static void local_sockets_cb_to_topology(LS_STATE *ls, const LOCAL_SOCKET *n, vo
         snprintf(tmp.protocol, sizeof(tmp.protocol), "%s", socket_protocol_name(n->local.protocol));
         snprintf(tmp.protocol_family, sizeof(tmp.protocol_family), "%s", socket_protocol_family_name(n));
         snprintf(tmp.state, sizeof(tmp.state), "%s",
-                 n->local.protocol == IPPROTO_TCP ? TCP_STATE_2str(n->state) : "stateless");
+                 n->local.protocol == IPPROTO_TCP ? local_sockets_tcp_state_name(n->state) : "stateless");
         snprintf(tmp.client_ip, sizeof(tmp.client_ip), "%s", client_ip);
         snprintf(tmp.server_ip, sizeof(tmp.server_ip), "%s", server_ip);
         snprintf(tmp.client_address_space, sizeof(tmp.client_address_space), "%s", client_address_space);

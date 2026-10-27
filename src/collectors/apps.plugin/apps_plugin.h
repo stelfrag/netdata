@@ -764,6 +764,7 @@ void make_all_pid_fds_negative(struct pid_stat *p);
 uint32_t file_descriptor_find_or_add(const char *name, uint32_t hash);
 #if defined(OS_LINUX)
 const char *pid_fd_file_name(const struct pid_stat *p, size_t fdid);
+uint64_t pid_fd_socket_inode(const struct pid_stat *p, size_t fdid);
 #endif
 #endif
 
@@ -856,6 +857,7 @@ void function_processes(const char *transaction, char *function,
 extern bool apps_recorder_enabled;
 extern bool apps_recorder_record_cmdline;
 extern bool apps_recorder_record_files;
+extern bool apps_recorder_record_connections;
 void apps_recorder_init(void);
 void apps_recorder_collect(void);
 void apps_recorder_cleanup(void);

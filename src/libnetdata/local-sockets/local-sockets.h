@@ -15,12 +15,15 @@
 #define USE_LIBMNL_AFTER_SETNS
 #endif
 
-#if defined(OS_LINUX) && defined(HAVE_LIBMNL)
+#if defined(OS_LINUX)
 #include <linux/rtnetlink.h>
 #include <linux/inet_diag.h>
 #include <linux/sock_diag.h>
 #include <linux/unix_diag.h>
 #include <linux/netlink.h>
+#endif
+
+#if defined(OS_LINUX) && defined(HAVE_LIBMNL)
 #include <libmnl/libmnl.h>
 #endif
 
@@ -28,7 +31,7 @@
 
 // FreeBSD and macOS use platform TCP state values with different numbering from Linux.
 // Define Linux-compatible TCP_* constants here so the rest of the code —
-// direction detection (TCP_LISTEN check) and TCP_STATE_2str display — works.
+// direction detection (TCP_LISTEN check) and local_sockets_tcp_state_name() — works.
 // Platform backends convert native states to these TCP_* values before
 // storing the state in LOCAL_SOCKET.state.
 #if defined(OS_FREEBSD) || defined(OS_MACOS) || defined(OS_WINDOWS)
@@ -47,6 +50,9 @@
 
 #if !defined(OS_MACOS) && !defined(OS_WINDOWS)
 #define LOCAL_SOCKETS_HAVE_TCP_INFO 1
+
+// the kernel's tcp_info up to tcpi_bytes_received (Linux 4.1+); some libc headers stop before it (tcpi_total_retrans)
+#define LOCAL_SOCKETS_TCP_INFO_RAW 136
 #endif
 
 // max cmdline bytes read from /proc/<pid>/cmdline — reader-side guard must match
@@ -294,6 +300,7 @@ typedef struct local_socket {
 #if defined(LOCAL_SOCKETS_HAVE_TCP_INFO)
     union {
         struct tcp_info tcp;
+        uint8_t raw[LOCAL_SOCKETS_TCP_INFO_RAW];   // fields the libc struct may lack, read by uapi offset
     } info;
 #endif
 
@@ -482,6 +489,23 @@ static inline void ipv4_address_to_txt(uint32_t ip, char *dst) {
     octets[2] = (ip >> 16) & 0xFF;
     octets[3] = (ip >> 24) & 0xFF;
     sprintf(dst, "%u.%u.%u.%u", octets[0], octets[1], octets[2], octets[3]);
+}
+
+static inline const char *local_sockets_tcp_state_name(int state) {
+    switch(state) {
+        case TCP_ESTABLISHED:   return "established";
+        case TCP_SYN_SENT:      return "syn-sent";
+        case TCP_SYN_RECV:      return "syn-received";
+        case TCP_FIN_WAIT1:     return "fin-wait1";
+        case TCP_FIN_WAIT2:     return "fin-wait2";
+        case TCP_TIME_WAIT:     return "time-wait";
+        case TCP_CLOSE:         return "close";
+        case TCP_CLOSE_WAIT:    return "close-wait";
+        case TCP_LAST_ACK:      return "last-ack";
+        case TCP_LISTEN:        return "listen";
+        case TCP_CLOSING:       return "closing";
+        default:                return "unknown";
+    }
 }
 
 static inline bool is_local_socket_ipv46(const LOCAL_SOCKET *n) {
@@ -892,14 +916,14 @@ static inline bool local_sockets_add_socket(LS_STATE *ls, LOCAL_SOCKET *tmp) {
     return true;
 }
 
-#if defined(OS_LINUX) && defined(HAVE_LIBMNL)
+#if defined(OS_LINUX)
+// a socket from a sock_diag message (a dump answer or a destroy notification): endpoints, state, queues, uid and,
+// for TCP, tcp_info when the message carries it; returns true when it did
+static inline bool local_sockets_from_inet_diag_msg(const struct nlmsghdr *nlh, uint16_t protocol, LOCAL_SOCKET *n) {
+    const struct inet_diag_msg *diag_msg = NLMSG_DATA(nlh);
+    bool tcp_info = false;
 
-static inline int local_sockets_libmnl_cb_data(const struct nlmsghdr *nlh, void *data) {
-    LS_STATE *ls = data;
-
-    struct inet_diag_msg *diag_msg = mnl_nlmsg_get_payload(nlh);
-
-    LOCAL_SOCKET n = {
+    *n = (LOCAL_SOCKET){
         .inode = diag_msg->idiag_inode,
         .direction = SOCKET_DIRECTION_NONE,
         .state = diag_msg->idiag_state,
@@ -908,12 +932,12 @@ static inline int local_sockets_libmnl_cb_data(const struct nlmsghdr *nlh, void 
             .ipv46 = false,
         },
         .local = {
-            .protocol = ls->tmp_protocol,
+            .protocol = protocol,
             .family = diag_msg->idiag_family,
             .port = ntohs(diag_msg->id.idiag_sport),
         },
         .remote = {
-            .protocol = ls->tmp_protocol,
+            .protocol = protocol,
             .family = diag_msg->idiag_family,
             .port = ntohs(diag_msg->id.idiag_dport),
         },
@@ -926,28 +950,28 @@ static inline int local_sockets_libmnl_cb_data(const struct nlmsghdr *nlh, void 
     };
 
     if (diag_msg->idiag_family == AF_INET) {
-        memcpy(&n.local.ip.ipv4, diag_msg->id.idiag_src, sizeof(n.local.ip.ipv4));
-        memcpy(&n.remote.ip.ipv4, diag_msg->id.idiag_dst, sizeof(n.remote.ip.ipv4));
+        memcpy(&n->local.ip.ipv4, diag_msg->id.idiag_src, sizeof(n->local.ip.ipv4));
+        memcpy(&n->remote.ip.ipv4, diag_msg->id.idiag_dst, sizeof(n->remote.ip.ipv4));
     }
     else if (diag_msg->idiag_family == AF_INET6) {
-        memcpy(&n.local.ip.ipv6, diag_msg->id.idiag_src, sizeof(n.local.ip.ipv6));
-        memcpy(&n.remote.ip.ipv6, diag_msg->id.idiag_dst, sizeof(n.remote.ip.ipv6));
+        memcpy(&n->local.ip.ipv6, diag_msg->id.idiag_src, sizeof(n->local.ip.ipv6));
+        memcpy(&n->remote.ip.ipv6, diag_msg->id.idiag_dst, sizeof(n->remote.ip.ipv6));
     }
 
     struct rtattr *attr = (struct rtattr *)(diag_msg + 1);
-    int rtattrlen = nlh->nlmsg_len - NLMSG_LENGTH(sizeof(*diag_msg));
-    for (; !n.ipv6ony.checked && RTA_OK(attr, rtattrlen); attr = RTA_NEXT(attr, rtattrlen)) {
+    int rtattrlen = (int)nlh->nlmsg_len - (int)NLMSG_LENGTH(sizeof(*diag_msg));
+    for (; !n->ipv6ony.checked && RTA_OK(attr, rtattrlen); attr = RTA_NEXT(attr, rtattrlen)) {
         switch (attr->rta_type) {
             case INET_DIAG_INFO: {
-                if(ls->tmp_protocol == IPPROTO_TCP) {
+                if(protocol == IPPROTO_TCP) {
                     int payload = RTA_PAYLOAD(attr);
                     if(payload > 0) {
                         size_t copy_len = (size_t)payload;
-                        if(copy_len > sizeof(n.info.tcp))
-                            copy_len = sizeof(n.info.tcp);
+                        if(copy_len > sizeof(n->info))
+                            copy_len = sizeof(n->info);
 
-                        memcpy(&n.info.tcp, RTA_DATA(attr), copy_len);
-                        ls->stats.tcp_info_received++;
+                        memcpy(&n->info, RTA_DATA(attr), copy_len);
+                        tcp_info = true;
                     }
                 }
             }
@@ -957,8 +981,8 @@ static inline int local_sockets_libmnl_cb_data(const struct nlmsghdr *nlh, void 
                 if(RTA_PAYLOAD(attr) >= (int)sizeof(uint8_t)) {
                     uint8_t ipv6only;
                     memcpy(&ipv6only, RTA_DATA(attr), sizeof(ipv6only));
-                    n.ipv6ony.checked = true;
-                    n.ipv6ony.ipv46 = !ipv6only;
+                    n->ipv6ony.checked = true;
+                    n->ipv6ony.ipv46 = !ipv6only;
                 }
             }
             break;
@@ -967,6 +991,19 @@ static inline int local_sockets_libmnl_cb_data(const struct nlmsghdr *nlh, void 
                 break;
         }
     }
+
+    return tcp_info;
+}
+#endif // OS_LINUX
+
+#if defined(OS_LINUX) && defined(HAVE_LIBMNL)
+
+static inline int local_sockets_libmnl_cb_data(const struct nlmsghdr *nlh, void *data) {
+    LS_STATE *ls = data;
+
+    LOCAL_SOCKET n;
+    if(local_sockets_from_inet_diag_msg(nlh, ls->tmp_protocol, &n))
+        ls->stats.tcp_info_received++;
 
     local_sockets_add_socket(ls, &n);
 

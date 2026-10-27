@@ -190,7 +190,7 @@ static void local_socket_to_json_array(struct sockets_stats *st, const LOCAL_SOC
         buffer_json_add_array_item_string(wb, protocol);
         buffer_json_add_array_item_string(wb, type); // system or container
         if(n->local.protocol == IPPROTO_TCP)
-            buffer_json_add_array_item_string(wb, TCP_STATE_2str(n->state));
+            buffer_json_add_array_item_string(wb, local_sockets_tcp_state_name(n->state));
         else
             buffer_json_add_array_item_string(wb, "stateless");
 

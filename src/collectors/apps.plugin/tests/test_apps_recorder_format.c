@@ -13,11 +13,13 @@ typedef struct {
     APPS_REC_EXIT exits[2];
     APPS_REC_ROW rows[3];
     APPS_REC_FILE files[2];
+    APPS_REC_CONN conns[2];
     const char *start_comm[2];
     const char *row_comm[3];
     const char *row_exe[3];
     const char *file_path[2];
     const char *file_mount[2];
+    const char *conn_comm[2];
 } EXPECTED_FRAME;
 
 typedef struct {
@@ -52,7 +54,8 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         return fail(w, "totals differ", i);
 
     if(f->hdr->starts != e->hdr.starts || f->hdr->exits != e->hdr.exits || f->hdr->rows != e->hdr.rows ||
-        f->hdr->files != e->hdr.files || f->hdr->flags != e->hdr.flags)
+        f->hdr->files != e->hdr.files || f->hdr->conns != e->hdr.conns || f->hdr->conns_lost != e->hdr.conns_lost ||
+        f->hdr->netns_other != e->hdr.netns_other || f->hdr->flags != e->hdr.flags)
         return fail(w, "counts differ", i);
 
     for(uint16_t k = 0; k < f->hdr->starts; k++) {
@@ -76,7 +79,8 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         if(got.pid != x->pid || got.ppid != x->ppid || got.starttime != x->starttime || got.uid != x->uid ||
             got.cpu != x->cpu || got.rss_kib != x->rss_kib || got.swap_kib != x->swap_kib ||
             got.lread_kibs != x->lread_kibs || got.lwrite_kibs != x->lwrite_kibs || got.pread_kibs != x->pread_kibs ||
-            got.pwrite_kibs != x->pwrite_kibs || got.threads != x->threads || got.state != x->state ||
+            got.pwrite_kibs != x->pwrite_kibs || got.threads != x->threads || got.sockets != x->sockets ||
+            got.state != x->state ||
             got.why != x->why || got.cmdline != APPS_REC_STRING_NONE)
             return fail(w, "row differs", i);
         if(!same_str(apps_rec_string(strings, got.comm), e->row_comm[k]) ||
@@ -94,6 +98,16 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         if(!same_str(apps_rec_string(strings, got.path), e->file_path[k]) ||
             !same_str(apps_rec_string(strings, got.mount), e->file_mount[k]))
             return fail(w, "file strings differ", i);
+    }
+
+    for(uint16_t k = 0; k < f->hdr->conns; k++) {
+        APPS_REC_CONN got = f->conns[k];
+        APPS_REC_CONN x = e->conns[k];
+        x.comm = got.comm;      // ids are compared as strings
+        if(memcmp(&got, &x, sizeof(got)) != 0)
+            return fail(w, "connection differs", i);
+        if(!same_str(apps_rec_string(strings, got.comm), e->conn_comm[k]))
+            return fail(w, "connection comm differs", i);
     }
 
     w->frames++;
@@ -124,6 +138,14 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
         f->hdr.files = (i == 1) ? 2 : 0;
         f->hdr.flags = (i == 1) ? APPS_REC_FRAME_FILES : 0;
 
+        // frame 3 has connections: an attributed open and a close of an unknown process, with one lost
+        f->hdr.conns = (i == 2) ? 2 : 0;
+        if(i == 2) {
+            f->hdr.flags |= APPS_REC_FRAME_SOCKETS | APPS_REC_FRAME_CONNS;
+            f->hdr.conns_lost = 1;
+            f->hdr.netns_other = 3;
+        }
+
         for(uint16_t k = 0; k < f->hdr.starts; k++) {
             STRING *comm = k ? cc1 : bash;
             f->starts[k] = (APPS_REC_START){
@@ -145,7 +167,8 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
                 .comm = apps_rec_builder_string(b, comm), .exe = apps_rec_builder_string(b, exe),
                 .group = APPS_REC_STRING_NONE, .cmdline = APPS_REC_STRING_NONE,
                 .cpu = 10000 * (k + 1), .rss_kib = 4096 * (k + 1), .swap_kib = k, .lread_kibs = 10, .lwrite_kibs = 20,
-                .pread_kibs = 30, .pwrite_kibs = 40, .threads = 7, .state = 'R', .why = APPS_REC_WHY_CPU,
+                .pread_kibs = 30, .pwrite_kibs = 40, .threads = 7, .sockets = (uint16_t)(i * 3 + k), .state = 'R',
+                .why = APPS_REC_WHY_CPU,
             };
             f->row_comm[k] = (k == 1) ? "cc1" : "bash";
             f->row_exe[k] = exe ? "/usr/bin/bash" : NULL;
@@ -161,9 +184,23 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
             f->file_mount[k] = k ? NULL : "/mnt/small";
         }
 
+        for(uint16_t k = 0; k < f->hdr.conns; k++) {
+            f->conns[k] = (APPS_REC_CONN){
+                .pid = k ? 0 : 100, .starttime = k ? 0 : 5000, .comm = apps_rec_builder_string(b, k ? NULL : bash),
+                .event = k ? APPS_REC_CONN_CLOSE : APPS_REC_CONN_OPEN,
+                .how = k ? APPS_REC_CONN_BY_NONE : APPS_REC_CONN_BY_DUMP,
+                .family = k ? AF_INET6 : AF_INET, .state = k ? 7 : 1,
+                .direction = k ? APPS_REC_CONN_OUTBOUND : (APPS_REC_CONN_INBOUND | APPS_REC_CONN_LOCAL),
+                .local_port = 19999, .remote_port = (uint16_t)(40000 + k),
+                .local_ip = { 10, 0, 0, 1 }, .remote_ip = { 192, 0, 2, (uint8_t)(1 + k) },
+                .bytes_sent = 1ULL << 40, .bytes_received = 77 + k,
+            };
+            f->conn_comm[k] = k ? NULL : "bash";
+        }
+
         // expected strings are literals: the STRING copies are released when the chunk is sealed
         apps_rec_builder_add_frame(b, &f->hdr, f->starts, f->hdr.starts, f->exits, f->hdr.exits,
-                                   f->rows, f->hdr.rows, f->files, f->hdr.files);
+                                   f->rows, f->hdr.rows, f->files, f->hdr.files, f->conns, f->hdr.conns);
     }
 
     // the builder holds its own references (bash, cc1, /usr/bin/bash, the file and its mount)
@@ -369,6 +406,12 @@ static bool test_bounds(void) {
     } files_past_end = { .h = { .time_ut = 1, .rows = 1, .files = 1 } };
     ok &= expect_rejected("files past end", &files_past_end, sizeof(files_past_end), 1);
 
+    struct __attribute__((packed)) {
+        APPS_REC_FRAME_HDR h;
+        APPS_REC_CONN conn;
+    } conns_past_end = { .h = { .time_ut = 1, .conns = 2 } };
+    ok &= expect_rejected("connections past end", &conns_past_end, sizeof(conns_past_end), 1);
+
     APPS_REC_FRAME_HDR one = { .time_ut = 1 };
     ok &= expect_rejected("frame count mismatch", &one, sizeof(one), 2);
 
@@ -380,7 +423,7 @@ static bool test_bounds(void) {
         APPS_REC_BUILDER b;
         apps_rec_builder_init(&b, boot_id);
         APPS_REC_FRAME_HDR h = { .time_ut = 1 };
-        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
         size_t size;
         APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, &size);
         apps_rec_builder_destroy(&b);
@@ -434,7 +477,7 @@ static bool test_limits(void) {
             break;
         }
         h.time_ut = i + 1;
-        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
     }
     if(!apps_rec_builder_full(&b, 0)) {
         fprintf(stderr, "limits: not full after %d frames\n", APPS_REC_FRAMES_PER_CHUNK);
@@ -463,7 +506,7 @@ static APPS_REC_CHUNK_HDR *test_chunk(uint64_t first_ut, size_t frames, size_t *
     apps_rec_builder_init(&b, boot_id);
     for(size_t i = 0; i < frames; i++) {
         APPS_REC_FRAME_HDR h = { .time_ut = first_ut + i * USEC_PER_SEC, .pids = (uint32_t)i };
-        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
+        apps_rec_builder_add_frame(&b, &h, NULL, 0, NULL, 0, NULL, 0, NULL, 0, NULL, 0);
     }
     APPS_REC_CHUNK_HDR *hdr = apps_rec_builder_seal(&b, size);
     apps_rec_builder_destroy(&b);

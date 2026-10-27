@@ -556,6 +556,11 @@ static void parse_args(int argc, char **argv)
             continue;
         }
 
+        if(strcmp("without-recorder-connections", argv[i]) == 0) {
+            apps_recorder_record_connections = false;
+            continue;
+        }
+
         if(strcmp("recorder-disk-mb", argv[i]) == 0) {
             if(argc <= i + 1) {
                 fprintf(stderr, "Parameter 'recorder-disk-mb' requires a number as argument.\n");
@@ -635,6 +640,10 @@ static void parse_args(int argc, char **argv)
                     "\n"
                     " without-recorder-files do not record the files the busiest processes by I/O\n"
                     "                        hold open for writing (needs with-files)\n"
+                    "\n"
+                    " without-recorder-connections\n"
+                    "                        do not record the TCP connections processes open\n"
+                    "                        and close (needs with-files)\n"
                     "\n"
                     " fds-cache-secs N       cache the files of processed for N seconds\n"
                     "                        caching is adaptive per file (when a file\n"

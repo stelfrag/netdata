@@ -9,8 +9,10 @@
 // Times are unix epochs, or relative to now when zero or negative. The recorder keeps only the processes that hold
 // most of the CPU, the largest by memory and by I/O, and every start and exit, so each answer reports the share of
 // process CPU its samples covered. Both answers add `files`: the regular files the I/O rows held open for writing.
+// Range answers add `connection_events`: the TCP connections processes opened and closed.
 
 #include "apps_recorder.h"
+#include "apps_recorder_conns.h"
 
 #if defined(OS_LINUX)
 
@@ -19,6 +21,8 @@
 #define APPS_REC_QUERY_ROWS_MAX         1000
 #define APPS_REC_QUERY_GAPS_LISTED      16
 #define APPS_REC_QUERY_FILES_MAX        100
+#define APPS_REC_QUERY_CONNS_MAX        1000    // the newest connection events listed
+#define APPS_REC_QUERY_CONN_PROCS_MAX   100
 
 typedef struct {
     usec_t sample_ut;
@@ -387,6 +391,7 @@ static const REC_COLUMN at_columns[] = {
     COL_NUM("PReads", "Physical I/O Reads", 0, "KiB/s", RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_OPTS_NONE),
     COL_NUM("PWrites", "Physical I/O Writes", 0, "KiB/s", RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_OPTS_NONE),
     COL_NUM("Threads", "Threads", 0, "threads", RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_OPTS_NONE),
+    COL_NUM("Sockets", "Open Sockets", 0, "sockets", RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_OPTS_NONE),
     COL_STR("State", "Process State", RRDF_FIELD_OPTS_NONE),
     COL_STR("RecordedFor", "Why the Recorder Kept It", RRDF_FIELD_OPTS_NONE),
 };
@@ -434,6 +439,7 @@ static void query_at(const char *transaction, usec_t at_ut, bool show_cmdline) {
         buffer_json_add_array_item_uint64(wb, r->row.pread_kibs);
         buffer_json_add_array_item_uint64(wb, r->row.pwrite_kibs);
         buffer_json_add_array_item_uint64(wb, r->row.threads);
+        buffer_json_add_array_item_uint64(wb, r->row.sockets);
         buffer_json_add_array_item_string(wb, state);
         buffer_json_add_array_item_string(wb, why_string(r->row.why));
         buffer_json_array_close(wb);
@@ -466,9 +472,29 @@ typedef struct {
     uint64_t cpu_sum;           // 1/10000 of a core
     uint32_t cpu_max;
     uint32_t rss_max_kib;
+    uint16_t sockets_max;
     usec_t first_ut, last_ut;
     bool started, exited;
 } REC_AGG;
+
+// a connection event of the range, with its time and process identity
+typedef struct {
+    usec_t time_ut;
+    uint64_t boot;
+    APPS_REC_CONN c;
+    STRING *comm;
+} REC_RANGE_CONN;
+
+// the connections of one process (or of the unknown ones) over the range
+typedef struct {
+    int32_t pid;
+    uint64_t starttime;
+    uint64_t boot;
+    STRING *comm;
+    size_t opens, closes;
+    uint64_t bytes_sent, bytes_received;    // of the closes
+    bool used;
+} REC_CONN_PROC;
 
 // a file a process held open for writing during the range
 typedef struct {
@@ -494,6 +520,15 @@ typedef struct {
     size_t files_size;          // power of 2
     size_t files_used;
     bool files_recorded;        // a frame of the range looked at files
+
+    REC_RANGE_CONN *conns;      // ring of the newest APPS_REC_QUERY_CONNS_MAX
+    size_t conns_total;
+    size_t conns_lost;
+    uint16_t netns_other;
+    bool conns_recorded;
+    REC_CONN_PROC *conn_procs;  // open addressing by process
+    size_t conn_procs_size;     // power of 2
+    size_t conn_procs_used;
 } REC_RANGE;
 
 static inline size_t agg_slot(int32_t pid, uint64_t starttime, uint64_t boot, size_t size) {
@@ -670,6 +705,142 @@ static void range_files_free(REC_RANGE *r) {
     freez(r->files);
 }
 
+static REC_CONN_PROC *conn_proc_find(REC_RANGE *r, int32_t pid, uint64_t starttime, uint64_t boot) {
+    if((r->conn_procs_used + 1) * 2 > r->conn_procs_size) {
+        REC_CONN_PROC *old = r->conn_procs;
+        size_t old_size = r->conn_procs_size;
+        r->conn_procs_size = old_size ? old_size * 2 : 64;
+        r->conn_procs = callocz(r->conn_procs_size, sizeof(*r->conn_procs));
+        for(size_t i = 0; i < old_size; i++) {
+            if(!old[i].used) continue;
+            size_t h = agg_slot(old[i].pid, old[i].starttime, old[i].boot, r->conn_procs_size);
+            while(r->conn_procs[h].used) h = (h + 1) & (r->conn_procs_size - 1);
+            r->conn_procs[h] = old[i];
+        }
+        freez(old);
+    }
+
+    size_t h = agg_slot(pid, starttime, boot, r->conn_procs_size);
+    while(r->conn_procs[h].used) {
+        REC_CONN_PROC *x = &r->conn_procs[h];
+        if(x->pid == pid && x->starttime == starttime && x->boot == boot)
+            return x;
+        h = (h + 1) & (r->conn_procs_size - 1);
+    }
+
+    r->conn_procs[h] = (REC_CONN_PROC){ .pid = pid, .starttime = starttime, .boot = boot, .used = true };
+    r->conn_procs_used++;
+    return &r->conn_procs[h];
+}
+
+static void range_conns(REC_RANGE *r, const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *strings, uint64_t boot) {
+    if(!(f->hdr->flags & APPS_REC_FRAME_CONNS))
+        return;
+
+    r->conns_recorded = true;
+    r->conns_lost += f->hdr->conns_lost;
+    r->netns_other = MAX(r->netns_other, f->hdr->netns_other);
+
+    if(!r->conns && f->hdr->conns)
+        r->conns = callocz(APPS_REC_QUERY_CONNS_MAX, sizeof(*r->conns));
+
+    for(uint16_t i = 0; i < f->hdr->conns; i++) {
+        APPS_REC_CONN c;
+        memcpy(&c, &f->conns[i], sizeof(c));
+
+        // the unknown processes are one entry (pid 0)
+        REC_CONN_PROC *p = conn_proc_find(r, c.pid, c.pid ? c.starttime : 0, c.pid ? boot : 0);
+        if(!p->comm && c.pid)
+            p->comm = dup_string(strings, c.comm);
+        if(c.event == APPS_REC_CONN_OPEN)
+            p->opens++;
+        else {
+            p->closes++;
+            p->bytes_sent += c.bytes_sent;
+            p->bytes_received += c.bytes_received;
+        }
+
+        REC_RANGE_CONN *x = &r->conns[r->conns_total % APPS_REC_QUERY_CONNS_MAX];
+        string_freez(x->comm);
+        *x = (REC_RANGE_CONN){ .time_ut = f->hdr->time_ut, .boot = boot, .c = c, .comm = dup_string(strings, c.comm) };
+        r->conns_total++;
+    }
+}
+
+static int cmp_conn_proc_desc(const void *a, const void *b) {
+    const REC_CONN_PROC *x = *(REC_CONN_PROC * const *)a, *y = *(REC_CONN_PROC * const *)b;
+    size_t ex = x->opens + x->closes, ey = y->opens + y->closes;
+    if(ex != ey) return (ex < ey) - (ex > ey);
+    uint64_t bx = x->bytes_sent + x->bytes_received, by = y->bytes_sent + y->bytes_received;
+    return (bx < by) - (bx > by);
+}
+
+static void emit_conn_process(BUFFER *wb, int32_t pid, uint64_t starttime, uint64_t boot, STRING *comm) {
+    if(!pid) {
+        buffer_json_member_add_string(wb, "process", "unknown");
+        return;
+    }
+
+    char key[80];
+    snprintfz(key, sizeof(key), "%d:%" PRIu64 ":%016" PRIx64, pid, starttime, boot);
+    buffer_json_member_add_string(wb, "key", key);
+    buffer_json_member_add_uint64(wb, "pid", (uint64_t)pid);
+    buffer_json_member_add_string(wb, "process", comm ? string2str(comm) : "-");
+}
+
+// the connections of the range: per process the most active first, then the newest events, oldest first
+static void emit_range_conns(BUFFER *wb, REC_RANGE *r) {
+    buffer_json_member_add_object(wb, "connection_events");
+    buffer_json_member_add_boolean(wb, "recorded", r->conns_recorded);
+    buffer_json_member_add_uint64(wb, "total", r->conns_total);
+    buffer_json_member_add_uint64(wb, "lost", r->conns_lost);
+    buffer_json_member_add_uint64(wb, "netns_other", r->netns_other);
+
+    REC_CONN_PROC **sorted = mallocz((r->conn_procs_used + 1) * sizeof(*sorted));
+    size_t n = 0;
+    for(size_t i = 0; i < r->conn_procs_size; i++)
+        if(r->conn_procs[i].used) sorted[n++] = &r->conn_procs[i];
+    qsort(sorted, n, sizeof(*sorted), cmp_conn_proc_desc);
+
+    buffer_json_member_add_array(wb, "by_process");
+    for(size_t i = 0; i < n && i < APPS_REC_QUERY_CONN_PROCS_MAX; i++) {
+        const REC_CONN_PROC *p = sorted[i];
+        buffer_json_add_array_item_object(wb);
+        emit_conn_process(wb, p->pid, p->starttime, p->boot, p->comm);
+        buffer_json_member_add_uint64(wb, "opens", p->opens);
+        buffer_json_member_add_uint64(wb, "closes", p->closes);
+        buffer_json_member_add_uint64(wb, "bytes_sent", p->bytes_sent);
+        buffer_json_member_add_uint64(wb, "bytes_received", p->bytes_received);
+        buffer_json_object_close(wb);
+    }
+    buffer_json_array_close(wb);
+    freez(sorted);
+
+    size_t listed = MIN(r->conns_total, (size_t)APPS_REC_QUERY_CONNS_MAX);
+    buffer_json_member_add_array(wb, "list");
+    for(size_t i = r->conns_total - listed; i < r->conns_total; i++) {
+        const REC_RANGE_CONN *x = &r->conns[i % APPS_REC_QUERY_CONNS_MAX];
+        buffer_json_add_array_item_object(wb);
+        buffer_json_member_add_uint64(wb, "time_ut", x->time_ut);
+        emit_conn_process(wb, x->c.pid, x->c.starttime, x->boot, x->comm);
+        apps_rec_conn_to_json(wb, &x->c);
+        buffer_json_object_close(wb);
+    }
+    buffer_json_array_close(wb);
+    buffer_json_member_add_boolean(wb, "truncated", r->conns_total > listed);
+    buffer_json_object_close(wb);
+}
+
+static void range_conns_free(REC_RANGE *r) {
+    if(r->conns)
+        for(size_t i = 0; i < APPS_REC_QUERY_CONNS_MAX; i++)
+            string_freez(r->conns[i].comm);
+    freez(r->conns);
+    for(size_t i = 0; i < r->conn_procs_size; i++)
+        string_freez(r->conn_procs[i].comm);
+    freez(r->conn_procs);
+}
+
 static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *strings, void *data) {
     REC_RANGE *r = data;
     usec_t t = f->hdr->time_ut;
@@ -699,6 +870,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
         a->cpu_sum += row.cpu;
         a->cpu_max = MAX(a->cpu_max, row.cpu);
         a->rss_max_kib = MAX(a->rss_max_kib, row.rss_kib);
+        a->sockets_max = MAX(a->sockets_max, row.sockets);
         agg_identity(a, strings, row.ppid, row.uid, row.comm, row.exe, row.group, row.cmdline);
     }
 
@@ -714,6 +886,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
     }
 
     range_files(r, f, strings, boot);
+    range_conns(r, f, strings, boot);
     return true;
 }
 
@@ -735,6 +908,7 @@ static const REC_COLUMN range_columns[] = {
     COL_NUM("AvgCPU", "Average CPU over the range (100% = 1 core; 0 while not recorded)", 2, "%", RRDF_FIELD_SUMMARY_SUM, OPT_VIS),
     COL_NUM("PeakCPU", "Peak CPU (100% = 1 core)", 2, "%", RRDF_FIELD_SUMMARY_MAX, OPT_VIS),
     COL_NUM("PeakRSS", "Peak Resident Set Size", 2, "MiB", RRDF_FIELD_SUMMARY_MAX, OPT_VIS),
+    COL_NUM("PeakSockets", "Peak Open Sockets", 0, "sockets", RRDF_FIELD_SUMMARY_MAX, RRDF_FIELD_OPTS_NONE),
     COL_NUM("Samples", "Samples the process was recorded in", 0, "samples", RRDF_FIELD_SUMMARY_MAX, RRDF_FIELD_OPTS_NONE),
     COL_TIME("FirstSeen", "First Seen in the range", OPT_VIS),
     COL_TIME("LastSeen", "Last Seen in the range", OPT_VIS),
@@ -755,6 +929,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
         not_found(transaction, "The process flight recorder has no samples in this time range.", after_ut, before_ut);
         freez(r.slots);
         range_files_free(&r);
+        range_conns_free(&r);
         return;
     }
 
@@ -789,6 +964,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
         buffer_json_add_array_item_double(wb, (NETDATA_DOUBLE)a->cpu_sum / (NETDATA_DOUBLE)r.coverage.frames / 100.0);
         buffer_json_add_array_item_double(wb, (NETDATA_DOUBLE)a->cpu_max / 100.0);
         buffer_json_add_array_item_double(wb, (NETDATA_DOUBLE)a->rss_max_kib / 1024.0);
+        buffer_json_add_array_item_uint64(wb, a->sockets_max);
         buffer_json_add_array_item_uint64(wb, a->samples);
         buffer_json_add_array_item_uint64(wb, a->first_ut);
         buffer_json_add_array_item_uint64(wb, a->last_ut);
@@ -800,6 +976,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     buffer_json_array_close(wb);
 
     emit_range_files(wb, &r);
+    emit_range_conns(wb, &r);
     emit_columns(wb, range_columns, _countof(range_columns), show_cmdline);
     response_send(transaction, wb, "AvgCPU");
 
@@ -813,6 +990,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     freez(sorted);
     freez(r.slots);
     range_files_free(&r);
+    range_conns_free(&r);
 }
 
 // --------------------------------------------------------------------------------------------------------------------

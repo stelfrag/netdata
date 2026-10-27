@@ -354,7 +354,7 @@ busy after it has exited. It is on by default on Linux.
 - every process that started or exited.
 
 For each recorded process it keeps the PID, parent PID, user ID, name, executable, category, CPU, memory, swap,
-I/O, threads and state. It does not keep command lines unless you enable `with-recorder-cmdline`.
+I/O, threads, open sockets and state. It does not keep command lines unless you enable `with-recorder-cmdline`.
 
 For the 10 largest by I/O it also keeps the regular files they hold open for writing, up to 8 per process (the ones
 that grew most since the previous iteration, then the largest), with the mount point of each file's filesystem, its
@@ -363,6 +363,24 @@ for its file charts, so they are recorded only while file charts are on (`with-f
 above 100,000 open files on the system). It looks at up to 64 writable files per process, and reads their size
 without waiting on the filesystem (`statx` without sync, Linux 4.11 or later), so a slow or unreachable network
 filesystem never blocks it.
+
+It also keeps the TCP connections processes open and close, in the network namespace `apps.plugin` runs in:
+
+- **Closes**: the kernel reports every TCP connection it closes, with its local and remote address and port, its
+  state, and the bytes it sent (acknowledged by the peer) and received over its whole life. This needs no extra
+  privileges.
+- **Opens**: when the sockets of the processes change, at most every 10 seconds, `apps.plugin` reads the TCP socket
+  table and records the connections that are new since the last read, with the bytes so far. A connection that opens
+  and closes between two reads is recorded only when it closes.
+- **Which process**: a connection that was in a socket table read is matched to the process holding its socket. A
+  connection to a local listening port is given to the process that listens on it. Otherwise the process is
+  `unknown`: typically the client side of a connection shorter than 10 seconds.
+- **Not covered**: connections inside other network namespaces (containers with their own network) are not
+  recorded; answers count the processes holding sockets there. UDP sockets appear only in the socket counts.
+- **Limits**: up to 256 connection events per iteration; more are counted as lost, as are closes the kernel drops
+  when `apps.plugin` cannot read them fast enough.
+
+Like the files, connections need the open files `apps.plugin` reads for its file charts (`with-files`).
 
 **Memory and CPU**: the last 30 minutes (at `update every = 1`) stay in memory, compressed: typically 0.4 to
 0.7 MiB. Recording costs well under 0.1% of one CPU core.
@@ -405,6 +423,7 @@ changes the Agent kept.
 | `recorder-disk-mb N`    | `32`    | The size limit of the disk store, in MiB. `0` disables saving to disk.              |
 | `with-recorder-cmdline` | -       | Also records full command lines. They may contain passwords or tokens.              |
 | `without-recorder-files` | -      | Does not record the files the busiest processes by I/O hold open for writing.       |
+| `without-recorder-connections` | - | Does not record the TCP connections processes open and close.                     |
 
 ```text
 [plugin:apps]
