@@ -521,6 +521,7 @@ typedef struct {
     size_t exits_unknown;       // exits of processes the range has no identity for
     size_t proc_event_frames;   // frames with the kernel's process events
     size_t proc_lost;
+    size_t proc_unnamed;
 
     REC_RANGE_FILE *files;
     size_t files_size;          // power of 2
@@ -857,6 +858,7 @@ static bool range_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
     if(f->hdr->flags & APPS_REC_FRAME_PROC_EVENTS) {
         r->proc_event_frames++;
         r->proc_lost += f->hdr->proc_lost;
+        r->proc_unnamed += f->hdr->proc_unnamed;
     }
 
     // the frames arrive in time order
@@ -1000,6 +1002,7 @@ static void query_range(const char *transaction, usec_t after_ut, usec_t before_
     buffer_json_member_add_string(wb, "status",
         r.proc_event_frames == r.coverage.frames ? "available" : r.proc_event_frames ? "partial" : "unavailable");
     buffer_json_member_add_uint64(wb, "lost", r.proc_lost);
+    buffer_json_member_add_uint64(wb, "unnamed", r.proc_unnamed);
     buffer_json_object_close(wb);
 
     buffer_json_member_add_array(wb, "data");

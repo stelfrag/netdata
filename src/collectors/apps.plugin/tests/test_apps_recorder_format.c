@@ -56,6 +56,7 @@ static bool check_frame(const APPS_REC_FRAME_VIEW *f, const APPS_REC_STRINGS *st
     if(f->hdr->starts != e->hdr.starts || f->hdr->exits != e->hdr.exits || f->hdr->rows != e->hdr.rows ||
         f->hdr->files != e->hdr.files || f->hdr->conns != e->hdr.conns || f->hdr->conns_lost != e->hdr.conns_lost ||
         f->hdr->netns_other != e->hdr.netns_other || f->hdr->proc_lost != e->hdr.proc_lost ||
+        f->hdr->proc_unnamed != e->hdr.proc_unnamed ||
         f->hdr->flags != e->hdr.flags)
         return fail(w, "counts differ", i);
 
@@ -145,6 +146,7 @@ static void make_frames(APPS_REC_BUILDER *b, EXPECTED_FRAME *e) {
         if(i == 2) {
             f->hdr.flags |= APPS_REC_FRAME_SOCKETS | APPS_REC_FRAME_CONNS | APPS_REC_FRAME_PROC_EVENTS;
             f->hdr.proc_lost = 2;
+            f->hdr.proc_unnamed = 3;
             f->hdr.conns_lost = 1;
             f->hdr.netns_other = 3;
         }

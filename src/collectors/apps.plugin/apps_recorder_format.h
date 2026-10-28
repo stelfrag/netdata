@@ -10,7 +10,7 @@
 // Chunks are host-local caches: integers are stored in native byte order and the version guards the layout.
 
 #define APPS_REC_MAGIC              0x5250444eU // "NDPR"
-#define APPS_REC_VERSION            4
+#define APPS_REC_VERSION            5
 #define APPS_REC_FRAMES_PER_CHUNK   60
 #define APPS_REC_STRING_NONE        UINT16_MAX
 #define APPS_REC_STRINGS_MAX        (UINT16_MAX - 1)
@@ -136,6 +136,7 @@ typedef struct __attribute__((packed)) {
     uint16_t conns_lost;        // connection events since the previous frame not recorded (over the cap, kernel overrun)
     uint16_t netns_other;       // processes with sockets in network namespaces the socket dumps do not see
     uint16_t proc_lost;         // times the kernel dropped process events since the previous frame (each at least one)
+    uint16_t proc_unnamed;      // processes since the previous frame whose name and owner were not read (the read cap)
     uint16_t flags;             // APPS_REC_FRAME_*
 } APPS_REC_FRAME_HDR;
 

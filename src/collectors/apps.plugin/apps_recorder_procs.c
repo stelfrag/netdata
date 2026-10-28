@@ -7,9 +7,13 @@
 // thread, and then drops the capability; receiving on the subscribed socket needs nothing. The kernel ignores
 // subscriptions from user or pid namespaces other than the initial ones, so apps.plugin does not subscribe there.
 //
-// A thread reads the events. At a fork or exec it reads the process's identity from /proc/PID/stat while the process
-// still exists, so a process that exits before the next iteration can still be named; at an exit it queues the
-// exit with that identity. The recorder drains the queue every iteration.
+// A thread reads the events and keeps each new process's identity, so a process that exits before the next iteration
+// can still be named; at an exit it queues the exit with that identity. The recorder drains the queue every iteration.
+// A child forked by its parent's main thread is a copy of the parent: it takes the parent's name and owner, and its
+// starttime is computed from the fork event. An exec reads /proc/PID/stat, since the name changes, and so does a fork
+// whose parent is not known yet (the parent's, once), that came from another thread, or of a kernel thread. Rename
+// and owner-change events update the identity. The reads are capped per second; over the cap a process is kept
+// without name and owner, and counted.
 
 #include "apps_recorder_procs.h"
 
@@ -21,6 +25,7 @@
 
 #define APPS_REC_EXITS_QUEUED       4096    // exits waiting for the next iteration; more are lost
 #define APPS_REC_IDENTITIES         4096    // processes whose identity the thread keeps, by pid; collisions overwrite
+#define APPS_REC_LOOKUPS_PER_S      100     // identities read from /proc per second; more processes go unnamed
 
 // capget()/capset() are called directly with the kernel's layout (uapi linux/capability.h): libcap may be missing,
 // and its header conflicts with the kernel's
@@ -42,7 +47,8 @@ typedef struct {
     int32_t pid;                // 0: a free slot
     int32_t ppid;
     uint64_t starttime;
-    uint32_t uid;
+    bool starttime_approx;      // computed from the fork event: /proc may say a little less
+    uint32_t uid;               // APPS_REC_UID_UNKNOWN with an empty comm: not named, over the cap
     char comm[16];
 } REC_IDENTITY_SLOT;
 
@@ -54,11 +60,16 @@ static struct {
     ND_THREAD *thread;
 
     REC_IDENTITY_SLOT *identities;  // the thread's only
+    time_t lookups_second;          // the thread's only: the current second and the reads in it
+    uint32_t lookups;
+    time_t offset_second;           // the thread's only: when boot_offset_ns was measured
+    uint64_t boot_offset_ns;        // CLOCK_BOOTTIME - CLOCK_MONOTONIC (the time spent suspended)
 
     SPINLOCK spinlock;
     APPS_REC_PROC_EXIT *queue;      // ring
     size_t head, used;
     size_t lost;                    // exits that found the ring full, and kernel overruns (each at least one)
+    size_t unnamed;                 // new processes not named: identity reads over the cap
 } procs = { .fd = -1 };
 
 void apps_rec_drop_net_admin(void) {
@@ -221,6 +232,54 @@ static bool identity_read(int32_t pid, REC_IDENTITY_SLOT *s) {
     return true;
 }
 
+static inline REC_IDENTITY_SLOT *identity_slot(int32_t pid) {
+    return &procs.identities[(uint32_t)pid % APPS_REC_IDENTITIES];
+}
+
+// whether one more identity may be read from /proc in this second
+static bool lookup_allowed(void) {
+    time_t second = now_monotonic_sec();
+    if(second != procs.lookups_second) {
+        procs.lookups_second = second;
+        procs.lookups = 0;
+    }
+    if(procs.lookups >= APPS_REC_LOOKUPS_PER_S)
+        return false;
+    procs.lookups++;
+    return true;
+}
+
+static void unnamed_count(void) {
+    spinlock_lock(&procs.spinlock);
+    procs.unnamed++;
+    spinlock_unlock(&procs.spinlock);
+}
+
+static inline uint64_t timespec_ns(const struct timespec *ts) {
+    return (uint64_t)ts->tv_sec * NSEC_PER_SEC + (uint64_t)ts->tv_nsec;
+}
+
+// /proc/PID/stat field 22 of a process forked at timestamp_ns (CLOCK_MONOTONIC): clock ticks of CLOCK_BOOTTIME at its
+// creation, which comes before the event, so /proc may say a little less (apps_rec_proc_exit_same()); 0 when unknown
+static uint64_t fork_starttime(uint64_t timestamp_ns) {
+    // the offset changes only by a suspend: measured once a second, the smallest of a few samples, since a
+    // preemption between the two clock reads only makes it larger
+    time_t second = now_monotonic_sec();
+    if(second != procs.offset_second || !procs.boot_offset_ns) {
+        uint64_t best = UINT64_MAX;
+        for(int i = 0; i < 3; i++) {
+            struct timespec mono, boot;
+            if(clock_gettime(CLOCK_MONOTONIC, &mono) != 0 || clock_gettime(CLOCK_BOOTTIME, &boot) != 0)
+                return 0;
+            uint64_t m = timespec_ns(&mono), b = timespec_ns(&boot);
+            best = MIN(best, b > m ? b - m : 0);
+        }
+        procs.boot_offset_ns = best;
+        procs.offset_second = second;
+    }
+    return (timestamp_ns + procs.boot_offset_ns) / (NSEC_PER_SEC / system_hz);
+}
+
 // the kernel stamps events with CLOCK_MONOTONIC (libnetdata's monotonic clock is MONOTONIC_RAW)
 static usec_t monotonic_ns_to_realtime_ut(uint64_t ns) {
     struct timespec ts;
@@ -248,9 +307,49 @@ static void proc_event(const struct proc_event *ev) {
             // a new process, not a thread
             if(ev->event_data.fork.child_pid == ev->event_data.fork.child_tgid) {
                 int32_t pid = ev->event_data.fork.child_pid;
-                REC_IDENTITY_SLOT *s = &procs.identities[(uint32_t)pid % APPS_REC_IDENTITIES];
-                if(!identity_read(pid, s))
-                    s->pid = 0;
+                int32_t ppid = ev->event_data.fork.parent_tgid;
+                REC_IDENTITY_SLOT *s = identity_slot(pid);
+                REC_IDENTITY_SLOT id = {
+                    .pid = pid, .ppid = ppid, .starttime = fork_starttime(ev->timestamp_ns), .starttime_approx = true,
+                    .uid = APPS_REC_UID_UNKNOWN,
+                };
+
+                // a copy of the parent, when the parent's main thread forked it; not kernel threads (kthreadd's
+                // children, renamed without an event)
+                bool copied = false;
+                if(id.starttime && ev->event_data.fork.parent_pid == ppid && ppid != 2) {
+                    REC_IDENTITY_SLOT *parent = identity_slot(ppid), found;
+                    if(parent->pid != ppid && lookup_allowed() && identity_read(ppid, &found)) {
+                        // kept for its next children, unless its slot holds another process
+                        if(!parent->pid)
+                            *parent = found;
+                        else
+                            parent = &found;
+                    }
+                    if(parent->pid == ppid && parent->comm[0]) {
+                        id.uid = parent->uid;
+                        memcpy(id.comm, parent->comm, sizeof(id.comm));
+                        copied = true;
+                    }
+                }
+
+                if(!copied) {
+                    if(lookup_allowed()) {
+                        // a process already gone is not kept
+                        if(!identity_read(pid, &id)) {
+                            s->pid = 0;
+                            break;
+                        }
+                    }
+                    else if(id.starttime)
+                        unnamed_count();
+                    else {
+                        s->pid = 0;
+                        break;
+                    }
+                }
+
+                *s = id;
             }
             break;
 
@@ -258,10 +357,40 @@ static void proc_event(const struct proc_event *ev) {
             // the name changes at exec
             if(ev->event_data.exec.process_pid == ev->event_data.exec.process_tgid) {
                 int32_t pid = ev->event_data.exec.process_pid;
-                REC_IDENTITY_SLOT *s = &procs.identities[(uint32_t)pid % APPS_REC_IDENTITIES];
+                REC_IDENTITY_SLOT *s = identity_slot(pid);
                 REC_IDENTITY_SLOT id;
-                if(identity_read(pid, &id))
-                    *s = id;
+                if(lookup_allowed()) {
+                    if(identity_read(pid, &id))
+                        *s = id;
+                }
+                else if(s->pid == pid && s->comm[0]) {
+                    // over the cap: the program and maybe the owner changed, and are not known
+                    s->comm[0] = '\0';
+                    s->uid = APPS_REC_UID_UNKNOWN;
+                    unnamed_count();
+                }
+            }
+            break;
+
+        case PROC_EVENT_UID:
+            // the owner changed (setuid() or a setuid exec); identity_read() keeps the effective uid too
+            if(ev->event_data.id.process_pid == ev->event_data.id.process_tgid) {
+                int32_t pid = ev->event_data.id.process_pid;
+                REC_IDENTITY_SLOT *s = identity_slot(pid);
+                if(s->pid == pid && s->comm[0])
+                    s->uid = ev->event_data.id.e.euid;
+            }
+            break;
+
+        case PROC_EVENT_COMM:
+            // a process renamed itself (prctl); the event carries the name
+            if(ev->event_data.comm.process_pid == ev->event_data.comm.process_tgid && ev->event_data.comm.comm[0]) {
+                int32_t pid = ev->event_data.comm.process_pid;
+                REC_IDENTITY_SLOT *s = identity_slot(pid);
+                if(s->pid == pid && s->comm[0]) {
+                    memcpy(s->comm, ev->event_data.comm.comm, MIN(sizeof(s->comm), sizeof(ev->event_data.comm.comm)));
+                    s->comm[sizeof(s->comm) - 1] = '\0';
+                }
             }
             break;
 
@@ -275,11 +404,12 @@ static void proc_event(const struct proc_event *ev) {
                     .status = (int32_t)ev->event_data.exit.exit_code,
                 };
 
-                REC_IDENTITY_SLOT *s = &procs.identities[(uint32_t)pid % APPS_REC_IDENTITIES];
+                REC_IDENTITY_SLOT *s = identity_slot(pid);
                 if(s->pid == pid) {
                     e.identity = true;
                     e.ppid = s->ppid;
                     e.starttime = s->starttime;
+                    e.starttime_approx = s->starttime_approx;
                     e.uid = s->uid;
                     memcpy(e.comm, s->comm, sizeof(e.comm));
                     s->pid = 0;
@@ -369,8 +499,9 @@ void apps_rec_procs_stop(void) {
     procs.fd = -1;
 }
 
-bool apps_rec_procs_drain(APPS_REC_PROC_EXIT **exits, size_t *size, size_t *used, size_t *lost) {
+bool apps_rec_procs_drain(APPS_REC_PROC_EXIT **exits, size_t *size, size_t *used, size_t *lost, size_t *unnamed) {
     *lost = 0;
+    *unnamed = 0;
     if(!procs.running)
         return false;
 
@@ -387,6 +518,8 @@ bool apps_rec_procs_drain(APPS_REC_PROC_EXIT **exits, size_t *size, size_t *used
     procs.used = 0;
     *lost = procs.lost;
     procs.lost = 0;
+    *unnamed = procs.unnamed;
+    procs.unnamed = 0;
     spinlock_unlock(&procs.spinlock);
     return true;
 }

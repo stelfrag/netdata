@@ -5,16 +5,21 @@
 
 #include "apps_plugin.h"
 
+// the owner of a process that was not named: identity reads were over the cap
+#define APPS_REC_UID_UNKNOWN        UINT32_MAX
+
 // a process exit the kernel reported
 typedef struct {
     int32_t pid;
     usec_t exit_ut;             // realtime
     int32_t status;             // the wait status
 
-    // read from /proc when the kernel reported its fork or exec; identity is false when it was not seen
+    // kept since the kernel reported its fork or exec; identity is false when it was not seen. A process not named
+    // (over the cap) has an empty comm and APPS_REC_UID_UNKNOWN.
     bool identity;
     int32_t ppid;
     uint64_t starttime;
+    bool starttime_approx;      // computed from the fork event: /proc may say a little less
     uint32_t uid;
     char comm[16];
 
@@ -36,7 +41,16 @@ void apps_rec_procs_start(void);
 void apps_rec_procs_stop(void);
 
 // moves the exits received since the previous call into *exits (grown as needed); returns false when the events are
-// not received. *lost counts exits whose event was lost.
-bool apps_rec_procs_drain(APPS_REC_PROC_EXIT **exits, size_t *size, size_t *used, size_t *lost);
+// not received. *lost counts exits whose event was lost, *unnamed processes whose name and owner were not read (the
+// cap).
+bool apps_rec_procs_drain(APPS_REC_PROC_EXIT **exits, size_t *size, size_t *used, size_t *lost, size_t *unnamed);
+
+// whether an exit's process is the one polling knows by this starttime. A starttime computed from the fork event is
+// late by the time between the process's creation and the event (usually under a tick, more when the forking task was
+// preempted): up to a second is accepted, since a pid is not used again that fast.
+static inline bool apps_rec_proc_exit_same(const APPS_REC_PROC_EXIT *e, uint64_t starttime) {
+    return e->starttime == starttime ||
+           (e->starttime_approx && e->starttime > starttime && e->starttime - starttime <= (uint64_t)system_hz);
+}
 
 #endif //NETDATA_APPS_RECORDER_PROCS_H

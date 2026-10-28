@@ -131,6 +131,7 @@ static struct {
     size_t missed_frame[APPS_REC_MISSED_FRAMES]; // how many of them each of those iterations added, newest last
     bool proc_events;
     size_t proc_lost;
+    size_t proc_unnamed;
     APPS_REC_ROW rows[APPS_REC_ROWS_MAX];
     APPS_REC_FILE files[APPS_REC_FILES_MAX];
     APPS_REC_CONN conns[APPS_REC_CONNS_MAX];
@@ -732,9 +733,9 @@ static const REC_PID *pid_running(int32_t pid, size_t n) {
 }
 
 // whether an exit polling found without a status in the last iterations is this process's
-static bool exit_missed(int32_t pid, uint64_t starttime) {
+static bool exit_missed(const APPS_REC_PROC_EXIT *e) {
     for(size_t i = 0; i < rec.missed_used; i++)
-        if(rec.missed[i].pid == pid && rec.missed[i].starttime == starttime)
+        if(rec.missed[i].pid == e->pid && apps_rec_proc_exit_same(e, rec.missed[i].starttime))
             return true;
     return false;
 }
@@ -744,9 +745,10 @@ static bool exit_missed(int32_t pid, uint64_t starttime) {
 // process the scan still saw waits: it exited after the scan, or it is a zombie its parent has not reaped yet.
 // Returns the processes added.
 static size_t proc_exits(size_t n, size_t *nexits) {
-    size_t lost;
-    rec.proc_events = apps_rec_procs_drain(&rec.pexits, &rec.pexits_size, &rec.pexits_used, &lost);
+    size_t lost, unnamed;
+    rec.proc_events = apps_rec_procs_drain(&rec.pexits, &rec.pexits_size, &rec.pexits_used, &lost, &unnamed);
     rec.proc_lost = lost;
+    rec.proc_unnamed = unnamed;
     if(!rec.proc_events)
         return 0;
 
@@ -764,7 +766,7 @@ static size_t proc_exits(size_t n, size_t *nexits) {
         }
         for(size_t k = lo; k < rec.pexits_used && rec.pexits[k].pid == x->pid; k++) {
             APPS_REC_PROC_EXIT *e = &rec.pexits[k];
-            if(e->matched || (e->identity && e->starttime != x->starttime))
+            if(e->matched || (e->identity && !apps_rec_proc_exit_same(e, x->starttime)))
                 continue;
             e->matched = true;
             x->exit_ut = e->exit_ut;
@@ -784,7 +786,7 @@ static size_t proc_exits(size_t n, size_t *nexits) {
         if(running) {
             // the same process (a zombie) waits until it is reaped; without the identity, for a while; a process
             // that took the pid since is someone else
-            bool same = e.identity ? running->starttime == e.starttime : e.carried < APPS_REC_CARRY_MAX;
+            bool same = e.identity ? apps_rec_proc_exit_same(&e, running->starttime) : e.carried < APPS_REC_CARRY_MAX;
             if(same) {
                 e.carried++;
                 rec.pexits[kept++] = e;
@@ -794,7 +796,7 @@ static size_t proc_exits(size_t n, size_t *nexits) {
 
         // without its identity it cannot be named; with it, it may be the late event of an exit polling found
         // in the last iterations, which already recorded it without a status
-        if(!e.identity || exit_missed(e.pid, e.starttime))
+        if(!e.identity || exit_missed(&e))
             continue;
 
         ensure((void **)&rec.exits, &rec.exits_size, *nexits + 1, sizeof(*rec.exits));
@@ -894,7 +896,7 @@ void apps_recorder_collect(void) {
     }
     freez(started);
 
-    // processes that lived less than an iteration: their name from /proc at their fork or exec
+    // processes that lived less than an iteration: their name as the exits thread kept it (empty: not read, the cap)
     for(size_t i = 0; i < nshort; i++) {
         const APPS_REC_PROC_EXIT *e = &rec.shorts[i];
         STRING *comm = e->comm[0] ? string_strdupz(e->comm) : NULL;
@@ -967,6 +969,7 @@ void apps_recorder_collect(void) {
         .procs_rss_kib = procs_rss / 1024,
         .boot_ut = now_realtime_usec() - now_boottime_usec(),
         .proc_lost = (uint16_t)MIN(rec.proc_lost, UINT16_MAX),
+        .proc_unnamed = (uint16_t)MIN(rec.proc_unnamed, UINT16_MAX),
         .conns_lost = cf.lost,
         .netns_other = cf.netns_other,
         .flags = (files ? APPS_REC_FRAME_FILES : 0) |
