@@ -369,12 +369,12 @@ It also keeps the TCP connections processes open and close, in the network names
 - **Closes**: the kernel reports every TCP connection it closes, with its local and remote address and port and the
   bytes it sent (acknowledged by the peer) and received over its whole life. This needs no extra
   privileges.
-- **Opens**: when the sockets of the processes change, at most every 10 seconds, `apps.plugin` reads the TCP socket
+- **Opens**: when the sockets of the processes change, at most every 30 seconds, `apps.plugin` reads the TCP socket
   table and records the connections that are new since the last read, with the bytes so far. A connection that opens
   and closes between two reads is recorded only when it closes.
 - **Which process**: a connection that was in a socket table read is matched to the process holding its socket. A
   connection to a local listening port is given to the process that listens on it. Otherwise the process is
-  `unknown`: typically the client side of a connection shorter than 10 seconds.
+  `unknown`: typically the client side of a connection shorter than 30 seconds.
 - **Not covered**: connections inside other network namespaces (containers with their own network) are not
   recorded; answers count the processes holding sockets there. UDP and Unix sockets appear only in the socket counts
   of the processes.

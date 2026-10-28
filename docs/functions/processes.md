@@ -284,7 +284,7 @@ the filesystem while the process still writes to it: its space is freed only whe
 `after:`/`before:` answers also have a `connection_events` object: the TCP connections processes opened and closed
 in the range, in the network namespace of `apps.plugin`. Listening sockets and sockets that never connected are not
 connections and are not recorded. Closes are all recorded, with their final byte counts;
-opens are found by reading the socket table when the processes' sockets change, at most every 10 seconds, so a
+opens are found by reading the socket table when the processes' sockets change, at most every 30 seconds, so a
 connection shorter than that appears only at its close.
 
 | Field         | Meaning                                                                                                 |

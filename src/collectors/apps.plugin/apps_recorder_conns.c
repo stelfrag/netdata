@@ -7,9 +7,12 @@
 // (by address and port) or, for the server side of a connection, through its listening port.
 //
 // Opens, and the maps that find the processes of closes: a sock_diag dump of TCP, joined by inode to the sockets in
-// apps.plugin's fd table. A dump walks the kernel's whole TCP hash, so it runs only when the socket fds of the
-// processes change, and at most every APPS_REC_CONNS_DUMP_EVERY_S. A connection that opens and closes between two
-// dumps is seen only at its close, and its client side has no process.
+// apps.plugin's fd table. A dump walks the kernel's whole TCP hash, whatever the number of sockets, so it runs only
+// when the socket fds of the processes change, and at most every APPS_REC_CONNS_DUMP_EVERY_S. A connection that opens
+// and closes between two dumps is seen only at its close, and its client side has no process.
+//
+// The two dumps kept for attribution hold one 64-bit hash of each connection's addresses and ports, not the addresses:
+// with many connections the full keys made them the largest memory of apps.plugin.
 
 #include "apps_recorder_conns.h"
 
@@ -17,7 +20,7 @@
 
 #include "libnetdata/local-sockets/local-sockets.h"
 
-#define APPS_REC_CONNS_DUMP_EVERY_S     10
+#define APPS_REC_CONNS_DUMP_EVERY_S     30
 #define APPS_REC_CLOSES_QUEUED          4096    // closes waiting for the next frame; more are lost
 #define APPS_REC_LOCAL_IPS_MAX          256
 
@@ -62,7 +65,7 @@ typedef struct {
     REC_OWNER *owners;
     size_t owners_used, owners_size;
 
-    REC_TUPLE *tuples;          // open addressing; family 0 is a free slot
+    uint64_t *tuples;           // tuple hashes, open addressing; 0 is a free slot
     uint32_t *tuple_owner;
     size_t tuples_size;         // power of 2
     size_t tuples_used;
@@ -151,8 +154,10 @@ static void tuple_of(const LOCAL_SOCKET *n, REC_TUPLE *t) {
     }
 }
 
+// the key of a connection in the dumps; two connections sharing it (about 1 in 2^64 per pair) would share an owner
 static inline uint64_t tuple_hash(const REC_TUPLE *t) {
-    return XXH3_64bits(t, sizeof(*t));
+    uint64_t h = XXH3_64bits(t, sizeof(*t));
+    return h ? h : 1;
 }
 
 // --------------------------------------------------------------------------------------------------------------------
@@ -289,10 +294,18 @@ static void dump_reset(REC_DUMP *d) {
     for(size_t i = 0; i < d->owners_used; i++)
         string_freez(d->owners[i].comm);
     d->owners_used = 0;
-    if(d->tuples_used) {
-        memset(d->tuples, 0, d->tuples_size * sizeof(*d->tuples));
-        d->tuples_used = 0;
+
+    // after a peak of connections, give the memory back: the next dump grows the table again as needed
+    if(d->tuples_size > 1024 && d->tuples_used * 8 < d->tuples_size) {
+        freez(d->tuples);
+        freez(d->tuple_owner);
+        d->tuples = NULL;
+        d->tuple_owner = NULL;
+        d->tuples_size = 0;
     }
+    else if(d->tuples_used)
+        memset(d->tuples, 0, d->tuples_size * sizeof(*d->tuples));
+    d->tuples_used = 0;
     d->listen_used = 0;
     d->ips_used = 0;
     d->inodes_used = 0;
@@ -355,23 +368,23 @@ static uint32_t inodes_find(const REC_INODES *m, uint64_t inode) {
 
 static void tuples_grow(REC_DUMP *d);
 
-static void tuples_add(REC_DUMP *d, const REC_TUPLE *t, uint32_t owner) {
+static void tuples_add(REC_DUMP *d, uint64_t key, uint32_t owner) {
     if((d->tuples_used + 1) * 2 > d->tuples_size)
         tuples_grow(d);
 
-    size_t i = tuple_hash(t) & (d->tuples_size - 1);
-    while(d->tuples[i].family) {
-        if(!memcmp(&d->tuples[i], t, sizeof(*t)))
+    size_t i = mix64(key) & (d->tuples_size - 1);
+    while(d->tuples[i]) {
+        if(d->tuples[i] == key)
             return;
         i = (i + 1) & (d->tuples_size - 1);
     }
-    d->tuples[i] = *t;
+    d->tuples[i] = key;
     d->tuple_owner[i] = owner;
     d->tuples_used++;
 }
 
 static void tuples_grow(REC_DUMP *d) {
-    REC_TUPLE *old = d->tuples;
+    uint64_t *old = d->tuples;
     uint32_t *old_owner = d->tuple_owner;
     size_t old_size = d->tuples_size;
 
@@ -380,19 +393,19 @@ static void tuples_grow(REC_DUMP *d) {
     d->tuple_owner = mallocz(d->tuples_size * sizeof(*d->tuple_owner));
     d->tuples_used = 0;
     for(size_t i = 0; i < old_size; i++)
-        if(old[i].family)
-            tuples_add(d, &old[i], old_owner[i]);
+        if(old[i])
+            tuples_add(d, old[i], old_owner[i]);
 
     freez(old);
     freez(old_owner);
 }
 
-static bool tuples_find(const REC_DUMP *d, const REC_TUPLE *t, uint32_t *owner) {
+static bool tuples_find(const REC_DUMP *d, uint64_t key, uint32_t *owner) {
     if(!d->tuples_used)
         return false;
-    size_t i = tuple_hash(t) & (d->tuples_size - 1);
-    while(d->tuples[i].family) {
-        if(!memcmp(&d->tuples[i], t, sizeof(*t))) {
+    size_t i = mix64(key) & (d->tuples_size - 1);
+    while(d->tuples[i]) {
+        if(d->tuples[i] == key) {
             *owner = d->tuple_owner[i];
             return true;
         }
@@ -500,7 +513,7 @@ static void dump_cb(LS_STATE *ls __maybe_unused, const LOCAL_SOCKET *n, void *da
     if(n->state == TCP_CLOSE || !n->remote.port)
         return;
 
-    tuples_add(d, &t, owner);
+    tuples_add(d, tuple_hash(&t), owner);
     ensure((void **)&d->inodes, &d->inodes_size, d->inodes_used + 1, sizeof(*d->inodes));
     d->inodes[d->inodes_used++] = n->inode;
 
@@ -618,9 +631,10 @@ static void close_event(REC_DUMP_CB *x, const REC_CLOSE *c) {
     const REC_OWNER *o = NULL;
     uint8_t how = APPS_REC_CONN_BY_NONE;
     uint32_t owner;
+    const uint64_t key = tuple_hash(&c->t);
 
     // a connection the newest dump saw
-    if(tuples_find(conns.cur, &c->t, &owner) && owner != REC_OWNER_NONE) {
+    if(tuples_find(conns.cur, key, &owner) && owner != REC_OWNER_NONE) {
         o = &conns.cur->owners[owner];
         how = APPS_REC_CONN_BY_DUMP;
     }
@@ -638,7 +652,7 @@ static void close_event(REC_DUMP_CB *x, const REC_CLOSE *c) {
     }
 
     // the older dump last: its owner of a reused address and port may be long gone
-    if(!o && tuples_find(conns.prev, &c->t, &owner) && owner != REC_OWNER_NONE) {
+    if(!o && tuples_find(conns.prev, key, &owner) && owner != REC_OWNER_NONE) {
         o = &conns.prev->owners[owner];
         how = APPS_REC_CONN_BY_DUMP;
     }
@@ -700,6 +714,10 @@ uint16_t apps_rec_conns_collect(APPS_REC_BUILDER *b, APPS_REC_CONN *out, uint16_
         conns.dumped = true;
         conns.dumped_s = now_s;
         conns.signature = signature;
+
+        // a dump allocates and frees tables sized by the sockets of the host; without this glibc keeps the memory
+        // and apps.plugin keeps the high-water mark of the largest dump
+        mallocz_release_as_much_memory_to_the_system();
     }
 
     frame->recorded = true;

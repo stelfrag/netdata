@@ -66,7 +66,7 @@ connections were open, and did the host change before it?
   (its space is not freed until the process closes it).
 - `connection_events`: the TCP connections opened and closed in the window, per process (`by_process`) and as the
   newest 100 events (`list`) with addresses, state and bytes. `process: unknown` is a connection no process was found
-  for, typically the client side of one shorter than 10 seconds.
+  for, typically the client side of one shorter than 30 seconds.
 - `connections`: the sockets open when the alert fired (`captured` is the snapshot time).
 - `host_changes`: reboots, kernel/OS/Netdata version changes, CPU/RAM/disk/default-interface changes in the 24 hours
   before.
