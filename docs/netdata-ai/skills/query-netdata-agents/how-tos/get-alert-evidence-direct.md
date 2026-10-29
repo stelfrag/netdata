@@ -59,7 +59,7 @@ connections were open, and did the host change before it?
 - `processes_window`: 10 minutes before to 2 minutes after; `Started` / `Exited` mark processes that began or ended
   inside it, and `started` / `exited` count them. `ExitStatus` says how a process ended (`exit 3`, `SIGKILL`) when
   `exit_status.status` is `available`; otherwise it is `unknown`. `exit_status.unnamed` counts processes whose name
-  was not read (more than 100 programs started per second); short-lived ones show `Cmd` `-`. The section keeps only
+  was not read (reading them is limited to 1% of a CPU core); short-lived ones show `Cmd` `-`. The section keeps only
   the 50 busiest processes by peak CPU, so a short-lived or idle process that crashed may be missing: query
   `processes after:/before:` on the Agent for all of them.
 - `files`: the files the busiest processes by I/O were writing in the window, with the mount point and the size

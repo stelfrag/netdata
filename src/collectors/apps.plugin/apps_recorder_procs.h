@@ -5,7 +5,7 @@
 
 #include "apps_plugin.h"
 
-// the owner of a process that was not named: identity reads were over the cap
+// the owner of a process that was not named: identity reads were over their CPU budget
 #define APPS_REC_UID_UNKNOWN        UINT32_MAX
 
 // a process exit the kernel reported
@@ -15,7 +15,7 @@ typedef struct {
     int32_t status;             // the wait status
 
     // kept since the kernel reported its fork or exec; identity is false when it was not seen. A process not named
-    // (over the cap) has an empty comm and APPS_REC_UID_UNKNOWN.
+    // (reads over their CPU budget) has an empty comm and APPS_REC_UID_UNKNOWN.
     bool identity;
     int32_t ppid;
     uint64_t starttime;
@@ -41,8 +41,8 @@ void apps_rec_procs_start(void);
 void apps_rec_procs_stop(void);
 
 // moves the exits received since the previous call into *exits (grown as needed); returns false when the events are
-// not received. *lost counts exits whose event was lost, *unnamed processes whose name and owner were not read (the
-// cap).
+// not received. *lost counts exits whose event was lost, *unnamed processes whose name and owner were not read (CPU
+// budget).
 bool apps_rec_procs_drain(APPS_REC_PROC_EXIT **exits, size_t *size, size_t *used, size_t *lost, size_t *unnamed);
 
 // whether an exit's process is the one polling knows by this starttime. A starttime computed from the fork event is

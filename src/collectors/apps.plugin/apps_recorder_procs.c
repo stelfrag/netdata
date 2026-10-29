@@ -12,7 +12,7 @@
 // A child forked by its parent's main thread is a copy of the parent: it takes the parent's name and owner, and its
 // starttime is computed from the fork event. An exec reads /proc/PID/stat, since the name changes, and so does a fork
 // whose parent is not known yet (the parent's, once), that came from another thread, or of a kernel thread. Rename
-// and owner-change events update the identity. The reads are capped per second; over the cap a process is kept
+// and owner-change events update the identity. The reads may take 1% of a core; beyond that a process is kept
 // without name and owner, and counted.
 
 #include "apps_recorder_procs.h"
@@ -25,7 +25,8 @@
 
 #define APPS_REC_EXITS_QUEUED       4096    // exits waiting for the next iteration; more are lost
 #define APPS_REC_IDENTITIES         4096    // processes whose identity the thread keeps, by pid; collisions overwrite
-#define APPS_REC_LOOKUPS_PER_S      100     // identities read from /proc per second; more processes go unnamed
+#define APPS_REC_LOOKUP_NS_PER_S    (10 * NSEC_PER_MSEC) // CPU per second for reading identities from /proc (1% of
+                                                         // a core); beyond it processes go unnamed
 
 // capget()/capset() are called directly with the kernel's layout (uapi linux/capability.h): libcap may be missing,
 // and its header conflicts with the kernel's
@@ -60,8 +61,8 @@ static struct {
     ND_THREAD *thread;
 
     REC_IDENTITY_SLOT *identities;  // the thread's only
-    time_t lookups_second;          // the thread's only: the current second and the reads in it
-    uint32_t lookups;
+    time_t lookups_second;          // the thread's only: the current second and the CPU its reads took
+    uint64_t lookups_ns;
     time_t offset_second;           // the thread's only: when boot_offset_ns was measured
     uint64_t boot_offset_ns;        // CLOCK_BOOTTIME - CLOCK_MONOTONIC (the time spent suspended)
 
@@ -236,17 +237,28 @@ static inline REC_IDENTITY_SLOT *identity_slot(int32_t pid) {
     return &procs.identities[(uint32_t)pid % APPS_REC_IDENTITIES];
 }
 
-// whether one more identity may be read from /proc in this second
+// whether one more identity may be read from /proc in this second: the reads' CPU is within the budget
 static bool lookup_allowed(void) {
     time_t second = now_monotonic_sec();
     if(second != procs.lookups_second) {
         procs.lookups_second = second;
-        procs.lookups = 0;
+        procs.lookups_ns = 0;
     }
-    if(procs.lookups >= APPS_REC_LOOKUPS_PER_S)
-        return false;
-    procs.lookups++;
-    return true;
+    return procs.lookups_ns < APPS_REC_LOOKUP_NS_PER_S;
+}
+
+static inline uint64_t thread_cpu_ns(void) {
+    struct timespec ts;
+    return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0 ? (uint64_t)ts.tv_sec * NSEC_PER_SEC + (uint64_t)ts.tv_nsec : 0;
+}
+
+// identity_read(), its CPU charged to the budget
+static bool identity_lookup(int32_t pid, REC_IDENTITY_SLOT *s) {
+    uint64_t started = thread_cpu_ns();
+    bool ok = identity_read(pid, s);
+    uint64_t ended = thread_cpu_ns();
+    procs.lookups_ns += (ended > started) ? ended - started : 0;
+    return ok;
 }
 
 static void unnamed_count(void) {
@@ -319,7 +331,7 @@ static void proc_event(const struct proc_event *ev) {
                 bool copied = false;
                 if(id.starttime && ev->event_data.fork.parent_pid == ppid && ppid != 2) {
                     REC_IDENTITY_SLOT *parent = identity_slot(ppid), found;
-                    if(parent->pid != ppid && lookup_allowed() && identity_read(ppid, &found)) {
+                    if(parent->pid != ppid && lookup_allowed() && identity_lookup(ppid, &found)) {
                         // kept for its next children, unless its slot holds another process
                         if(!parent->pid)
                             *parent = found;
@@ -336,7 +348,7 @@ static void proc_event(const struct proc_event *ev) {
                 if(!copied) {
                     if(lookup_allowed()) {
                         // a process already gone is not kept
-                        if(!identity_read(pid, &id)) {
+                        if(!identity_lookup(pid, &id)) {
                             s->pid = 0;
                             break;
                         }
@@ -360,7 +372,7 @@ static void proc_event(const struct proc_event *ev) {
                 REC_IDENTITY_SLOT *s = identity_slot(pid);
                 REC_IDENTITY_SLOT id;
                 if(lookup_allowed()) {
-                    if(identity_read(pid, &id))
+                    if(identity_lookup(pid, &id))
                         *s = id;
                 }
                 else if(s->pid == pid && s->comm[0]) {

@@ -406,9 +406,10 @@ status, and processes shorter than an iteration are missed.
 - Answers say whether exit statuses were available (`exit_status`).
 - **Cost**: a child forked by its parent's main thread takes the parent's name and owner without reading `/proc`;
   `apps.plugin` reads `/proc/PID/stat` at each exec (the name changes) and once for a parent it does not know yet.
-  These reads are capped at 100 per second. Above that, processes are still recorded with their parent, start time,
-  exit time and status, but their name and owner are not read: those that live less than an iteration show `Cmd`
-  `-` and `Uid` 4294967295, and answers count them all (`exit_status.unnamed`).
+  These reads may take up to 1% of a CPU core (typically 15 to 40 µs each, so several hundred per second). Beyond
+  that, processes are still recorded with their parent, start time, exit time and status, but their name and owner
+  are not read: those that live less than an iteration show `Cmd` `-` and `Uid` 4294967295, and answers count them
+  all (`exit_status.unnamed`).
 - **Limits**: a process whose main thread exits while other threads keep running, or that calls exec from a thread
   other than its main one, may be recorded with the status of that event. A process shorter than an iteration whose
   `/proc` entry was already gone when `apps.plugin` read it is not listed.

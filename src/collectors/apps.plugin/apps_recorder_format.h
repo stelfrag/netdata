@@ -136,7 +136,7 @@ typedef struct __attribute__((packed)) {
     uint16_t conns_lost;        // connection events since the previous frame not recorded (over the cap, kernel overrun)
     uint16_t netns_other;       // processes with sockets in network namespaces the socket dumps do not see
     uint16_t proc_lost;         // times the kernel dropped process events since the previous frame (each at least one)
-    uint16_t proc_unnamed;      // processes since the previous frame whose name and owner were not read (the read cap)
+    uint16_t proc_unnamed;      // processes since the previous frame whose name and owner were not read (CPU budget)
     uint16_t flags;             // APPS_REC_FRAME_*
 } APPS_REC_FRAME_HDR;
 

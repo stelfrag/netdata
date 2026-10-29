@@ -266,8 +266,8 @@ answer's `exit_status` object says whether statuses were available: `status` is 
 `partial` or `unavailable` (kernels before 6.6 without `CAP_NET_ADMIN`, a user or pid namespace other than the host's,
 or `without-recorder-proc-events`), `lost` counts the times the kernel dropped process events (each time at
 least one; the exits among them have status `unknown`), and `unnamed` counts the processes whose name and owner
-were not read because `apps.plugin` reads at most 100 per second (busy hosts starting many programs); those that lived
-less than a sample show `Cmd` `-` and `Uid` 4294967295.
+were not read because reading them is limited to 1% of a CPU core (busy hosts starting many programs); those that
+lived less than a sample show `Cmd` `-` and `Uid` 4294967295.
 
 Both answers also have a `files` object: the regular files that the processes kept for I/O held open for writing,
 up to 8 per process (the ones that grew most since the previous sample, then the largest).
